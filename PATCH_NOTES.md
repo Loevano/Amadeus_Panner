@@ -2,6 +2,19 @@
 
 Release-facing summary for operators and production notes.
 
+## v0.1.10 - 2026-03-03 - Name-Derived IDs For Faster Programming
+
+### Added
+- New actions, action groups, and object groups now auto-derive IDs from the entered name.
+- ID derivation uses short lowercase slugs and appends simple numeric suffixes (`-2`, `-3`, ...) only when needed.
+- Action `Save As` and Group Manager `Create Group` now suggest IDs from the current name context.
+
+### Changed
+- Draft forms now keep ID and name in sync for new entries, while preserving manual ID edits.
+
+### Fixed
+- Action group draft ID generation now checks uniqueness against existing action groups (not action IDs).
+
 ## v0.1.9 - 2026-03-03 - Group Manager Create Shortcut
 
 ### Added

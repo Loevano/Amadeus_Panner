@@ -78,6 +78,11 @@ const state = {
   runtimeFrameNeedsInspector: false,
   runtimeFrameNeedsManager: false,
   runtimeFrameNeedsActionDebug: false,
+  draftSuggestedIds: {
+    action: "",
+    actionGroup: "",
+    objectGroup: ""
+  },
   lfoDebugStatsByKey: {},
   lfoDebugLastValueByKey: {},
   lastLfoDebugEventByAction: {},
@@ -287,6 +292,13 @@ function normalizeObjectId(raw) {
   return objectId;
 }
 
+function deriveIdBaseFromName(nameValue, fallbackBase = "item") {
+  const normalizedName = normalizeObjectId(String(nameValue || "").toLowerCase());
+  if (normalizedName) return normalizedName;
+  const normalizedFallback = normalizeObjectId(String(fallbackBase || "").toLowerCase());
+  return normalizedFallback || "item";
+}
+
 function escapeRegExp(value) {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -460,6 +472,14 @@ function uniqueActionId(baseId) {
   return nextNumericId(baseId, "action", getActionIds());
 }
 
+function getActionGroupIds() {
+  return Array.isArray(state.status?.show?.actionGroupIds) ? state.status.show.actionGroupIds : [];
+}
+
+function uniqueActionGroupId(baseId) {
+  return nextNumericId(baseId, "group", getActionGroupIds());
+}
+
 function sanitizeGroupId(raw, options = {}) {
   const { allowAuto = false } = options;
   const normalized = normalizeObjectId(raw);
@@ -492,6 +512,19 @@ function sanitizeActionId(raw, options = {}) {
   const candidate = allowAuto ? uniqueActionId(normalized || "action") : normalized;
   if (!ACTION_ID_RE.test(candidate)) {
     throw new Error("Action ID must use letters/numbers/dot/underscore/dash (max 64 chars)");
+  }
+  return candidate;
+}
+
+function sanitizeActionGroupId(raw, options = {}) {
+  const { allowAuto = false, allowEmpty = false } = options;
+  const normalized = normalizeObjectId(raw);
+  if (!normalized && allowEmpty) {
+    return "";
+  }
+  const candidate = allowAuto ? uniqueActionGroupId(normalized || "group") : normalized;
+  if (!ACTION_ID_RE.test(candidate)) {
+    throw new Error("Action group ID must use letters/numbers/dot/underscore/dash (max 64 chars)");
   }
   return candidate;
 }
@@ -1977,8 +2010,32 @@ function selectedActionGroupOrNull() {
 function actionGroupPayloadFromInputs(baseGroup = null, options = {}) {
   const base = baseGroup && typeof baseGroup === "object" ? baseGroup : {};
   const fallbackGroupId = String(options.fallbackGroupId || state.selectedActionGroupId || "group").trim() || "group";
-  const groupId = sanitizeActionId(els.actionGroupManagerIdInput.value || fallbackGroupId, { allowAuto: true });
-  const name = String(els.actionGroupManagerNameInput.value || humanizeId(groupId) || groupId).trim() || groupId;
+  const inputName = String(els.actionGroupManagerNameInput.value || "").trim();
+  const rawGroupId = String(els.actionGroupManagerIdInput.value || "").trim();
+  const selectedGroup = selectedActionGroupOrNull();
+  const selectedGroupId = String(selectedGroup?.groupId || "").trim();
+  const selectedGroupName = String(selectedGroup?.name || selectedGroupId).trim();
+  const preferNameDerivedId = Boolean(options.preferNameDerivedId);
+  const deriveFromSelectedGroup = Boolean(
+    selectedGroupId
+    && rawGroupId === selectedGroupId
+    && inputName
+    && inputName !== selectedGroupName
+  );
+  const shouldDeriveFromName = Boolean(
+    preferNameDerivedId
+    && inputName
+    && (
+      !rawGroupId
+      || rawGroupId === String(state.draftSuggestedIds.actionGroup || "").trim()
+      || deriveFromSelectedGroup
+    )
+  );
+  const groupIdSeed = shouldDeriveFromName
+    ? deriveIdBaseFromName(inputName, fallbackGroupId)
+    : (rawGroupId || fallbackGroupId);
+  const groupId = sanitizeActionGroupId(groupIdSeed, { allowAuto: true });
+  const name = inputName || humanizeId(groupId) || groupId;
   const triggerPath = String(
     els.actionGroupManagerOscTriggerInput.value
     || defaultActionGroupOscPath(groupId)
@@ -2047,8 +2104,32 @@ function updateActionGroupEntryInputsState() {
 function actionPayloadFromInputs(baseAction = null, options = {}) {
   const base = baseAction && typeof baseAction === "object" ? baseAction : {};
   const fallbackActionId = String(options.fallbackActionId || state.selectedActionId || "action").trim() || "action";
-  const actionId = sanitizeActionId(els.actionManagerIdInput.value || fallbackActionId, { allowAuto: true });
-  const name = String(els.actionManagerNameInput.value || humanizeId(actionId) || actionId).trim() || actionId;
+  const inputName = String(els.actionManagerNameInput.value || "").trim();
+  const rawActionId = String(els.actionManagerIdInput.value || "").trim();
+  const selectedAction = selectedActionOrNull();
+  const selectedActionId = String(selectedAction?.actionId || "").trim();
+  const selectedActionName = String(selectedAction?.name || selectedActionId).trim();
+  const preferNameDerivedId = Boolean(options.preferNameDerivedId);
+  const deriveFromSelectedAction = Boolean(
+    selectedActionId
+    && rawActionId === selectedActionId
+    && inputName
+    && inputName !== selectedActionName
+  );
+  const shouldDeriveFromName = Boolean(
+    preferNameDerivedId
+    && inputName
+    && (
+      !rawActionId
+      || rawActionId === String(state.draftSuggestedIds.action || "").trim()
+      || deriveFromSelectedAction
+    )
+  );
+  const actionIdSeed = shouldDeriveFromName
+    ? deriveIdBaseFromName(inputName, fallbackActionId)
+    : (rawActionId || fallbackActionId);
+  const actionId = sanitizeActionId(actionIdSeed, { allowAuto: true });
+  const name = inputName || humanizeId(actionId) || actionId;
   const durationMs = Math.max(0, Math.round(parseFiniteNumber(els.actionManagerDurationInput.value, 0)));
   const onEndActionId = sanitizeActionId(els.actionManagerOnEndInput.value || "", { allowAuto: false, allowEmpty: true });
   const oscStart = String(els.actionManagerOscStartInput.value || defaultActionOscPath(actionId, "start")).trim();
@@ -2120,7 +2201,7 @@ function setLfoInputsFromModel(lfo) {
 
 async function actionManagerCreate() {
   try {
-    const payload = actionPayloadFromInputs(null, { fallbackActionId: "action" });
+    const payload = actionPayloadFromInputs(null, { fallbackActionId: "action", preferNameDerivedId: true });
     await api("/api/action/create", "POST", payload);
     if (String(els.actionManagerIdInput.value || "").trim() !== payload.actionId) {
       addLog(`action id normalized -> ${payload.actionId}`);
@@ -2157,7 +2238,7 @@ async function actionManagerSaveAs() {
       throw new Error(`Action not found: ${sourceActionId}`);
     }
 
-    const suggestedActionId = uniqueActionId(sourceActionId);
+    const suggestedActionId = uniqueActionId(deriveIdBaseFromName(currentAction.name, sourceActionId));
     const rawNewActionId = prompt("New action ID", suggestedActionId);
     if (rawNewActionId === null) {
       addLog("action save-as cancelled");
@@ -2201,7 +2282,7 @@ async function actionManagerDelete() {
 
 async function actionGroupManagerCreate() {
   try {
-    const payload = actionGroupPayloadFromInputs(null, { fallbackGroupId: "group" });
+    const payload = actionGroupPayloadFromInputs(null, { fallbackGroupId: "group", preferNameDerivedId: true });
     await api("/api/action-group/create", "POST", payload);
     if (String(els.actionGroupManagerIdInput.value || "").trim() !== payload.groupId) {
       addLog(`action group id normalized -> ${payload.groupId}`);
@@ -2743,6 +2824,7 @@ function renderActionManager() {
   els.actionManagerLfoObjectInput.disabled = !objects.length;
 
   if (selectedAction) {
+    state.draftSuggestedIds.action = "";
     const actionId = String(selectedAction.actionId || state.selectedActionId || "action");
     setInputValueIfIdle(els.actionManagerIdInput, actionId);
     setInputValueIfIdle(els.actionManagerNameInput, String(selectedAction.name || actionId));
@@ -2756,6 +2838,7 @@ function renderActionManager() {
     }
   } else {
     const suggestedActionId = uniqueActionId("action");
+    state.draftSuggestedIds.action = suggestedActionId;
     if (!String(els.actionManagerIdInput.value || "").trim()) {
       setInputValueIfIdle(els.actionManagerIdInput, suggestedActionId);
     }
@@ -2786,6 +2869,7 @@ function renderActionManager() {
   const selectedActionGroupId = String(state.selectedActionGroupId || "").trim();
   const selectedActionGroup = selectedActionGroupId ? actionGroupsById[selectedActionGroupId] : null;
   if (selectedActionGroup) {
+    state.draftSuggestedIds.actionGroup = "";
     const groupId = String(selectedActionGroup.groupId || selectedActionGroupId || "group");
     setInputValueIfIdle(els.actionGroupManagerIdInput, groupId);
     setInputValueIfIdle(els.actionGroupManagerNameInput, String(selectedActionGroup.name || groupId));
@@ -2795,7 +2879,8 @@ function renderActionManager() {
     );
     els.actionGroupManagerEnabledInput.checked = selectedActionGroup.enabled !== false;
   } else {
-    const suggestedGroupId = sanitizeActionId(String(els.actionGroupManagerIdInput.value || "group"), { allowAuto: true });
+    const suggestedGroupId = sanitizeActionGroupId(String(els.actionGroupManagerIdInput.value || "group"), { allowAuto: true });
+    state.draftSuggestedIds.actionGroup = suggestedGroupId;
     if (!String(els.actionGroupManagerIdInput.value || "").trim()) {
       setInputValueIfIdle(els.actionGroupManagerIdInput, suggestedGroupId);
     }
@@ -3128,6 +3213,7 @@ function renderGroupsManager() {
 
   const selectedGroup = getSelectedGroup();
   if (selectedGroup) {
+    state.draftSuggestedIds.objectGroup = "";
     setInputValueIfIdle(els.managerGroupId, String(selectedGroup.groupId));
     setInputValueIfIdle(els.managerGroupName, String(selectedGroup.name || selectedGroup.groupId));
     setInputValueIfIdle(els.managerGroupColor, normalizeHexColor(selectedGroup.color, DEFAULT_GROUP_COLOR));
@@ -3135,6 +3221,7 @@ function renderGroupsManager() {
     els.managerGroupSummary.textContent = `Group members: ${selectedGroup.objectIds.length}. Update will replace members with current selection (${selectedObjectIds.length}).`;
   } else {
     const suggestedId = uniqueGroupId(suggestGroupBaseFromSelection(selectedObjectIds));
+    state.draftSuggestedIds.objectGroup = suggestedId;
     const suggestedColor = suggestGroupColorFromSelection(selectedObjectIds);
     if (!String(els.managerGroupId.value || "").trim()) {
       setInputValueIfIdle(els.managerGroupId, suggestedId);
@@ -3818,10 +3905,31 @@ async function managerCreateGroup() {
     if (!selectedObjectIds.length) {
       throw new Error("Select one or more objects before creating a group");
     }
-    const rawGroupId = els.managerGroupId.value;
-    const groupId = autoGroupId(rawGroupId, selectedObjectIds);
+    const inputName = String(els.managerGroupName.value || "").trim();
+    const rawGroupId = String(els.managerGroupId.value || "").trim();
+    const selectedGroup = getSelectedGroup();
+    const selectedGroupId = String(selectedGroup?.groupId || "").trim();
+    const selectedGroupName = String(selectedGroup?.name || selectedGroupId).trim();
+    const deriveFromSelectedGroup = Boolean(
+      selectedGroupId
+      && rawGroupId === selectedGroupId
+      && inputName
+      && inputName !== selectedGroupName
+    );
+    const shouldDeriveFromName = Boolean(
+      inputName
+      && (
+        !rawGroupId
+        || rawGroupId === String(state.draftSuggestedIds.objectGroup || "").trim()
+        || deriveFromSelectedGroup
+      )
+    );
+    const groupIdSeed = shouldDeriveFromName
+      ? deriveIdBaseFromName(inputName, suggestGroupBaseFromSelection(selectedObjectIds))
+      : rawGroupId;
+    const groupId = autoGroupId(groupIdSeed, selectedObjectIds);
     const suggestedName = humanizeId(groupId);
-    const name = String(els.managerGroupName.value || suggestedName || groupId).trim() || groupId;
+    const name = inputName || suggestedName || groupId;
     const groupColor = normalizeHexColor(
       els.managerGroupColor.value,
       suggestGroupColorFromSelection(selectedObjectIds)
@@ -3834,7 +3942,7 @@ async function managerCreateGroup() {
       objectIds: selectedObjectIds,
       linkParams
     });
-    if (String(rawGroupId || "").trim() !== groupId) {
+    if (rawGroupId && rawGroupId !== groupId) {
       addLog(`group id normalized -> ${groupId}`);
     }
     if (!String(els.managerGroupName.value || "").trim() && suggestedName) {
@@ -3923,9 +4031,11 @@ async function groupManagerCreate() {
       throw new Error("Select one or more objects before creating a group");
     }
 
-    const baseId = selectedGroup
+    const inputName = String(els.groupManagerEditName.value || "").trim();
+    const fallbackBaseId = selectedGroup
       ? `${String(selectedGroup.groupId || "group")}-copy`
       : suggestGroupBaseFromSelection(objectIds);
+    const baseId = inputName ? deriveIdBaseFromName(inputName, fallbackBaseId) : fallbackBaseId;
     const suggestedGroupId = uniqueGroupId(baseId);
     const rawGroupId = prompt("New group ID", suggestedGroupId);
     if (rawGroupId === null) {
@@ -3934,7 +4044,6 @@ async function groupManagerCreate() {
     }
     const groupId = sanitizeGroupId(rawGroupId, { allowAuto: true });
 
-    const inputName = String(els.groupManagerEditName.value || "").trim();
     const name = inputName || humanizeId(groupId) || groupId;
     const color = normalizeHexColor(
       els.groupManagerEditColor.value,
@@ -4222,13 +4331,108 @@ function setupHandlers() {
     void actionGroupEntryClear();
   });
 
+  els.actionManagerNameInput.addEventListener("input", () => {
+    const nameValue = String(els.actionManagerNameInput.value || "").trim();
+    if (!nameValue) return;
+
+    const selectedAction = selectedActionOrNull();
+    const currentId = String(els.actionManagerIdInput.value || "").trim();
+    if (selectedAction && currentId === String(selectedAction.actionId || "").trim()) {
+      return;
+    }
+
+    const suggestedId = String(state.draftSuggestedIds.action || "").trim();
+    if (currentId && suggestedId && currentId !== suggestedId) {
+      return;
+    }
+
+    const previousId = currentId || suggestedId || "action";
+    const derivedActionId = sanitizeActionId(deriveIdBaseFromName(nameValue, "action"), { allowAuto: true });
+    if (!derivedActionId || derivedActionId === currentId) {
+      return;
+    }
+
+    setInputValueIfIdle(els.actionManagerIdInput, derivedActionId);
+    state.draftSuggestedIds.action = derivedActionId;
+
+    const currentStart = String(els.actionManagerOscStartInput.value || "").trim();
+    const currentStop = String(els.actionManagerOscStopInput.value || "").trim();
+    const currentAbort = String(els.actionManagerOscAbortInput.value || "").trim();
+    if (!currentStart || currentStart === defaultActionOscPath(previousId, "start")) {
+      setInputValueIfIdle(els.actionManagerOscStartInput, defaultActionOscPath(derivedActionId, "start"));
+    }
+    if (!currentStop || currentStop === defaultActionOscPath(previousId, "stop")) {
+      setInputValueIfIdle(els.actionManagerOscStopInput, defaultActionOscPath(derivedActionId, "stop"));
+    }
+    if (!currentAbort || currentAbort === defaultActionOscPath(previousId, "abort")) {
+      setInputValueIfIdle(els.actionManagerOscAbortInput, defaultActionOscPath(derivedActionId, "abort"));
+    }
+  });
+
+  els.actionGroupManagerNameInput.addEventListener("input", () => {
+    const nameValue = String(els.actionGroupManagerNameInput.value || "").trim();
+    if (!nameValue) return;
+
+    const selectedActionGroup = selectedActionGroupOrNull();
+    const currentId = String(els.actionGroupManagerIdInput.value || "").trim();
+    if (selectedActionGroup && currentId === String(selectedActionGroup.groupId || "").trim()) {
+      return;
+    }
+
+    const suggestedId = String(state.draftSuggestedIds.actionGroup || "").trim();
+    if (currentId && suggestedId && currentId !== suggestedId) {
+      return;
+    }
+
+    const previousId = currentId || suggestedId || "group";
+    const derivedGroupId = sanitizeActionGroupId(deriveIdBaseFromName(nameValue, "group"), { allowAuto: true });
+    if (!derivedGroupId || derivedGroupId === currentId) {
+      return;
+    }
+
+    setInputValueIfIdle(els.actionGroupManagerIdInput, derivedGroupId);
+    state.draftSuggestedIds.actionGroup = derivedGroupId;
+
+    const currentTrigger = String(els.actionGroupManagerOscTriggerInput.value || "").trim();
+    if (!currentTrigger || currentTrigger === defaultActionGroupOscPath(previousId)) {
+      setInputValueIfIdle(els.actionGroupManagerOscTriggerInput, defaultActionGroupOscPath(derivedGroupId));
+    }
+  });
+
   els.actionGroupManagerIdInput.addEventListener("input", () => {
-    const proposedGroupId = sanitizeActionId(els.actionGroupManagerIdInput.value || "group", { allowAuto: true });
+    const proposedGroupId = sanitizeActionGroupId(els.actionGroupManagerIdInput.value || "group", { allowAuto: true });
+    state.draftSuggestedIds.actionGroup = proposedGroupId;
     if (!String(els.actionGroupManagerNameInput.value || "").trim()) {
       setInputValueIfIdle(els.actionGroupManagerNameInput, humanizeId(proposedGroupId) || proposedGroupId);
     }
     if (!String(els.actionGroupManagerOscTriggerInput.value || "").trim()) {
       setInputValueIfIdle(els.actionGroupManagerOscTriggerInput, defaultActionGroupOscPath(proposedGroupId));
+    }
+  });
+
+  els.managerGroupName.addEventListener("input", () => {
+    if (state.selectedGroupId) return;
+    const nameValue = String(els.managerGroupName.value || "").trim();
+    if (!nameValue) return;
+
+    const currentId = String(els.managerGroupId.value || "").trim();
+    const suggestedId = String(state.draftSuggestedIds.objectGroup || "").trim();
+    if (currentId && suggestedId && currentId !== suggestedId) {
+      return;
+    }
+
+    const selectedObjectIds = selectedObjectTargets();
+    const fallbackBase = suggestGroupBaseFromSelection(selectedObjectIds);
+    try {
+      const derivedId = sanitizeGroupId(deriveIdBaseFromName(nameValue, fallbackBase), { allowAuto: true });
+      if (derivedId && derivedId !== currentId) {
+        setInputValueIfIdle(els.managerGroupId, derivedId);
+      }
+      state.draftSuggestedIds.objectGroup = derivedId;
+    } catch {
+      const fallbackId = uniqueGroupId(fallbackBase);
+      setInputValueIfIdle(els.managerGroupId, fallbackId);
+      state.draftSuggestedIds.objectGroup = fallbackId;
     }
   });
 

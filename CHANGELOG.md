@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-03-03 22:48 CET
+- Added name-derived ID generation for create flows so new IDs default from typed names (lowercase slug + short numeric suffix when needed).
+- Applied name-derived ID behavior across:
+  - Action creation (`Action Setup`)
+  - Action Group creation (`Action Groups`)
+  - Object Group creation (`Object Groups` in Object Manager)
+  - Group Manager `Create Group` prompt suggestion
+  - Action `Save As` prompt suggestion
+- Added live draft sync from `Name` -> `ID` for new Action, Action Group, and Object Group entries while preserving manual ID overrides.
+- Fixed Action Group draft ID uniqueness source to use existing action-group IDs (not action IDs).
+
 ## 2026-03-03 22:40 CET
 - Updated `README.md` implementation overview to match current UI/runtime capabilities:
   - dedicated Action/Modulation/Object/Group manager views
