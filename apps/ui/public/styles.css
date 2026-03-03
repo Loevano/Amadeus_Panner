@@ -43,6 +43,28 @@ body {
   color: var(--muted);
 }
 
+.ui-status-bar {
+  margin: 8px 12px 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: #f7fafb;
+  color: #204357;
+  font-size: 0.88rem;
+}
+
+.ui-status-bar.is-success {
+  border-color: #84c3a1;
+  background: #effaf3;
+  color: #185c34;
+}
+
+.ui-status-bar.is-error {
+  border-color: #de9a9a;
+  background: #fff1f1;
+  color: #7f2020;
+}
+
 .view-switch-wrap {
   padding: 10px 12px 0;
 }
@@ -138,7 +160,8 @@ body {
   gap: 8px;
 }
 
-.row input {
+.row input,
+.row select {
   flex: 1;
 }
 

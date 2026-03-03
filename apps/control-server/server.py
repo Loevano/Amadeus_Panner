@@ -81,6 +81,26 @@ def normalize_color(value: Any, default: str = DEFAULT_OBJECT_COLOR) -> str:
     return default
 
 
+def discover_show_paths() -> List[str]:
+    showfiles_root = PROJECT_ROOT / "showfiles"
+    if not showfiles_root.is_dir():
+        return []
+
+    paths: List[str] = []
+    for candidate in showfiles_root.rglob("show.json"):
+        if "_schema" in candidate.parts:
+            continue
+        relative = str(candidate.relative_to(PROJECT_ROOT)).replace("\\", "/")
+        paths.append(relative)
+
+    unique_sorted = sorted(set(paths))
+    template_path = "showfiles/_template/show.json"
+    if template_path in unique_sorted:
+        unique_sorted.remove(template_path)
+        unique_sorted.insert(0, template_path)
+    return unique_sorted
+
+
 def normalize_show_id(value: Any) -> str:
     show_id = str(value or "").strip().lower()
     show_id = re.sub(r"[^a-z0-9-]+", "-", show_id)
@@ -1368,6 +1388,18 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path_name == "/api/status":
             self._send_json(HTTPStatus.OK, RUNTIME.status())
+            return
+        if path_name == "/api/show/list":
+            with RUNTIME.lock:
+                current_path = str(RUNTIME.show["path"]) if RUNTIME.show else None
+            self._send_json(
+                HTTPStatus.OK,
+                {
+                    "ok": True,
+                    "paths": discover_show_paths(),
+                    "current": current_path,
+                },
+            )
             return
         if path_name == "/api/events":
             self._stream_events()

@@ -11,6 +11,7 @@
     <h1>Amadeus Panner</h1>
     <div id="statusLine" class="status-line">Connecting...</div>
   </header>
+  <div id="uiStatusBar" class="ui-status-bar" role="status" aria-live="polite">Ready.</div>
 
   <div class="view-switch-wrap">
     <div class="view-switch" role="tablist" aria-label="Main Views">
@@ -23,7 +24,9 @@
     <section class="panel controls-panel">
       <h2>Show Control</h2>
       <div class="row">
-        <input id="showPathInput" type="text" value="showfiles/_template/show.json" />
+        <select id="showPathInput" aria-label="Show Selection">
+          <option value="showfiles/_template/show.json">showfiles/_template/show.json</option>
+        </select>
       </div>
       <div class="row show-actions-row">
         <button id="loadShowBtn" type="button">Load Show</button>
@@ -52,7 +55,7 @@
         <button id="cameraResetBtn" type="button">Reset View</button>
         <span id="cameraReadout" class="muted">Yaw 35, Pitch 26, Zoom 320</span>
       </div>
-      <p class="muted">Dragging a selected object applies relative movement to all selected objects (X/Z, and Shift for Y height). Drag empty space to multi-select. Cmd+click adds/removes object selection. Option+drag changes camera view. Mouse wheel zooms.</p>
+      <p class="muted">Dragging a selected object applies relative movement to all selected objects (X/Z, and Shift for Y height). Ctrl+drag edits only the touched object (ignores selection and groups). Drag empty space to multi-select. Cmd+click adds/removes object selection. Option+drag changes camera view. Mouse wheel zooms.</p>
     </section>
 
     <section class="panel inspector-panel">

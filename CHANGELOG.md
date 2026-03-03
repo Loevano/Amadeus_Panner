@@ -103,3 +103,14 @@
 - Added Groups panel master toggle (`Enable Groups`) to globally enable/disable group-link behavior
 - Added hidden virtual `All` group membership model and surfaced it in Object Manager group labels
 - Added per-object `Exclude From All` toggle in Object Manager table with runtime API support (`excludeFromAll`)
+
+## 2026-03-03 14:30 CET
+- Added panner `Ctrl+drag` override mode to edit only the touched object, ignoring current selection and group-link propagation
+- Updated panner help text to document `Ctrl+drag` single-object override behavior
+
+## 2026-03-03 19:00 CET
+- Replaced Show Control path text field with a show-selection dropdown populated from runtime showfile discovery
+- Added UI feedback status bar for operator-visible success/error/info messages
+- Added server endpoint `GET /api/show/list` to enumerate available `show.json` files under `showfiles/`
+- Improved object/group auto-naming to use natural numeric progression (for example `obj-3` now advances to `obj-4` instead of `obj-3-2`)
+- Added shared ID generation logic for stable incremental naming across both objects and groups

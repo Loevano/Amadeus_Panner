@@ -33,11 +33,13 @@ const state = {
   draggingOffsetXZ: { x: 0, z: 0 },
   draggingRelativeXZ: {},
   draggingRelativeY: {},
+  dragSingleObjectOnly: false,
   lastDragSendMs: 0,
   orbiting: false,
   activePointerId: null,
   pointerDownHitObjectId: null,
   lastPointer: { x: 0, y: 0 },
+  availableShowPaths: [],
   selectionBox: {
     active: false,
     additive: false,
@@ -60,6 +62,7 @@ const state = {
 
 const els = {
   statusLine: document.getElementById("statusLine"),
+  uiStatusBar: document.getElementById("uiStatusBar"),
   mainLayout: document.getElementById("mainLayout"),
   viewPannerBtn: document.getElementById("viewPannerBtn"),
   viewObjectManagerBtn: document.getElementById("viewObjectManagerBtn"),
@@ -180,27 +183,56 @@ function normalizeObjectId(raw) {
   return objectId;
 }
 
-function uniqueObjectId(baseId) {
-  const normalizedBase = normalizeObjectId(baseId) || "obj";
-  const existing = new Set(getObjects().map((obj) => obj.objectId));
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function trimBaseForNumericSuffix(base, fallbackBase, numeric) {
+  const suffix = `-${numeric}`;
+  const maxBaseLen = 64 - suffix.length;
+  const trimmed = String(base || "").slice(0, Math.max(1, maxBaseLen)).replace(/[-._]+$/, "");
+  return trimmed || fallbackBase;
+}
+
+function nextNumericId(baseId, fallbackBase, existingIds) {
+  const normalizedBase = normalizeObjectId(baseId) || fallbackBase;
+  const existing = new Set(existingIds.map((id) => String(id || "").trim()).filter(Boolean));
 
   if (!existing.has(normalizedBase)) {
     return normalizedBase;
   }
 
-  let counter = 2;
-  while (counter < 10000) {
-    const suffix = `-${counter}`;
-    const maxBaseLen = 64 - suffix.length;
-    const trimmedBase = normalizedBase.slice(0, Math.max(1, maxBaseLen)).replace(/[-._]+$/, "") || "obj";
-    const candidate = `${trimmedBase}${suffix}`;
+  const suffixMatch = normalizedBase.match(/^(.*?)-(\d+)$/);
+  const rootBase = suffixMatch ? (suffixMatch[1] || fallbackBase) : normalizedBase;
+  const root = rootBase || fallbackBase;
+  const start = suffixMatch ? Math.max(2, Number.parseInt(suffixMatch[2], 10) + 1) : 2;
+
+  const pattern = new RegExp(`^${escapeRegExp(root)}-(\\d+)$`);
+  let maxSeen = existing.has(root) ? 1 : 0;
+  for (const existingId of existing) {
+    const match = existingId.match(pattern);
+    if (!match) continue;
+    const number = Number.parseInt(match[1], 10);
+    if (Number.isFinite(number)) {
+      maxSeen = Math.max(maxSeen, number);
+    }
+  }
+
+  let counter = Math.max(start, maxSeen + 1);
+  while (counter < 100000) {
+    const trimmedRoot = trimBaseForNumericSuffix(root, fallbackBase, counter);
+    const candidate = `${trimmedRoot}-${counter}`;
     if (!existing.has(candidate)) {
       return candidate;
     }
     counter += 1;
   }
 
-  throw new Error("Could not generate a unique object ID");
+  throw new Error(`Could not generate a unique ${fallbackBase} ID`);
+}
+
+function uniqueObjectId(baseId) {
+  return nextNumericId(baseId, "obj", getObjects().map((obj) => obj.objectId));
 }
 
 function sanitizeObjectId(raw, options = {}) {
@@ -215,26 +247,7 @@ function sanitizeObjectId(raw, options = {}) {
 }
 
 function uniqueGroupId(baseId) {
-  const normalizedBase = normalizeObjectId(baseId) || "group";
-  const existing = new Set(getObjectGroups().map((group) => group.groupId));
-
-  if (!existing.has(normalizedBase)) {
-    return normalizedBase;
-  }
-
-  let counter = 2;
-  while (counter < 10000) {
-    const suffix = `-${counter}`;
-    const maxBaseLen = 64 - suffix.length;
-    const trimmedBase = normalizedBase.slice(0, Math.max(1, maxBaseLen)).replace(/[-._]+$/, "") || "group";
-    const candidate = `${trimmedBase}${suffix}`;
-    if (!existing.has(candidate)) {
-      return candidate;
-    }
-    counter += 1;
-  }
-
-  throw new Error("Could not generate a unique group ID");
+  return nextNumericId(baseId, "group", getObjectGroups().map((group) => group.groupId));
 }
 
 function sanitizeGroupId(raw, options = {}) {
@@ -284,6 +297,17 @@ function normalizeVec(v) {
   return vec(v.x / len, v.y / len, v.z / len);
 }
 
+function setUiStatus(message, level = "info") {
+  if (!els.uiStatusBar) return;
+  els.uiStatusBar.textContent = String(message || "");
+  els.uiStatusBar.classList.remove("is-success", "is-error");
+  if (level === "success") {
+    els.uiStatusBar.classList.add("is-success");
+  } else if (level === "error") {
+    els.uiStatusBar.classList.add("is-error");
+  }
+}
+
 function addLog(line) {
   state.logs.push(line);
   while (state.logs.length > 160) state.logs.shift();
@@ -291,6 +315,18 @@ function addLog(line) {
     .map((entry) => `<div class="log-line">${escapeHtml(entry)}</div>`)
     .join("");
   els.eventLog.scrollTop = els.eventLog.scrollHeight;
+
+  // Keep UI feedback readable: ignore noisy timestamped debug stream entries.
+  if (/^\d{4}-\d{2}-\d{2}T/.test(line)) return;
+  if (/failed|error/i.test(line)) {
+    setUiStatus(line, "error");
+    return;
+  }
+  if (/loaded|saved|created|updated|enabled|disabled|recall|started|stopped|aborted|add|remove|rename|clear|set|patch/i.test(line)) {
+    setUiStatus(line, "success");
+    return;
+  }
+  setUiStatus(line, "info");
 }
 
 function renderDebugControls() {
@@ -316,6 +352,50 @@ async function api(path, method = "GET", body) {
     throw new Error(data.error || `Request failed: ${res.status}`);
   }
   return data;
+}
+
+function ensureShowPathOption(path) {
+  const candidate = String(path || "").trim();
+  if (!candidate || !els.showPathInput) return;
+  const exists = Array.from(els.showPathInput.options).some((opt) => opt.value === candidate);
+  if (exists) return;
+  const option = document.createElement("option");
+  option.value = candidate;
+  option.textContent = candidate;
+  els.showPathInput.appendChild(option);
+}
+
+function renderShowPathOptions(paths) {
+  const normalized = [...new Set((Array.isArray(paths) ? paths : []).map((path) => String(path || "").trim()).filter(Boolean))];
+  const currentPath = String(state.status?.show?.path || els.showPathInput.value || "showfiles/_template/show.json").trim();
+  if (currentPath && !normalized.includes(currentPath)) {
+    normalized.unshift(currentPath);
+  }
+  if (!normalized.length) {
+    normalized.push("showfiles/_template/show.json");
+  }
+
+  els.showPathInput.innerHTML = "";
+  for (const path of normalized) {
+    const option = document.createElement("option");
+    option.value = path;
+    option.textContent = path;
+    els.showPathInput.appendChild(option);
+  }
+  setInputValueIfIdle(els.showPathInput, currentPath || normalized[0]);
+}
+
+async function refreshShowList() {
+  try {
+    const data = await api("/api/show/list");
+    state.availableShowPaths = Array.isArray(data.paths) ? data.paths : [];
+    renderShowPathOptions(state.availableShowPaths);
+  } catch (error) {
+    if (!els.showPathInput.options.length) {
+      renderShowPathOptions([]);
+    }
+    addLog(`show list failed: ${error.message}`);
+  }
 }
 
 function getObjects() {
@@ -868,6 +948,7 @@ function renderShowControls() {
     return;
   }
 
+  ensureShowPathOption(status.show.path);
   setInputValueIfIdle(els.showPathInput, String(status.show.path || ""));
   els.showInfo.textContent = `${status.show.name} (${status.show.version}) - ${status.show.path}`;
 
@@ -1245,6 +1326,7 @@ function renderAll() {
 async function refreshStatus() {
   try {
     state.status = await api("/api/status");
+    await refreshShowList();
     syncSelectedIdsWithObjects();
     const groups = getObjectGroups();
     if (state.selectedGroupId && !groups.find((group) => group.groupId === state.selectedGroupId)) {
@@ -1253,6 +1335,7 @@ async function refreshStatus() {
     renderAll();
   } catch (error) {
     els.statusLine.textContent = `Status request failed: ${error.message}`;
+    setUiStatus(`Status request failed: ${error.message}`, "error");
   }
 }
 
@@ -1310,10 +1393,16 @@ function selectionRectObjectIds(startX, startY, currentX, currentY) {
   return objectIds;
 }
 
-function beginObjectDrag(objectId, point, useHeightMode) {
+function beginObjectDrag(objectId, point, useHeightMode, options = {}) {
+  const { singleObjectOnly = false } = options;
   if (!getObjectById(objectId)) return;
+  state.dragSingleObjectOnly = Boolean(singleObjectOnly);
   const selectedIds = selectedObjectTargets();
-  state.draggingObjectIds = selectedIds.includes(objectId) ? selectedIds : [objectId];
+  if (state.dragSingleObjectOnly) {
+    state.draggingObjectIds = [objectId];
+  } else {
+    state.draggingObjectIds = selectedIds.includes(objectId) ? selectedIds : [objectId];
+  }
   state.draggingObjectId = objectId;
   state.lastDragSendMs = 0;
   configureDragMode(useHeightMode ? "y" : "xz", point);
@@ -1414,6 +1503,7 @@ function resetPointerInteraction() {
   state.draggingOffsetXZ = { x: 0, z: 0 };
   state.draggingRelativeXZ = {};
   state.draggingRelativeY = {};
+  state.dragSingleObjectOnly = false;
   state.orbiting = false;
   state.activePointerId = null;
   state.pointerDownHitObjectId = null;
@@ -1837,6 +1927,7 @@ function setupHandlers() {
     if (event.button !== 0) return;
 
     const pt = toCanvasPoint(event);
+    const singleObjectOverride = event.ctrlKey && !event.metaKey;
     state.activePointerId = event.pointerId;
     state.lastPointer = pt;
     const hit = pickObject(pt);
@@ -1845,18 +1936,20 @@ function setupHandlers() {
     if (event.altKey) {
       state.orbiting = true;
       state.selectionBox.active = false;
-    } else if (hit && !(event.metaKey || event.ctrlKey)) {
-      if (!isObjectSelected(hit.obj.objectId)) {
-        setSingleSelection(hit.obj.objectId);
-      } else if (state.selectedObjectId !== hit.obj.objectId) {
-        state.selectedObjectId = hit.obj.objectId;
+    } else if (hit && (singleObjectOverride || !event.metaKey)) {
+      if (!singleObjectOverride) {
+        if (!isObjectSelected(hit.obj.objectId)) {
+          setSingleSelection(hit.obj.objectId);
+        } else if (state.selectedObjectId !== hit.obj.objectId) {
+          state.selectedObjectId = hit.obj.objectId;
+        }
       }
       state.selectionBox.active = false;
       state.orbiting = false;
-      beginObjectDrag(hit.obj.objectId, pt, event.shiftKey);
+      beginObjectDrag(hit.obj.objectId, pt, event.shiftKey, { singleObjectOnly: singleObjectOverride });
       renderAll();
     } else {
-      const additive = event.metaKey || event.ctrlKey;
+      const additive = event.metaKey;
       state.orbiting = false;
       state.selectionBox.active = true;
       state.selectionBox.additive = additive;
@@ -1903,7 +1996,9 @@ function setupHandlers() {
           obj.y = nextY;
           patchByObjectId[objectId] = { y: nextY };
         }
-        livePropagateGroupLinks(previousByObjectId, patchByObjectId);
+        if (!state.dragSingleObjectOnly) {
+          livePropagateGroupLinks(previousByObjectId, patchByObjectId);
+        }
         renderInspector();
         renderManager();
         renderPanner();
@@ -1928,7 +2023,9 @@ function setupHandlers() {
             obj.z = nextZ;
             patchByObjectId[objectId] = { x: nextX, z: nextZ };
           }
-          livePropagateGroupLinks(previousByObjectId, patchByObjectId);
+          if (!state.dragSingleObjectOnly) {
+            livePropagateGroupLinks(previousByObjectId, patchByObjectId);
+          }
           renderInspector();
           renderManager();
           renderPanner();
@@ -2025,6 +2122,7 @@ function setupEventStream() {
 }
 
 async function start() {
+  setUiStatus("Connecting...");
   syncCameraInputs();
   setPage("panner");
   setupHandlers();
