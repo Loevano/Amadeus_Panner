@@ -90,3 +90,6 @@
 ## 2026-03-03 13:36 CET
 - Fixed jumpy group+selection drag behavior by avoiding duplicate group propagation when full group members are already in the direct drag patch set
 - Added API-level `propagateGroupLinks` control and disabled backend group re-propagation for drag batch updates to prevent double-apply
+
+## 2026-03-03 13:37 CET
+- Added `Groups` column to Object Manager table, showing each object's group memberships (and disabled group markers)

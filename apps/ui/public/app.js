@@ -1076,6 +1076,7 @@ function renderGroupsManager() {
 function renderManager() {
   syncSelectedIdsWithObjects();
   const objects = getObjects();
+  const groups = getObjectGroups();
   const selectedIds = selectedObjectTargets();
   els.managerObjectCount.textContent = `${objects.length} object${objects.length === 1 ? "" : "s"}`;
 
@@ -1117,6 +1118,10 @@ function renderManager() {
 
     const positionText = `${Number(obj.x).toFixed(1)}, ${Number(obj.y).toFixed(1)}, ${Number(obj.z).toFixed(1)}`;
     const color = normalizeHexColor(obj.color, DEFAULT_OBJECT_COLOR);
+    const groupLabels = groups
+      .filter((group) => Array.isArray(group.objectIds) && group.objectIds.includes(obj.objectId))
+      .map((group) => `${group.groupId}${isGroupEnabled(group) ? "" : " (off)"}`);
+    const groupText = groupLabels.length ? groupLabels.join(", ") : "-";
 
     row.innerHTML = `
       <td class="sel-cell"><input class="row-select-toggle" type="checkbox" ${rowIsSelected ? "checked" : ""} aria-label="Select ${escapeHtml(obj.objectId)}" /></td>
@@ -1124,6 +1129,7 @@ function renderManager() {
       <td>${escapeHtml(String(obj.type || DEFAULT_OBJECT_TYPE))}</td>
       <td><span class="color-chip" style="background:${escapeHtml(color)}"></span>${escapeHtml(color)}</td>
       <td>${escapeHtml(positionText)}</td>
+      <td class="groups-cell">${escapeHtml(groupText)}</td>
     `;
 
     const checkbox = row.querySelector(".row-select-toggle");

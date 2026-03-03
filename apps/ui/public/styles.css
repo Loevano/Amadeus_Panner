@@ -273,6 +273,11 @@ button:hover {
   text-align: center;
 }
 
+.manager-table td.groups-cell {
+  font-size: 0.86rem;
+  color: var(--muted);
+}
+
 .manager-table tbody tr {
   cursor: pointer;
 }
