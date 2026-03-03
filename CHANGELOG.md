@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-03-03 22:40 CET
+- Updated `README.md` implementation overview to match current UI/runtime capabilities:
+  - dedicated Action/Modulation/Object/Group manager views
+  - Action Groups and per-action LFO modulation controls
+  - explicit working-state vs Save Show persistence behavior
+- Updated `docs/ARCHITECTURE.md` to reflect current transport/runtime behavior:
+  - UI update channel uses SSE + status refresh (not WebSocket)
+  - control server maintains in-memory working state with explicit save-to-disk flow
+
 ## 2026-03-03 22:37 CET
 - Added `Create Group` button directly in Group Manager editor toolbar.
 - Wired Group Manager create flow to:

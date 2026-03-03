@@ -1,6 +1,6 @@
 # Amadeus Panner
 
-Runnable starter for a web-based Amadeus ART controller with OSC in/out, showfiles, scenes, and time-based actions.
+Runnable web-based Amadeus ART controller with OSC in/out, showfiles, scenes, actions, groups, and modulation.
 
 ## Quick Start
 
@@ -36,21 +36,27 @@ HOST=0.0.0.0 HTTP_PORT=8787 OSC_OUT_HOST=10.0.0.50 OSC_OUT_PORT=9000 OSC_IN_PORT
 
 ## What Is Implemented
 - Web UI with:
-  - Showfile load input.
-  - Scene recall buttons.
-  - Action start/stop/abort controls.
-  - Interactive perspective 3D panner with camera zoom, Option-drag orbit, drag marquee multi-select, and Cmd/Ctrl-click additive selection.
-  - Object Manager page with add, rename, type, color, remove, clear, and object-group controls.
-  - Live object list with selection sync between manager and panner/inspector.
+  - View tabs for `Panner`, `Action Manager`, `Modulation Manager`, `Object Manager`, and `Group Manager`.
+  - Interactive perspective 3D panner with camera zoom, Option-drag orbit, drag marquee multi-select, Cmd/Ctrl-click additive selection, and right-click quick mapping menu.
   - Object inspector (x/y/z/size/gain/mute/algorithm) with simultaneous apply to selected objects.
-  - Live debug event log (OSC in/out + system events).
+  - Object Manager with add/rename/type/color/remove/clear, list-based selection, and per-object `Exclude From All`.
+  - Group Manager with list + editor workflow (name/color/linked params/members), inline save/delete, and `Create Group`.
+  - Action Manager with list + setup workflow, create/save/save-as/delete, enable/disable, start/stop/abort, on-end chaining, and Action Groups.
+  - Modulation Manager with per-action LFO mapping (ID/object/param/wave/rate/depth/offset/phase/map-phase/enabled), global LFO toggle, and LFO debug table.
+  - Show Control with show load/save/save-as/new and scene load/save/save-as.
+  - Live debug event log (OSC in/out + system/runtime events).
 - Control server with:
-  - REST API for show/scene/object/action/group.
-  - OSC UDP outbound encoder.
-  - OSC UDP inbound decoder.
-  - OSC-triggered actions (`start`/`stop`/`abort`).
-  - Object groups with linked-parameter propagation across group members.
-  - Server-sent events stream for debug UI.
+  - REST API for show, scene, object, group, action, action-group, and LFO controls.
+  - OSC UDP outbound encoder and inbound decoder/router.
+  - OSC-triggered actions and action groups.
+  - Object groups with linked-parameter propagation.
+  - Action engine with chained actions and modulation application.
+  - Server-sent events stream for status/debug updates.
+
+## Working State And Save Behavior
+- UI edits apply immediately to in-memory runtime state (objects, groups, actions, action groups, and modulation settings).
+- Runtime changes are not auto-written to showfiles on every edit.
+- `Save Show` / `Save Show As` persists current working state to disk.
 
 ## Important Limitation
 - OSC address paths and parameter ranges are still scaffold defaults.

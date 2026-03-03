@@ -8,7 +8,7 @@
 
 ## Runtime Components
 1. UI Client (`apps/ui`)
-- Renders 3D space and object inspector.
+- Renders 3D space and manager views (objects, groups, actions, modulation).
 - Sends intent commands, never raw unvalidated OSC.
 - Shows runtime alarms and connection state.
 
@@ -17,6 +17,7 @@
 - Validates all commands against schema + safety limits.
 - Bridges UI commands to OSC out.
 - Ingests OSC in and publishes normalized events.
+- Maintains working state in memory; persistence is explicit via show save endpoints.
 
 3. Showfile Store (`showfiles`)
 - Stores show metadata, scene snapshots, and action timelines.
@@ -32,7 +33,7 @@
 3. Server updates runtime state.
 4. Server emits OSC out to ART.
 5. ART feedback via OSC in updates runtime state.
-6. UI receives updates through WebSocket subscription.
+6. UI receives status/debug updates through Server-Sent Events (SSE) and periodic status refresh.
 
 ## Stability Pattern
 - Fail closed: invalid values are rejected, never forwarded.
