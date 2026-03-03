@@ -43,6 +43,7 @@ VERSION_PATTERN = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
 COLOR_PATTERN = re.compile(r"^#[0-9a-fA-F]{6}$")
 DEFAULT_OBJECT_TYPE = "point"
 DEFAULT_OBJECT_COLOR = "#1c4f89"
+VIRTUAL_ALL_GROUP_ID = "all"
 LINKABLE_GROUP_PARAMS = {"x", "y", "z", "size", "gain", "mute", "algorithm", "type", "color"}
 RELATIVE_GROUP_PARAMS = {"x", "y", "z"}
 
@@ -124,6 +125,7 @@ def normalize_object(input_obj: Dict[str, Any], fallback_id: str) -> Dict[str, A
         "algorithm": str(input_obj.get("algorithm") or "default"),
         "type": str(input_obj.get("type") or DEFAULT_OBJECT_TYPE),
         "color": normalize_color(input_obj.get("color"), DEFAULT_OBJECT_COLOR),
+        "excludeFromAll": bool(input_obj.get("exclude_from_all") if "exclude_from_all" in input_obj else input_obj.get("excludeFromAll", False)),
     }
 
 
@@ -211,6 +213,7 @@ class Runtime:
         self.show: Optional[Dict[str, Any]] = None
         self.objects: Dict[str, Dict[str, Any]] = {}
         self.object_groups: Dict[str, Dict[str, Any]] = {}
+        self.groups_enabled = True
         self.active_scene_id: Optional[str] = None
         self.running_actions: Dict[str, Dict[str, Any]] = {}
 
@@ -326,6 +329,7 @@ class Runtime:
                 "show": show_payload,
                 "activeSceneId": self.active_scene_id,
                 "runningActions": sorted(self.running_actions.keys()),
+                "groupsEnabled": self.groups_enabled,
                 "objectGroups": list(self.object_groups.values()),
                 "objects": list(self.objects.values()),
             }
@@ -781,6 +785,8 @@ class Runtime:
         source: str = "api",
     ) -> Dict[str, Any]:
         normalized_group_id = normalize_object_id(group_id)
+        if normalized_group_id.lower() == VIRTUAL_ALL_GROUP_ID:
+            raise ValueError("Group ID 'all' is reserved")
         normalized_object_ids = sorted(
             set(normalize_object_id(object_id) for object_id in object_ids if str(object_id or "").strip())
         )
@@ -814,6 +820,8 @@ class Runtime:
 
     def update_object_group(self, group_id: str, patch: Dict[str, Any], source: str = "api") -> Dict[str, Any]:
         normalized_group_id = normalize_object_id(group_id)
+        if normalized_group_id.lower() == VIRTUAL_ALL_GROUP_ID:
+            raise ValueError("Group ID 'all' is reserved")
         with self.lock:
             if normalized_group_id not in self.object_groups:
                 raise ValueError(f"Group not found: {normalized_group_id}")
@@ -854,8 +862,25 @@ class Runtime:
         )
         return current
 
+    def set_groups_enabled(self, enabled: bool, source: str = "api") -> bool:
+        with self.lock:
+            self.groups_enabled = bool(enabled)
+            next_enabled = self.groups_enabled
+
+        self.emit_event(
+            "object_group",
+            {
+                "source": source,
+                "action": "master_enable",
+                "enabled": next_enabled,
+            },
+        )
+        return next_enabled
+
     def delete_object_group(self, group_id: str, source: str = "api") -> Dict[str, Any]:
         normalized_group_id = normalize_object_id(group_id)
+        if normalized_group_id.lower() == VIRTUAL_ALL_GROUP_ID:
+            raise ValueError("Group ID 'all' is reserved")
         with self.lock:
             if normalized_group_id not in self.object_groups:
                 raise ValueError(f"Group not found: {normalized_group_id}")
@@ -922,6 +947,8 @@ class Runtime:
         emit_osc: bool,
     ) -> None:
         with self.lock:
+            if not self.groups_enabled:
+                return
             groups_snapshot = [dict(group) for group in self.object_groups.values() if object_id in group["objectIds"]]
 
         for group in groups_snapshot:
@@ -1068,7 +1095,11 @@ class Runtime:
             merged = {**current, **patch, "objectId": object_id, "object_id": object_id}
             next_obj = normalize_object(merged, object_id)
 
-            changed = [k for k in ["x", "y", "z", "size", "gain", "mute", "algorithm", "type", "color"] if current.get(k) != next_obj.get(k)]
+            changed = [
+                k
+                for k in ["x", "y", "z", "size", "gain", "mute", "algorithm", "type", "color", "excludeFromAll"]
+                if current.get(k) != next_obj.get(k)
+            ]
             self.objects[object_id] = next_obj
 
         if emit_osc:
@@ -1483,6 +1514,13 @@ class Handler(BaseHTTPRequestHandler):
                     source="api",
                 )
                 self._send_json(HTTPStatus.OK, {"ok": True, "group": group, "status": RUNTIME.status()})
+                return
+
+            if path_name == "/api/groups/enabled":
+                body = self._read_json_body()
+                enabled = bool(body.get("enabled", True))
+                RUNTIME.set_groups_enabled(enabled, source="api")
+                self._send_json(HTTPStatus.OK, {"ok": True, "enabled": enabled, "status": RUNTIME.status()})
                 return
 
             if path_name.startswith("/api/groups/") and path_name.endswith("/update"):

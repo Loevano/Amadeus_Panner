@@ -8,6 +8,8 @@ const OBJECT_ID_RE = /^[A-Za-z0-9._-]{1,64}$/;
 const DEFAULT_OBJECT_TYPE = "point";
 const DEFAULT_OBJECT_COLOR = "#1c4f89";
 const RELATIVE_GROUP_PARAMS = new Set(["x", "y", "z"]);
+const VIRTUAL_ALL_GROUP_ID = "all";
+const VIRTUAL_ALL_GROUP_NAME = "All";
 
 const CAMERA_DEFAULT = {
   yawDeg: 35,
@@ -69,6 +71,7 @@ const els = {
   showInfo: document.getElementById("showInfo"),
   sceneButtons: document.getElementById("sceneButtons"),
   actionButtons: document.getElementById("actionButtons"),
+  enableGroupsToggle: document.getElementById("enableGroupsToggle"),
   selectionSummary: document.getElementById("selectionSummary"),
   groupsSummary: document.getElementById("groupsSummary"),
   groupsToggleList: document.getElementById("groupsToggleList"),
@@ -241,6 +244,9 @@ function sanitizeGroupId(raw, options = {}) {
   if (!OBJECT_ID_RE.test(candidate)) {
     throw new Error("Group ID must use letters/numbers/dot/underscore/dash (max 64 chars)");
   }
+  if (candidate.toLowerCase() === VIRTUAL_ALL_GROUP_ID) {
+    throw new Error(`Group ID "${VIRTUAL_ALL_GROUP_NAME}" is reserved`);
+  }
   return candidate;
 }
 
@@ -320,11 +326,34 @@ function getObjectGroups() {
   return Array.isArray(state.status?.objectGroups) ? state.status.objectGroups : [];
 }
 
+function areGroupsEnabled() {
+  return state.status?.groupsEnabled !== false;
+}
+
+function getVirtualAllGroup() {
+  const objectIds = getObjects()
+    .filter((obj) => !Boolean(obj.excludeFromAll))
+    .map((obj) => obj.objectId);
+  return {
+    groupId: VIRTUAL_ALL_GROUP_ID,
+    name: VIRTUAL_ALL_GROUP_NAME,
+    objectIds,
+    linkParams: [],
+    enabled: true,
+    virtual: true
+  };
+}
+
+function getSelectableGroups() {
+  if (!areGroupsEnabled()) return [];
+  return getObjectGroups().filter((group) => isGroupEnabled(group));
+}
+
 function expandSelectionByEnabledGroups(objectIds) {
   const queue = [];
   const seen = new Set();
   const expanded = [];
-  const enabledGroups = getObjectGroups().filter((group) => isGroupEnabled(group));
+  const enabledGroups = getSelectableGroups();
 
   for (const objectId of objectIds) {
     const normalized = String(objectId || "").trim();
@@ -437,7 +466,7 @@ function isGroupEnabled(group) {
 }
 
 function livePropagateGroupLinks(previousByObjectId, patchByObjectId) {
-  const groups = getObjectGroups().filter((group) => isGroupEnabled(group));
+  const groups = getSelectableGroups();
   if (!groups.length) return;
 
   const objectMap = new Map(getObjects().map((obj) => [obj.objectId, obj]));
@@ -981,21 +1010,34 @@ async function setGroupEnabled(groupId, enabled) {
   }
 }
 
+async function setGroupsEnabled(enabled) {
+  try {
+    await api("/api/groups/enabled", "POST", { enabled: Boolean(enabled) });
+    addLog(`groups ${enabled ? "enabled" : "disabled"}`);
+    await refreshStatus();
+  } catch (error) {
+    addLog(`groups master toggle failed: ${error.message}`);
+    await refreshStatus();
+  }
+}
+
 function renderGroupsPanel() {
   const groups = [...getObjectGroups()].sort((a, b) => String(a.groupId).localeCompare(String(b.groupId)));
+  const groupsEnabled = areGroupsEnabled();
+  els.enableGroupsToggle.checked = groupsEnabled;
   els.groupsToggleList.innerHTML = "";
 
   if (!groups.length) {
-    els.groupsSummary.textContent = "No groups";
+    els.groupsSummary.textContent = groupsEnabled ? "No groups" : "Groups disabled";
     const empty = document.createElement("p");
     empty.className = "muted";
-    empty.textContent = "Create groups in Object Manager.";
+    empty.textContent = groupsEnabled ? "Create groups in Object Manager." : "Enable groups to apply group links.";
     els.groupsToggleList.appendChild(empty);
     return;
   }
 
   const enabledCount = groups.filter((group) => isGroupEnabled(group)).length;
-  els.groupsSummary.textContent = `${enabledCount}/${groups.length} groups enabled`;
+  els.groupsSummary.textContent = groupsEnabled ? `${enabledCount}/${groups.length} groups enabled` : "Groups disabled";
 
   for (const group of groups) {
     const row = document.createElement("label");
@@ -1017,6 +1059,7 @@ function renderGroupsPanel() {
     const toggle = document.createElement("input");
     toggle.type = "checkbox";
     toggle.checked = isGroupEnabled(group);
+    toggle.disabled = !groupsEnabled;
     toggle.addEventListener("change", () => {
       void setGroupEnabled(group.groupId, toggle.checked);
     });
@@ -1081,6 +1124,8 @@ function renderManager() {
   syncSelectedIdsWithObjects();
   const objects = getObjects();
   const groups = getObjectGroups();
+  const allGroup = getVirtualAllGroup();
+  const allMembers = new Set(allGroup.objectIds);
   const selectedIds = selectedObjectTargets();
   els.managerObjectCount.textContent = `${objects.length} object${objects.length === 1 ? "" : "s"}`;
 
@@ -1125,7 +1170,11 @@ function renderManager() {
     const groupLabels = groups
       .filter((group) => Array.isArray(group.objectIds) && group.objectIds.includes(obj.objectId))
       .map((group) => `${group.groupId}${isGroupEnabled(group) ? "" : " (off)"}`);
+    if (allMembers.has(obj.objectId)) {
+      groupLabels.unshift(VIRTUAL_ALL_GROUP_NAME);
+    }
     const groupText = groupLabels.length ? groupLabels.join(", ") : "-";
+    const excludeFromAll = Boolean(obj.excludeFromAll);
 
     row.innerHTML = `
       <td class="sel-cell"><input class="row-select-toggle" type="checkbox" ${rowIsSelected ? "checked" : ""} aria-label="Select ${escapeHtml(obj.objectId)}" /></td>
@@ -1134,6 +1183,7 @@ function renderManager() {
       <td><span class="color-chip" style="background:${escapeHtml(color)}"></span>${escapeHtml(color)}</td>
       <td>${escapeHtml(positionText)}</td>
       <td class="groups-cell">${escapeHtml(groupText)}</td>
+      <td class="all-exclude-cell"><input class="row-exclude-all-toggle" type="checkbox" ${excludeFromAll ? "checked" : ""} aria-label="Exclude ${escapeHtml(obj.objectId)} from All" /></td>
     `;
 
     const checkbox = row.querySelector(".row-select-toggle");
@@ -1144,6 +1194,23 @@ function renderManager() {
       checkbox.addEventListener("change", () => {
         toggleSelection(obj.objectId);
         renderAll();
+      });
+    }
+
+    const excludeToggle = row.querySelector(".row-exclude-all-toggle");
+    if (excludeToggle) {
+      excludeToggle.addEventListener("click", (event) => {
+        event.stopPropagation();
+      });
+      excludeToggle.addEventListener("change", async () => {
+        try {
+          await api(`/api/object/${encodeURIComponent(obj.objectId)}`, "POST", { excludeFromAll: excludeToggle.checked });
+          addLog(`object ${excludeToggle.checked ? "excluded" : "included"} in All -> ${obj.objectId}`);
+          await refreshStatus();
+        } catch (error) {
+          addLog(`exclude-from-all failed (${obj.objectId}): ${error.message}`);
+          await refreshStatus();
+        }
       });
     }
 
@@ -1652,6 +1719,10 @@ function setupHandlers() {
 
   els.newShowBtn.addEventListener("click", () => {
     void createNewShow();
+  });
+
+  els.enableGroupsToggle.addEventListener("change", () => {
+    void setGroupsEnabled(els.enableGroupsToggle.checked);
   });
 
   els.objectSelect.addEventListener("change", () => {

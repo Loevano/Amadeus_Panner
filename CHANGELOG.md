@@ -98,3 +98,8 @@
 - Added Show Control actions in UI: `Load Show`, `Save Show`, `Save Show As`, and `Create New Show`
 - Added server endpoints `POST /api/show/save` and `POST /api/show/new`
 - Implemented schema-safe showfile writing with scene/action file generation and validation before save completes
+
+## 2026-03-03 14:05 CET
+- Added Groups panel master toggle (`Enable Groups`) to globally enable/disable group-link behavior
+- Added hidden virtual `All` group membership model and surfaced it in Object Manager group labels
+- Added per-object `Exclude From All` toggle in Object Manager table with runtime API support (`excludeFromAll`)

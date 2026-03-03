@@ -78,7 +78,13 @@
     </section>
 
     <section class="panel groups-panel">
-      <h2>Groups</h2>
+      <div class="panel-header-row">
+        <h2>Groups</h2>
+        <label class="master-toggle">
+          <input id="enableGroupsToggle" type="checkbox" checked />
+          <span>Enable Groups</span>
+        </label>
+      </div>
       <p id="groupsSummary" class="muted">No groups</p>
       <div id="groupsToggleList" class="groups-toggle-list"></div>
     </section>
@@ -166,6 +172,7 @@
               <th>Color</th>
               <th>Position</th>
               <th>Groups</th>
+              <th>Exclude From All</th>
             </tr>
           </thead>
           <tbody id="managerObjectRows"></tbody>
