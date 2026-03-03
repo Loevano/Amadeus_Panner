@@ -7,7 +7,9 @@
   "properties": {
     "action_id": { "type": "string" },
     "name": { "type": "string", "minLength": 1 },
+    "enabled": { "type": "boolean", "default": true },
     "duration_ms": { "type": "integer", "minimum": 0 },
+    "on_end_action_id": { "type": "string" },
     "tracks": {
       "type": "array",
       "items": {
@@ -29,6 +31,23 @@
               "additionalProperties": false
             }
           }
+        },
+        "additionalProperties": false
+      }
+    },
+    "lfos": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["object_id", "parameter", "wave", "rate_hz", "depth", "offset", "phase_deg"],
+        "properties": {
+          "object_id": { "type": "string" },
+          "parameter": { "type": "string", "enum": ["x", "y", "z", "size", "gain"] },
+          "wave": { "type": "string", "enum": ["sine", "triangle", "square", "saw"] },
+          "rate_hz": { "type": "number", "minimum": 0 },
+          "depth": { "type": "number" },
+          "offset": { "type": "number" },
+          "phase_deg": { "type": "number" }
         },
         "additionalProperties": false
       }

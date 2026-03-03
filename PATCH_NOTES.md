@@ -104,12 +104,16 @@ Release-facing summary for operators and production notes.
   - `POST /api/groups/create`
   - `POST /api/groups/{id}/update`
   - `POST /api/groups/{id}/delete`
+- Group color selection and persistence in runtime (`create`/`update`) with color indicator chips in the Groups panel.
 
 ### Changed
 - Interaction model in panner:
   - `Option` + drag now controls camera orbit.
   - Normal drag now performs selection box instead of direct object movement.
 - Object manager now supports multi-selection context and group management controls.
+- Auto-naming now produces context-aware object and group IDs (type/selection-derived) and humanized default group names.
+- Enabled group colors now visually override member object colors in UI views; disabling groups restores each object's own color.
+- Groups panel now always shows the virtual `All` group pinned at the top as a locked system entry.
 
 ### Fixed
 - Eliminated object teleport risk tied to drag-mode switching by removing mixed move gestures in the panner and switching to explicit batch edit workflow.
@@ -117,3 +121,34 @@ Release-facing summary for operators and production notes.
 ### Known Issues
 - Group updates currently use current object selection as full membership replacement.
 - Group state remains runtime-only and is not yet persisted into showfile data.
+
+## v0.1.5 - 2026-03-03 - Action Manager, Chaining, And LFOs
+
+### Added
+- New `Action Manager` view with:
+  - action selection and transport (`Start`, `Stop`, `Abort`)
+  - action `Create`, `Save`, `Save As`, and `Delete`
+  - enable/disable action control
+  - `On End -> Next` chaining selection
+  - editable OSC trigger paths (`start`, `stop`, `abort`)
+- LFO authoring in Action Manager:
+  - target object + parameter (`x`, `y`, `z`, `size`, `gain`)
+  - waveform (`sine`, `triangle`, `square`, `saw`)
+  - rate, depth, offset, and phase
+  - add/remove/clear operations
+- Action lifecycle API endpoints:
+  - `POST /api/action/create`
+  - `POST /api/action/{id}/update`
+  - `POST /api/action/{id}/save-as`
+  - `POST /api/action/{id}/delete`
+
+### Changed
+- Runtime action model now supports `enabled`, `onEndActionId`, and `lfos`.
+- `/api/status` show payload now includes `show.actionsById` and `runningActionDetails` for richer manager UI state.
+- Action playback now applies LFO modulation each frame and can auto-trigger a next action on completion.
+
+### Fixed
+- Prevented disabled actions from being started via API/OSC trigger paths.
+
+### Known Issues
+- JS syntax check could not be executed in this environment because `node` is unavailable.

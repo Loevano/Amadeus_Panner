@@ -17,8 +17,9 @@
 - [x] Implement OSC in router for feedback + trigger endpoints.
 - [ ] Implement scene recall with atomic apply and rollback-on-fail.
 - [x] Implement baseline action timeline player with start/stop/abort.
+- [x] Add baseline Action Manager (create/save/save-as/delete), action enable/disable, on-end chaining, and per-object LFO modulation.
 - [ ] Update action manager to support start value, end value, runtime, and slope.
-- [ ] Add movement types (design pending), e.g. LFO, random panner, and physics bounce-to-position.
+- [ ] Expand movement types (design pending), e.g. random panner and physics bounce-to-position.
 - [ ] Add object-specific triggers that execute object-specific actions.
 - [ ] Add external timecode sync option for action clock.
 

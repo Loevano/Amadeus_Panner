@@ -44,9 +44,12 @@ VERSION_PATTERN = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
 COLOR_PATTERN = re.compile(r"^#[0-9a-fA-F]{6}$")
 DEFAULT_OBJECT_TYPE = "point"
 DEFAULT_OBJECT_COLOR = "#1c4f89"
+DEFAULT_GROUP_COLOR = "#2f7f7a"
 VIRTUAL_ALL_GROUP_ID = "all"
 LINKABLE_GROUP_PARAMS = {"x", "y", "z", "size", "gain", "mute", "algorithm", "type", "color"}
 RELATIVE_GROUP_PARAMS = {"x", "y", "z"}
+LFO_PARAMS = {"x", "y", "z", "size", "gain"}
+LFO_WAVES = {"sine", "triangle", "square", "saw"}
 
 
 def clamp(value: float, min_max: Tuple[float, float]) -> float:
@@ -80,6 +83,13 @@ def normalize_scene_id(value: Any) -> str:
     if not SCENE_ID_PATTERN.fullmatch(scene_id):
         raise ValueError("sceneId must use only letters, numbers, dot, underscore, dash (max 64 chars)")
     return scene_id
+
+
+def normalize_action_id(value: Any) -> str:
+    action_id = str(value or "").strip()
+    if not OBJECT_ID_PATTERN.fullmatch(action_id):
+        raise ValueError("actionId must use only letters, numbers, dot, underscore, dash (max 64 chars)")
+    return action_id
 
 
 def normalize_color(value: Any, default: str = DEFAULT_OBJECT_COLOR) -> str:
@@ -154,6 +164,103 @@ def normalize_object(input_obj: Dict[str, Any], fallback_id: str) -> Dict[str, A
         "type": str(input_obj.get("type") or DEFAULT_OBJECT_TYPE),
         "color": normalize_color(input_obj.get("color"), DEFAULT_OBJECT_COLOR),
         "excludeFromAll": bool(input_obj.get("exclude_from_all") if "exclude_from_all" in input_obj else input_obj.get("excludeFromAll", False)),
+    }
+
+
+def normalize_action_lfo(raw_lfo: Dict[str, Any]) -> Dict[str, Any]:
+    object_id = normalize_object_id(raw_lfo.get("object_id") if "object_id" in raw_lfo else raw_lfo.get("objectId"))
+    parameter = str(raw_lfo.get("parameter") or "").strip()
+    if parameter not in LFO_PARAMS:
+        raise ValueError(f"LFO parameter must be one of: {', '.join(sorted(LFO_PARAMS))}")
+
+    wave = str(raw_lfo.get("wave") or "sine").strip().lower()
+    if wave not in LFO_WAVES:
+        raise ValueError(f"LFO wave must be one of: {', '.join(sorted(LFO_WAVES))}")
+
+    rate_hz = max(0.0, to_float(raw_lfo.get("rate_hz") if "rate_hz" in raw_lfo else raw_lfo.get("rateHz"), 0.0))
+    depth = to_float(raw_lfo.get("depth"), 0.0)
+    offset = to_float(raw_lfo.get("offset"), 0.0)
+    phase_deg = to_float(raw_lfo.get("phase_deg") if "phase_deg" in raw_lfo else raw_lfo.get("phaseDeg"), 0.0)
+
+    return {
+        "objectId": object_id,
+        "parameter": parameter,
+        "wave": wave,
+        "rateHz": rate_hz,
+        "depth": depth,
+        "offset": offset,
+        "phaseDeg": phase_deg,
+    }
+
+
+def normalize_action(raw_action: Dict[str, Any], fallback_id: str) -> Dict[str, Any]:
+    action_id = normalize_action_id(raw_action.get("action_id") or raw_action.get("actionId") or fallback_id)
+    osc_triggers_raw = raw_action.get("osc_triggers") if "osc_triggers" in raw_action else raw_action.get("oscTriggers")
+    if not isinstance(osc_triggers_raw, dict):
+        osc_triggers_raw = {}
+
+    tracks = raw_action.get("tracks", [])
+    if not isinstance(tracks, list):
+        tracks = []
+
+    on_end_action_id = str(
+        raw_action.get("on_end_action_id") if "on_end_action_id" in raw_action else raw_action.get("onEndActionId", "")
+    ).strip()
+    if on_end_action_id:
+        on_end_action_id = normalize_action_id(on_end_action_id)
+
+    lfos_raw = raw_action.get("lfos", [])
+    if not isinstance(lfos_raw, list):
+        lfos_raw = []
+
+    normalized_lfos: List[Dict[str, Any]] = []
+    for raw_lfo in lfos_raw:
+        if not isinstance(raw_lfo, dict):
+            continue
+        normalized_lfos.append(normalize_action_lfo(raw_lfo))
+
+    return {
+        "actionId": action_id,
+        "name": str(raw_action.get("name") or action_id),
+        "enabled": bool(raw_action.get("enabled", True)),
+        "durationMs": int(max(0.0, to_float(raw_action.get("duration_ms") if "duration_ms" in raw_action else raw_action.get("durationMs"), 0.0))),
+        "tracks": tracks,
+        "lfos": normalized_lfos,
+        "onEndActionId": on_end_action_id,
+        "oscTriggers": {
+            "start": str(osc_triggers_raw.get("start", "")),
+            "stop": str(osc_triggers_raw.get("stop", "")),
+            "abort": str(osc_triggers_raw.get("abort", "")),
+        },
+    }
+
+
+def lfo_to_raw(lfo: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "object_id": normalize_object_id(lfo.get("objectId")),
+        "parameter": str(lfo.get("parameter") or ""),
+        "wave": str(lfo.get("wave") or "sine"),
+        "rate_hz": to_float(lfo.get("rateHz"), 0.0),
+        "depth": to_float(lfo.get("depth"), 0.0),
+        "offset": to_float(lfo.get("offset"), 0.0),
+        "phase_deg": to_float(lfo.get("phaseDeg"), 0.0),
+    }
+
+
+def action_to_raw(action: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "action_id": normalize_action_id(action.get("actionId")),
+        "name": str(action.get("name") or action.get("actionId") or "action"),
+        "enabled": bool(action.get("enabled", True)),
+        "duration_ms": int(max(0.0, to_float(action.get("durationMs"), 0.0))),
+        "on_end_action_id": str(action.get("onEndActionId") or ""),
+        "tracks": action.get("tracks", []) if isinstance(action.get("tracks"), list) else [],
+        "lfos": [lfo_to_raw(lfo) for lfo in (action.get("lfos") if isinstance(action.get("lfos"), list) else [])],
+        "osc_triggers": {
+            "start": str(action.get("oscTriggers", {}).get("start", "")),
+            "stop": str(action.get("oscTriggers", {}).get("stop", "")),
+            "abort": str(action.get("oscTriggers", {}).get("abort", "")),
+        },
     }
 
 
@@ -338,7 +445,16 @@ class Runtime:
                     "loadedAt": self.show["loadedAt"],
                     "sceneIds": sorted(self.show["scenesById"].keys()),
                     "actionIds": sorted(self.show["actionsById"].keys()),
+                    "actionsById": json.loads(json.dumps(self.show["actionsById"])),
                 }
+
+            running_action_details = {
+                action_id: {
+                    "source": str(payload.get("source") or ""),
+                    "startedAtMs": int(to_float(payload.get("startedAtMs"), 0.0)),
+                }
+                for action_id, payload in self.running_actions.items()
+            }
 
             return {
                 "mode": CONFIG["mode"],
@@ -357,6 +473,7 @@ class Runtime:
                 "show": show_payload,
                 "activeSceneId": self.active_scene_id,
                 "runningActions": sorted(self.running_actions.keys()),
+                "runningActionDetails": running_action_details,
                 "groupsEnabled": self.groups_enabled,
                 "objectGroups": list(self.object_groups.values()),
                 "objects": list(self.objects.values()),
@@ -410,6 +527,16 @@ class Runtime:
             "mute": bool(obj.get("mute", False)),
             "algorithm": str(obj.get("algorithm") or "default"),
         }
+
+    def _sanitize_action_links(self, actions_by_id: Dict[str, Dict[str, Any]]) -> None:
+        known_ids = set(actions_by_id.keys())
+        for action_id, action in actions_by_id.items():
+            on_end_action_id = str(action.get("onEndActionId") or "").strip()
+            if not on_end_action_id:
+                action["onEndActionId"] = ""
+                continue
+            if on_end_action_id == action_id or on_end_action_id not in known_ids:
+                action["onEndActionId"] = ""
 
     def _derive_show_id_from_path(self, show_path: Path) -> str:
         if show_path.name.lower() == "show.json":
@@ -540,26 +667,14 @@ class Runtime:
 
         normalized_actions: Dict[str, Dict[str, Any]] = {}
         for action_key, raw_action in input_actions.items():
-            action_id = str((raw_action or {}).get("actionId") or action_key).strip()
+            raw_action_input = raw_action if isinstance(raw_action, dict) else {}
+            action_id = str(raw_action_input.get("actionId") or raw_action_input.get("action_id") or action_key).strip()
             if not action_id:
                 continue
-            tracks = (raw_action or {}).get("tracks", [])
-            if not isinstance(tracks, list):
-                tracks = []
-            osc_triggers_raw = (raw_action or {}).get("oscTriggers", {})
-            if not isinstance(osc_triggers_raw, dict):
-                osc_triggers_raw = {}
-            normalized_actions[action_id] = {
-                "actionId": action_id,
-                "name": str((raw_action or {}).get("name") or action_id),
-                "durationMs": int(to_float((raw_action or {}).get("durationMs"), 0.0)),
-                "tracks": tracks,
-                "oscTriggers": {
-                    "start": str(osc_triggers_raw.get("start", "")),
-                    "stop": str(osc_triggers_raw.get("stop", "")),
-                    "abort": str(osc_triggers_raw.get("abort", "")),
-                },
-            }
+            normalized = normalize_action(raw_action_input, action_id)
+            normalized_actions[normalized["actionId"]] = normalized
+
+        self._sanitize_action_links(normalized_actions)
 
         default_scene_id = str(show_snapshot.get("defaultSceneId") or "").strip()
         if not default_scene_id:
@@ -628,32 +743,12 @@ class Runtime:
             action = normalized_actions[action_id]
             action_file = str(action_files.get(action_id) or f"actions/{action_id}.json").strip().replace("\\", "/")
             absolute_action_path = self._resolve_show_asset_path(show_dir, action_file, f"Action '{action_id}'")
-            action_payload = {
-                "action_id": action_id,
-                "name": str(action.get("name") or action_id),
-                "duration_ms": int(to_float(action.get("durationMs"), 0.0)),
-                "tracks": action.get("tracks", []),
-                "osc_triggers": {
-                    "start": str(action.get("oscTriggers", {}).get("start", "")),
-                    "stop": str(action.get("oscTriggers", {}).get("stop", "")),
-                    "abort": str(action.get("oscTriggers", {}).get("abort", "")),
-                },
-            }
+            action_payload = action_to_raw(action)
             self._write_json_atomic(absolute_action_path, action_payload)
             action_refs.append({"action_id": action_id, "file": action_file})
             updated_action_files[action_id] = action_file
 
-            normalized_actions[action_id] = {
-                "actionId": action_id,
-                "name": action_payload["name"],
-                "durationMs": action_payload["duration_ms"],
-                "tracks": action_payload["tracks"],
-                "oscTriggers": {
-                    "start": action_payload["osc_triggers"]["start"],
-                    "stop": action_payload["osc_triggers"]["stop"],
-                    "abort": action_payload["osc_triggers"]["abort"],
-                },
-            }
+            normalized_actions[action_id] = normalize_action(action_payload, action_id)
 
         show_payload = {
             "show_id": show_id,
@@ -729,17 +824,8 @@ class Runtime:
 
         actions_by_id: Dict[str, Dict[str, Any]] = {}
         for action_id, raw_action in bundle.actions_by_id.items():
-            actions_by_id[action_id] = {
-                "actionId": action_id,
-                "name": str(raw_action.get("name", action_id)),
-                "durationMs": int(to_float(raw_action.get("duration_ms"), 0.0)),
-                "tracks": raw_action.get("tracks", []),
-                "oscTriggers": {
-                    "start": str(raw_action.get("osc_triggers", {}).get("start", "")),
-                    "stop": str(raw_action.get("osc_triggers", {}).get("stop", "")),
-                    "abort": str(raw_action.get("osc_triggers", {}).get("abort", "")),
-                },
-            }
+            actions_by_id[action_id] = normalize_action(raw_action, action_id)
+        self._sanitize_action_links(actions_by_id)
 
         with self.lock:
             running_action_ids = list(self.running_actions.keys())
@@ -815,6 +901,7 @@ class Runtime:
         name: str,
         object_ids: List[str],
         link_params: List[str],
+        color: Any = DEFAULT_GROUP_COLOR,
         enabled: bool = True,
         source: str = "api",
     ) -> Dict[str, Any]:
@@ -838,6 +925,7 @@ class Runtime:
                 "name": group_name,
                 "objectIds": normalized_object_ids,
                 "linkParams": normalized_link_params,
+                "color": normalize_color(color, DEFAULT_GROUP_COLOR),
                 "enabled": bool(enabled),
             }
             self.object_groups[normalized_group_id] = group
@@ -883,6 +971,8 @@ class Runtime:
                 current["linkParams"] = normalize_link_params(raw_params)
             if "enabled" in patch:
                 current["enabled"] = bool(patch.get("enabled"))
+            if "color" in patch:
+                current["color"] = normalize_color(patch.get("color"), DEFAULT_GROUP_COLOR)
 
             self.object_groups[normalized_group_id] = current
 
@@ -1266,18 +1356,181 @@ class Runtime:
         )
         return new_scene
 
+    def create_action(self, action_id: str, patch: Dict[str, Any], source: str = "api") -> Dict[str, Any]:
+        normalized_action_id = normalize_action_id(action_id)
+        patch_input = patch if isinstance(patch, dict) else {}
+        with self.lock:
+            if not self.show:
+                raise ValueError("No show loaded")
+            if normalized_action_id in self.show["actionsById"]:
+                raise ValueError(f"Action already exists: {normalized_action_id}")
+
+            created = normalize_action({**patch_input, "actionId": normalized_action_id}, normalized_action_id)
+            actions_by_id = dict(self.show["actionsById"])
+            actions_by_id[normalized_action_id] = created
+            self._sanitize_action_links(actions_by_id)
+            self.show["actionsById"] = actions_by_id
+
+            action_files = self.show.get("actionFiles")
+            if not isinstance(action_files, dict):
+                action_files = {}
+            action_files[normalized_action_id] = str(action_files.get(normalized_action_id) or f"actions/{normalized_action_id}.json")
+            self.show["actionFiles"] = action_files
+
+        self.save_show(capture_runtime_scene=False)
+        self.emit_event(
+            "action",
+            {"actionId": normalized_action_id, "state": "created", "source": source, "action": created},
+        )
+        return created
+
+    def update_action(self, action_id: str, patch: Dict[str, Any], source: str = "api") -> Dict[str, Any]:
+        normalized_action_id = normalize_action_id(action_id)
+        patch_input = patch if isinstance(patch, dict) else {}
+        should_stop = False
+
+        with self.lock:
+            if not self.show:
+                raise ValueError("No show loaded")
+            current = self.show["actionsById"].get(normalized_action_id)
+            if not current:
+                raise ValueError(f"Action not found: {normalized_action_id}")
+
+            merged = {**current, **patch_input, "actionId": normalized_action_id}
+            if "osc_triggers" in patch_input and "oscTriggers" not in patch_input:
+                merged["oscTriggers"] = patch_input.get("osc_triggers")
+            if "on_end_action_id" in patch_input and "onEndActionId" not in patch_input:
+                merged["onEndActionId"] = patch_input.get("on_end_action_id")
+
+            updated = normalize_action(merged, normalized_action_id)
+
+            actions_by_id = dict(self.show["actionsById"])
+            actions_by_id[normalized_action_id] = updated
+            self._sanitize_action_links(actions_by_id)
+            self.show["actionsById"] = actions_by_id
+
+            if current.get("enabled", True) and not updated.get("enabled", True):
+                should_stop = normalized_action_id in self.running_actions
+
+        if should_stop:
+            self.stop_action(normalized_action_id, "disabled")
+
+        self.save_show(capture_runtime_scene=False)
+        self.emit_event(
+            "action",
+            {"actionId": normalized_action_id, "state": "updated", "source": source, "action": updated},
+        )
+        return updated
+
+    def save_action_as(
+        self,
+        source_action_id: str,
+        new_action_id: str,
+        patch: Optional[Dict[str, Any]] = None,
+        source: str = "api",
+    ) -> Dict[str, Any]:
+        normalized_source_action_id = normalize_action_id(source_action_id)
+        normalized_new_action_id = normalize_action_id(new_action_id)
+        if normalized_new_action_id == normalized_source_action_id:
+            raise ValueError("newActionId must be different from source action")
+
+        patch_input = patch if isinstance(patch, dict) else {}
+        with self.lock:
+            if not self.show:
+                raise ValueError("No show loaded")
+            source_action = self.show["actionsById"].get(normalized_source_action_id)
+            if not source_action:
+                raise ValueError(f"Action not found: {normalized_source_action_id}")
+            if normalized_new_action_id in self.show["actionsById"]:
+                raise ValueError(f"Action already exists: {normalized_new_action_id}")
+
+            merged = {**source_action, **patch_input, "actionId": normalized_new_action_id}
+            if "osc_triggers" in patch_input and "oscTriggers" not in patch_input:
+                merged["oscTriggers"] = patch_input.get("osc_triggers")
+            if "on_end_action_id" in patch_input and "onEndActionId" not in patch_input:
+                merged["onEndActionId"] = patch_input.get("on_end_action_id")
+
+            copied = normalize_action(merged, normalized_new_action_id)
+            actions_by_id = dict(self.show["actionsById"])
+            actions_by_id[normalized_new_action_id] = copied
+            self._sanitize_action_links(actions_by_id)
+            self.show["actionsById"] = actions_by_id
+
+            action_files = self.show.get("actionFiles")
+            if not isinstance(action_files, dict):
+                action_files = {}
+            action_files[normalized_new_action_id] = f"actions/{normalized_new_action_id}.json"
+            self.show["actionFiles"] = action_files
+
+        self.save_show(capture_runtime_scene=False)
+        self.emit_event(
+            "action",
+            {
+                "actionId": normalized_new_action_id,
+                "state": "saved_as",
+                "source": source,
+                "fromActionId": normalized_source_action_id,
+                "action": copied,
+            },
+        )
+        return copied
+
+    def delete_action(self, action_id: str, source: str = "api") -> Dict[str, Any]:
+        normalized_action_id = normalize_action_id(action_id)
+        was_running = False
+
+        with self.lock:
+            if not self.show:
+                raise ValueError("No show loaded")
+            current = self.show["actionsById"].get(normalized_action_id)
+            if not current:
+                raise ValueError(f"Action not found: {normalized_action_id}")
+
+            actions_by_id: Dict[str, Dict[str, Any]] = {}
+            for existing_id, existing_action in self.show["actionsById"].items():
+                if existing_id == normalized_action_id:
+                    continue
+                action_copy = dict(existing_action)
+                if str(action_copy.get("onEndActionId") or "").strip() == normalized_action_id:
+                    action_copy["onEndActionId"] = ""
+                actions_by_id[existing_id] = action_copy
+            self._sanitize_action_links(actions_by_id)
+            self.show["actionsById"] = actions_by_id
+
+            action_files = self.show.get("actionFiles")
+            if not isinstance(action_files, dict):
+                action_files = {}
+            action_files.pop(normalized_action_id, None)
+            self.show["actionFiles"] = action_files
+
+            was_running = normalized_action_id in self.running_actions
+            deleted = dict(current)
+
+        if was_running:
+            self.stop_action(normalized_action_id, "deleted")
+
+        self.save_show(capture_runtime_scene=False)
+        self.emit_event(
+            "action",
+            {"actionId": normalized_action_id, "state": "deleted", "source": source},
+        )
+        return deleted
+
     def _interpolate_numeric(self, keyframes: List[Dict[str, Any]], elapsed_ms: int) -> Optional[float]:
         if not keyframes:
             return None
-        frames = sorted(keyframes, key=lambda f: to_float(f.get("time_ms"), 0.0))
-        if elapsed_ms <= to_float(frames[0].get("time_ms"), 0.0):
+        frames = sorted(
+            keyframes,
+            key=lambda f: to_float(f.get("time_ms") if "time_ms" in f else f.get("timeMs"), 0.0),
+        )
+        if elapsed_ms <= to_float(frames[0].get("time_ms") if "time_ms" in frames[0] else frames[0].get("timeMs"), 0.0):
             return to_float(frames[0].get("value"), 0.0)
 
         for idx in range(len(frames) - 1):
             a = frames[idx]
             b = frames[idx + 1]
-            t0 = to_float(a.get("time_ms"), 0.0)
-            t1 = to_float(b.get("time_ms"), 0.0)
+            t0 = to_float(a.get("time_ms") if "time_ms" in a else a.get("timeMs"), 0.0)
+            t1 = to_float(b.get("time_ms") if "time_ms" in b else b.get("timeMs"), 0.0)
             if t0 <= elapsed_ms <= t1:
                 v0 = to_float(a.get("value"), 0.0)
                 v1 = to_float(b.get("value"), v0)
@@ -1296,7 +1549,19 @@ class Runtime:
 
         return to_float(frames[-1].get("value"), 0.0)
 
-    def _apply_action_frame(self, action: Dict[str, Any], elapsed_ms: int) -> None:
+    def _lfo_sample(self, wave: str, phase_cycles: float) -> float:
+        phase = phase_cycles - math.floor(phase_cycles)
+        if wave == "triangle":
+            return 1.0 - (4.0 * abs(phase - 0.5))
+        if wave == "square":
+            return 1.0 if phase < 0.5 else -1.0
+        if wave == "saw":
+            return (2.0 * phase) - 1.0
+        return math.sin(2.0 * math.pi * phase)
+
+    def _apply_action_frame(self, action: Dict[str, Any], elapsed_ms: int, lfo_bases: Dict[str, float]) -> None:
+        patch_by_object_id: Dict[str, Dict[str, Any]] = {}
+
         for track in action.get("tracks", []):
             object_id = str(track.get("object_id") or track.get("objectId") or "")
             parameter = str(track.get("parameter") or "")
@@ -1309,11 +1574,15 @@ class Runtime:
                     continue
                 value: Any = bool(numeric >= 0.5)
             elif parameter == "algorithm":
-                frames = sorted(track.get("keyframes", []), key=lambda f: to_float(f.get("time_ms"), 0.0))
+                frames = sorted(
+                    track.get("keyframes", []),
+                    key=lambda f: to_float(f.get("time_ms") if "time_ms" in f else f.get("timeMs"), 0.0),
+                )
                 current = self.objects.get(object_id, default_object(object_id))["algorithm"]
                 value = current
                 for frame in frames:
-                    if elapsed_ms >= to_float(frame.get("time_ms"), 0.0):
+                    frame_time = to_float(frame.get("time_ms") if "time_ms" in frame else frame.get("timeMs"), 0.0)
+                    if elapsed_ms >= frame_time:
                         value = str(frame.get("value", current))
             else:
                 numeric = self._interpolate_numeric(track.get("keyframes", []), elapsed_ms)
@@ -1321,17 +1590,75 @@ class Runtime:
                     continue
                 value = numeric
 
-            self.update_object(object_id, {parameter: value}, source="action", emit_osc=True)
+            patch = patch_by_object_id.get(object_id)
+            if not patch:
+                patch = {}
+                patch_by_object_id[object_id] = patch
+            patch[parameter] = value
+
+        for lfo in action.get("lfos", []):
+            object_id = str(lfo.get("objectId") or lfo.get("object_id") or "").strip()
+            parameter = str(lfo.get("parameter") or "").strip()
+            if not object_id or parameter not in LFO_PARAMS:
+                continue
+
+            lfo_key = f"{object_id}:{parameter}"
+            if lfo_key not in lfo_bases:
+                with self.lock:
+                    base_object = self.objects.get(object_id, default_object(object_id))
+                    lfo_bases[lfo_key] = to_float(base_object.get(parameter), 0.0)
+            base_value = lfo_bases.get(lfo_key, 0.0)
+
+            wave = str(lfo.get("wave") or "sine").strip().lower()
+            if wave not in LFO_WAVES:
+                wave = "sine"
+            rate_hz = max(0.0, to_float(lfo.get("rateHz"), 0.0))
+            depth = to_float(lfo.get("depth"), 0.0)
+            offset = to_float(lfo.get("offset"), 0.0)
+            phase_deg = to_float(lfo.get("phaseDeg"), 0.0)
+
+            phase_cycles = (elapsed_ms / 1000.0) * rate_hz + (phase_deg / 360.0)
+            sample = self._lfo_sample(wave, phase_cycles)
+            value = base_value + offset + (depth * sample)
+            if parameter in OBJECT_LIMITS:
+                value = clamp(value, OBJECT_LIMITS[parameter])
+
+            patch = patch_by_object_id.get(object_id)
+            if not patch:
+                patch = {}
+                patch_by_object_id[object_id] = patch
+            patch[parameter] = value
+
+        for object_id, patch in patch_by_object_id.items():
+            self.update_object(
+                object_id,
+                patch,
+                source=f"action:{action.get('actionId') or 'runtime'}",
+                emit_osc=True,
+                propagate_group_links=False,
+            )
 
     def start_action(self, action_id: str, source: str = "api") -> None:
+        normalized_action_id = normalize_action_id(action_id)
         with self.lock:
-            if action_id in self.running_actions:
+            if normalized_action_id in self.running_actions:
                 return
             if not self.show:
                 raise ValueError("No show loaded")
-            action = self.show["actionsById"].get(action_id)
+            action = self.show["actionsById"].get(normalized_action_id)
             if not action:
-                raise ValueError(f"Action not found: {action_id}")
+                raise ValueError(f"Action not found: {normalized_action_id}")
+            if not bool(action.get("enabled", True)):
+                raise ValueError(f"Action is disabled: {normalized_action_id}")
+            action_snapshot = json.loads(json.dumps(action))
+            lfo_bases: Dict[str, float] = {}
+            for lfo in action_snapshot.get("lfos", []):
+                object_id = str(lfo.get("objectId") or "").strip()
+                parameter = str(lfo.get("parameter") or "").strip()
+                if not object_id or parameter not in LFO_PARAMS:
+                    continue
+                base_object = self.objects.get(object_id, default_object(object_id))
+                lfo_bases[f"{object_id}:{parameter}"] = to_float(base_object.get(parameter), 0.0)
             stop_flag = threading.Event()
 
         started_at = time.monotonic()
@@ -1339,35 +1666,78 @@ class Runtime:
         def run() -> None:
             while not stop_flag.is_set():
                 elapsed_ms = int((time.monotonic() - started_at) * 1000)
-                self._apply_action_frame(action, elapsed_ms)
-                if elapsed_ms >= action.get("durationMs", 0):
-                    self.stop_action(action_id, "complete")
+                self._apply_action_frame(action_snapshot, elapsed_ms, lfo_bases)
+                if elapsed_ms >= action_snapshot.get("durationMs", 0):
+                    self.stop_action(normalized_action_id, "complete")
                     return
                 time.sleep(0.05)
 
         worker = threading.Thread(target=run, daemon=True)
         with self.lock:
-            self.running_actions[action_id] = {
+            self.running_actions[normalized_action_id] = {
                 "thread": worker,
                 "stopFlag": stop_flag,
                 "startedAtMs": int(time.time() * 1000),
                 "source": source,
+                "action": action_snapshot,
             }
 
         worker.start()
-        self.emit_event("action", {"actionId": action_id, "state": "started", "source": source})
+        self.emit_event("action", {"actionId": normalized_action_id, "state": "started", "source": source})
 
-    def stop_action(self, action_id: str, reason: str = "stop") -> None:
+    def _finish_action(self, action_id: str, reason: str = "stop", source: str = "api") -> None:
+        normalized_action_id = normalize_action_id(action_id)
         with self.lock:
-            running = self.running_actions.pop(action_id, None)
+            running = self.running_actions.pop(normalized_action_id, None)
         if not running:
             return
+
         running["stopFlag"].set()
-        self.emit_event("action", {"actionId": action_id, "state": "stopped", "reason": reason})
+        self.emit_event(
+            "action",
+            {"actionId": normalized_action_id, "state": "stopped", "reason": reason, "source": source},
+        )
+
+        if reason != "complete":
+            return
+
+        action = running.get("action")
+        if not isinstance(action, dict):
+            return
+        next_action_id = str(action.get("onEndActionId") or "").strip()
+        if not next_action_id:
+            return
+        if next_action_id == normalized_action_id:
+            self.emit_event(
+                "action",
+                {"actionId": normalized_action_id, "state": "chain_skipped", "reason": "self_chain"},
+            )
+            return
+
+        try:
+            self.start_action(next_action_id, source=f"on-end:{normalized_action_id}")
+            self.emit_event(
+                "action",
+                {"actionId": normalized_action_id, "state": "chained", "nextActionId": next_action_id},
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.emit_event(
+                "action",
+                {
+                    "actionId": normalized_action_id,
+                    "state": "chain_failed",
+                    "nextActionId": next_action_id,
+                    "error": str(exc),
+                },
+            )
+
+    def stop_action(self, action_id: str, reason: str = "stop") -> None:
+        self._finish_action(action_id, reason=reason, source="api")
 
     def abort_action(self, action_id: str, source: str = "api") -> None:
-        self.stop_action(action_id, "abort")
-        self.emit_event("action", {"actionId": action_id, "state": "aborted", "source": source})
+        normalized_action_id = normalize_action_id(action_id)
+        self._finish_action(normalized_action_id, reason="abort", source=source)
+        self.emit_event("action", {"actionId": normalized_action_id, "state": "aborted", "source": source})
 
     def _handle_inbound_osc(self, message: Dict[str, Any], source_addr: Tuple[str, int]) -> None:
         address = str(message.get("address", ""))
@@ -1669,6 +2039,7 @@ class Handler(BaseHTTPRequestHandler):
                     name=str(body.get("name") or group_id),
                     object_ids=body.get("objectIds") or body.get("object_ids") or [],
                     link_params=body.get("linkParams") or body.get("link_params") or [],
+                    color=body.get("color"),
                     enabled=bool(body.get("enabled", True)),
                     source="api",
                 )
@@ -1704,6 +2075,13 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(HTTPStatus.OK, {"ok": True, "groupId": deleted["groupId"], "status": RUNTIME.status()})
                 return
 
+            if path_name == "/api/action/create":
+                body = self._read_json_body()
+                action_id = normalize_action_id(body.get("actionId") or body.get("action_id"))
+                action = RUNTIME.create_action(action_id, body, source="api")
+                self._send_json(HTTPStatus.OK, {"ok": True, "action": action, "status": RUNTIME.status()})
+                return
+
             if path_name.startswith("/api/action/"):
                 parts = path_name.split("/")
                 if len(parts) < 5:
@@ -1711,8 +2089,34 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 action_id = unquote(parts[3])
                 command = parts[4]
-                _ = self._read_json_body()
+                body = self._read_json_body()
 
+                if command == "update":
+                    action = RUNTIME.update_action(action_id, body, source="api")
+                    self._send_json(HTTPStatus.OK, {"ok": True, "action": action, "actionId": action["actionId"], "command": command, "status": RUNTIME.status()})
+                    return
+                if command == "save-as":
+                    new_action_id = body.get("newActionId") or body.get("new_action_id")
+                    patch = dict(body)
+                    patch.pop("newActionId", None)
+                    patch.pop("new_action_id", None)
+                    action = RUNTIME.save_action_as(action_id, str(new_action_id or ""), patch=patch, source="api")
+                    self._send_json(
+                        HTTPStatus.OK,
+                        {
+                            "ok": True,
+                            "action": action,
+                            "actionId": action["actionId"],
+                            "fromActionId": normalize_action_id(action_id),
+                            "command": command,
+                            "status": RUNTIME.status(),
+                        },
+                    )
+                    return
+                if command == "delete":
+                    deleted = RUNTIME.delete_action(action_id, source="api")
+                    self._send_json(HTTPStatus.OK, {"ok": True, "actionId": deleted["actionId"], "command": command, "status": RUNTIME.status()})
+                    return
                 if command == "start":
                     RUNTIME.start_action(action_id, "api")
                 elif command == "stop":

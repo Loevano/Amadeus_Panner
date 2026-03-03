@@ -139,6 +139,18 @@
 ## 2026-03-03 19:15 CET
 - Fixed group color-link UX in apps/ui/public/app.js: group color now applies to member visuals only when 'Color' is enabled in linked parameters.
 
+## 2026-03-03 19:42 CET
+- Added Action Manager tab with action select/transport controls, create/save/save-as/delete flows, enable/disable toggle, on-end action chaining selector, and editable OSC start/stop/abort trigger paths.
+- Added action LFO editor in UI (object parameter, waveform, rate, depth, offset, phase) with add/remove/clear operations.
+- Added backend action lifecycle APIs:
+  - `POST /api/action/create`
+  - `POST /api/action/:id/update`
+  - `POST /api/action/:id/save-as`
+  - `POST /api/action/:id/delete`
+- Extended runtime action model with `enabled`, `onEndActionId`, and `lfos`, plus richer status payload (`show.actionsById`, `runningActionDetails`).
+- Added action on-complete chaining behavior and disabled-action start protection for API/OSC triggers.
+- Extended action schema (`showfiles/_schema/action.schema.json`) to validate `enabled`, `on_end_action_id`, and `lfos`.
+
 ## 2026-03-03 19:31 CET
 - Added Group Manager page with full group overview table, inline name/color/enabled editing, and direct delete actions wired to existing group update/delete APIs.
 
