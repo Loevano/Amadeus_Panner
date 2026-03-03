@@ -138,3 +138,6 @@
 
 ## 2026-03-03 19:15 CET
 - Fixed group color-link UX in apps/ui/public/app.js: group color now applies to member visuals only when 'Color' is enabled in linked parameters.
+
+## 2026-03-03 19:31 CET
+- Added Group Manager page with full group overview table, inline name/color/enabled editing, and direct delete actions wired to existing group update/delete APIs.

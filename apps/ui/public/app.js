@@ -68,6 +68,7 @@ const els = {
   mainLayout: document.getElementById("mainLayout"),
   viewPannerBtn: document.getElementById("viewPannerBtn"),
   viewObjectManagerBtn: document.getElementById("viewObjectManagerBtn"),
+  viewGroupManagerBtn: document.getElementById("viewGroupManagerBtn"),
   showPathInput: document.getElementById("showPathInput"),
   loadShowBtn: document.getElementById("loadShowBtn"),
   saveShowBtn: document.getElementById("saveShowBtn"),
@@ -122,6 +123,8 @@ const els = {
   managerGroupUpdateBtn: document.getElementById("managerGroupUpdateBtn"),
   managerGroupDeleteBtn: document.getElementById("managerGroupDeleteBtn"),
   managerGroupLinkInputs: Array.from(document.querySelectorAll(".manager-group-link")),
+  groupManagerSummary: document.getElementById("groupManagerSummary"),
+  groupManagerRows: document.getElementById("groupManagerRows"),
   toggleDebugEventsBtn: document.getElementById("toggleDebugEventsBtn"),
   debugEventsState: document.getElementById("debugEventsState"),
   eventLog: document.getElementById("eventLog"),
@@ -773,8 +776,10 @@ function setPage(nextPage) {
   els.mainLayout.dataset.page = nextPage;
   els.viewPannerBtn.classList.toggle("is-active", nextPage === "panner");
   els.viewObjectManagerBtn.classList.toggle("is-active", nextPage === "object-manager");
+  els.viewGroupManagerBtn.classList.toggle("is-active", nextPage === "group-manager");
   els.viewPannerBtn.setAttribute("aria-selected", nextPage === "panner" ? "true" : "false");
   els.viewObjectManagerBtn.setAttribute("aria-selected", nextPage === "object-manager" ? "true" : "false");
+  els.viewGroupManagerBtn.setAttribute("aria-selected", nextPage === "group-manager" ? "true" : "false");
   if (nextPage === "panner") {
     renderPanner();
   }
@@ -1428,6 +1433,59 @@ function renderGroupsManager() {
   els.managerGroupDeleteBtn.disabled = !state.selectedGroupId;
 }
 
+function summarizeGroupItems(values, maxVisible = 4) {
+  const normalized = (Array.isArray(values) ? values : []).map((value) => String(value || "").trim()).filter(Boolean);
+  if (!normalized.length) {
+    return { preview: "-", full: "" };
+  }
+  if (normalized.length <= maxVisible) {
+    const text = normalized.join(", ");
+    return { preview: text, full: text };
+  }
+  const preview = `${normalized.slice(0, maxVisible).join(", ")} +${normalized.length - maxVisible}`;
+  return { preview, full: normalized.join(", ") };
+}
+
+function renderGroupManager() {
+  const groups = [...getObjectGroups()].sort((a, b) => String(a.groupId || "").localeCompare(String(b.groupId || "")));
+  els.groupManagerRows.innerHTML = "";
+  els.groupManagerSummary.textContent = groups.length
+    ? `${groups.length} group${groups.length === 1 ? "" : "s"}`
+    : "No groups";
+
+  if (!groups.length) {
+    const row = document.createElement("tr");
+    row.innerHTML = '<td class="muted" colspan="7">No groups created yet.</td>';
+    els.groupManagerRows.appendChild(row);
+    return;
+  }
+
+  for (const group of groups) {
+    const groupId = String(group.groupId || "").trim();
+    const groupName = String(group.name || groupId).trim() || groupId;
+    const groupColor = normalizeHexColor(group.color, DEFAULT_GROUP_COLOR);
+    const enabled = isGroupEnabled(group);
+    const memberSummary = summarizeGroupItems(group.objectIds, 3);
+    const linkSummary = summarizeGroupItems(group.linkParams, 4);
+
+    const row = document.createElement("tr");
+    row.dataset.groupId = groupId;
+    row.innerHTML = `
+      <td>${escapeHtml(groupId)}</td>
+      <td><input class="group-manager-name-input" type="text" value="${escapeHtml(groupName)}" /></td>
+      <td><input class="group-manager-color-input" type="color" value="${escapeHtml(groupColor)}" /></td>
+      <td class="group-manager-enabled-cell"><input class="group-manager-enabled-input" type="checkbox" ${enabled ? "checked" : ""} /></td>
+      <td title="${escapeHtml(memberSummary.full)}">${escapeHtml(memberSummary.preview)}</td>
+      <td title="${escapeHtml(linkSummary.full)}">${escapeHtml(linkSummary.preview)}</td>
+      <td class="group-manager-actions">
+        <button class="group-manager-save-btn" type="button">Save</button>
+        <button class="group-manager-delete-btn danger" type="button">Delete</button>
+      </td>
+    `;
+    els.groupManagerRows.appendChild(row);
+  }
+}
+
 function renderManager() {
   syncSelectedIdsWithObjects();
   const objects = getObjects();
@@ -1553,6 +1611,7 @@ function renderAll() {
   renderInspector();
   renderGroupsPanel();
   renderManager();
+  renderGroupManager();
   syncCameraInputs();
   renderPanner();
 }
@@ -1967,6 +2026,52 @@ async function managerDeleteGroup() {
   }
 }
 
+async function groupManagerSaveRow(row) {
+  if (!row) return;
+  const groupId = String(row.dataset.groupId || "").trim();
+  if (!groupId) return;
+
+  try {
+    const nameInput = row.querySelector(".group-manager-name-input");
+    const colorInput = row.querySelector(".group-manager-color-input");
+    const enabledInput = row.querySelector(".group-manager-enabled-input");
+    const name = String(nameInput?.value || groupId).trim() || groupId;
+    const color = normalizeHexColor(colorInput?.value, DEFAULT_GROUP_COLOR);
+    const enabled = Boolean(enabledInput?.checked);
+
+    await api(`/api/groups/${encodeURIComponent(groupId)}/update`, "POST", {
+      name,
+      color,
+      enabled
+    });
+    addLog(`group updated -> ${groupId}`);
+    await refreshStatus();
+  } catch (error) {
+    addLog(`group update failed (${groupId}): ${error.message}`);
+  }
+}
+
+async function groupManagerDeleteRow(row) {
+  if (!row) return;
+  const groupId = String(row.dataset.groupId || "").trim();
+  if (!groupId) return;
+
+  if (!confirm(`Delete group "${groupId}"?`)) {
+    return;
+  }
+
+  try {
+    await api(`/api/groups/${encodeURIComponent(groupId)}/delete`, "POST", {});
+    if (state.selectedGroupId === groupId) {
+      state.selectedGroupId = null;
+    }
+    addLog(`group deleted -> ${groupId}`);
+    await refreshStatus();
+  } catch (error) {
+    addLog(`group delete failed (${groupId}): ${error.message}`);
+  }
+}
+
 function requestedShowPath() {
   return String(els.showPathInput.value || "").trim() || "showfiles/_template/show.json";
 }
@@ -2042,6 +2147,10 @@ function setupHandlers() {
 
   els.viewObjectManagerBtn.addEventListener("click", () => {
     setPage("object-manager");
+  });
+
+  els.viewGroupManagerBtn.addEventListener("click", () => {
+    setPage("group-manager");
   });
 
   els.loadShowBtn.addEventListener("click", () => {
@@ -2145,6 +2254,31 @@ function setupHandlers() {
 
   els.managerGroupDeleteBtn.addEventListener("click", () => {
     void managerDeleteGroup();
+  });
+
+  els.groupManagerRows.addEventListener("click", (event) => {
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+    const row = target.closest("tr");
+    if (!row) return;
+    if (target.closest(".group-manager-save-btn")) {
+      void groupManagerSaveRow(row);
+      return;
+    }
+    if (target.closest(".group-manager-delete-btn")) {
+      void groupManagerDeleteRow(row);
+    }
+  });
+
+  els.groupManagerRows.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") return;
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+    if (!target.classList.contains("group-manager-name-input")) return;
+    event.preventDefault();
+    const row = target.closest("tr");
+    if (!row) return;
+    void groupManagerSaveRow(row);
   });
 
   els.toggleDebugEventsBtn.addEventListener("click", () => {
