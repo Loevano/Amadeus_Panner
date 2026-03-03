@@ -22,11 +22,14 @@ const state = {
   selectedGroupId: null,
   currentPage: "panner",
   draggingObjectId: null,
+  draggingObjectIds: [],
   draggingMode: null,
   draggingPlaneY: 0,
   draggingStartY: 0,
   draggingStartPointerY: 0,
   draggingOffsetXZ: { x: 0, z: 0 },
+  draggingRelativeXZ: {},
+  draggingRelativeY: {},
   lastDragSendMs: 0,
   orbiting: false,
   activePointerId: null,
@@ -1058,46 +1061,77 @@ function selectionRectObjectIds(startX, startY, currentX, currentY) {
 }
 
 function beginObjectDrag(objectId, point, useHeightMode) {
-  const obj = getObjectById(objectId);
-  if (!obj) return;
+  if (!getObjectById(objectId)) return;
+  const selectedIds = selectedObjectTargets();
+  state.draggingObjectIds = selectedIds.includes(objectId) ? selectedIds : [objectId];
   state.draggingObjectId = objectId;
-  state.draggingMode = useHeightMode ? "y" : "xz";
-  state.draggingPlaneY = Number(obj.y);
-  state.draggingStartY = Number(obj.y);
-  state.draggingStartPointerY = point.y;
-  state.draggingOffsetXZ = { x: 0, z: 0 };
+  state.lastDragSendMs = 0;
+  configureDragMode(useHeightMode ? "y" : "xz", point);
+}
 
-  if (state.draggingMode === "xz") {
+function configureDragMode(mode, point) {
+  const anchorObjectId = state.draggingObjectId;
+  if (!anchorObjectId) return;
+  const anchor = getObjectById(anchorObjectId);
+  if (!anchor) return;
+  state.draggingMode = mode;
+
+  if (mode === "y") {
+    state.draggingStartY = Number(anchor.y);
+    state.draggingStartPointerY = point.y;
+    state.draggingRelativeY = {};
+    for (const objectId of state.draggingObjectIds) {
+      const obj = getObjectById(objectId);
+      if (!obj) continue;
+      state.draggingRelativeY[objectId] = Number(obj.y) - Number(anchor.y);
+    }
+  } else {
+    state.draggingPlaneY = Number(anchor.y);
+    state.draggingOffsetXZ = { x: 0, z: 0 };
     const camera = getCameraBasis();
     const ray = screenRay(camera, point.x, point.y);
     const planeHit = intersectRayPlaneY(ray, state.draggingPlaneY);
     if (planeHit) {
       state.draggingOffsetXZ = {
-        x: Number(obj.x) - planeHit.x,
-        z: Number(obj.z) - planeHit.z
+        x: Number(anchor.x) - planeHit.x,
+        z: Number(anchor.z) - planeHit.z
+      };
+    }
+    state.draggingRelativeXZ = {};
+    for (const objectId of state.draggingObjectIds) {
+      const obj = getObjectById(objectId);
+      if (!obj) continue;
+      state.draggingRelativeXZ[objectId] = {
+        x: Number(obj.x) - Number(anchor.x),
+        z: Number(obj.z) - Number(anchor.z)
       };
     }
   }
 }
 
-function maybeSendDragPatch(objectId, patch) {
+function maybeSendDragBatch(patchByObjectId) {
   const now = Date.now();
   if (now - state.lastDragSendMs > 70) {
     state.lastDragSendMs = now;
-    void pushObjectPatch(objectId, patch);
+    for (const [objectId, patch] of Object.entries(patchByObjectId)) {
+      void pushObjectPatch(objectId, patch);
+    }
   }
 }
 
 async function finalizeObjectDrag() {
-  const objectId = state.draggingObjectId;
-  if (!objectId) return;
-  const obj = getObjectById(objectId);
-  if (!obj) return;
-  await pushObjectPatch(objectId, {
-    x: Number(obj.x),
-    y: Number(obj.y),
-    z: Number(obj.z)
-  });
+  if (!state.draggingObjectIds.length) return;
+  await Promise.all(
+    state.draggingObjectIds.map((objectId) => {
+      const obj = getObjectById(objectId);
+      if (!obj) return Promise.resolve();
+      return pushObjectPatch(objectId, {
+        x: Number(obj.x),
+        y: Number(obj.y),
+        z: Number(obj.z)
+      });
+    })
+  );
   await refreshStatus();
 }
 
@@ -1117,11 +1151,14 @@ function applySelectionBox(additive) {
 
 function resetPointerInteraction() {
   state.draggingObjectId = null;
+  state.draggingObjectIds = [];
   state.draggingMode = null;
   state.draggingPlaneY = 0;
   state.draggingStartY = 0;
   state.draggingStartPointerY = 0;
   state.draggingOffsetXZ = { x: 0, z: 0 };
+  state.draggingRelativeXZ = {};
+  state.draggingRelativeY = {};
   state.orbiting = false;
   state.activePointerId = null;
   state.pointerDownHitObjectId = null;
@@ -1498,53 +1535,53 @@ function setupHandlers() {
     const dy = pt.y - state.lastPointer.y;
 
     if (state.draggingObjectId) {
-      const obj = getObjectById(state.draggingObjectId);
-      if (!obj) return;
+      const anchor = getObjectById(state.draggingObjectId);
+      if (!anchor) return;
 
       const wantedMode = event.shiftKey ? "y" : "xz";
       if (state.draggingMode !== wantedMode) {
-        state.draggingMode = wantedMode;
-        if (wantedMode === "y") {
-          state.draggingStartY = Number(obj.y);
-          state.draggingStartPointerY = pt.y;
-        } else {
-          state.draggingPlaneY = Number(obj.y);
-          const camera = getCameraBasis();
-          const ray = screenRay(camera, pt.x, pt.y);
-          const planeHit = intersectRayPlaneY(ray, state.draggingPlaneY);
-          if (planeHit) {
-            state.draggingOffsetXZ = {
-              x: Number(obj.x) - planeHit.x,
-              z: Number(obj.z) - planeHit.z
-            };
-          } else {
-            state.draggingOffsetXZ = { x: 0, z: 0 };
-          }
-        }
+        configureDragMode(wantedMode, pt);
         state.lastPointer = pt;
         return;
       }
 
       if (state.draggingMode === "y") {
-        const nextY = clampValue(state.draggingStartY - (pt.y - state.draggingStartPointerY) * 0.6, LIMITS.y);
-        obj.y = nextY;
+        const nextAnchorY = clampValue(state.draggingStartY - (pt.y - state.draggingStartPointerY) * 0.6, LIMITS.y);
+        const patchByObjectId = {};
+        for (const objectId of state.draggingObjectIds) {
+          const obj = getObjectById(objectId);
+          if (!obj) continue;
+          const relY = Number(state.draggingRelativeY[objectId] || 0);
+          const nextY = clampValue(nextAnchorY + relY, LIMITS.y);
+          obj.y = nextY;
+          patchByObjectId[objectId] = { y: nextY };
+        }
         renderInspector();
         renderManager();
         renderPanner();
-        maybeSendDragPatch(state.draggingObjectId, { y: nextY });
+        maybeSendDragBatch(patchByObjectId);
       } else {
         const camera = getCameraBasis();
         const ray = screenRay(camera, pt.x, pt.y);
         const hitPoint = intersectRayPlaneY(ray, state.draggingPlaneY);
         if (hitPoint) {
-          const nextX = clampValue(hitPoint.x + state.draggingOffsetXZ.x, LIMITS.x);
-          const nextZ = clampValue(hitPoint.z + state.draggingOffsetXZ.z, LIMITS.z);
-          obj.x = nextX;
-          obj.z = nextZ;
+          const nextAnchorX = clampValue(hitPoint.x + state.draggingOffsetXZ.x, LIMITS.x);
+          const nextAnchorZ = clampValue(hitPoint.z + state.draggingOffsetXZ.z, LIMITS.z);
+          const patchByObjectId = {};
+          for (const objectId of state.draggingObjectIds) {
+            const obj = getObjectById(objectId);
+            if (!obj) continue;
+            const relXZ = state.draggingRelativeXZ[objectId] || { x: 0, z: 0 };
+            const nextX = clampValue(nextAnchorX + Number(relXZ.x || 0), LIMITS.x);
+            const nextZ = clampValue(nextAnchorZ + Number(relXZ.z || 0), LIMITS.z);
+            obj.x = nextX;
+            obj.z = nextZ;
+            patchByObjectId[objectId] = { x: nextX, z: nextZ };
+          }
           renderInspector();
           renderManager();
           renderPanner();
-          maybeSendDragPatch(state.draggingObjectId, { x: nextX, z: nextZ });
+          maybeSendDragBatch(patchByObjectId);
         }
       }
     } else if (state.orbiting) {

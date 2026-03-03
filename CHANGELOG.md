@@ -62,3 +62,6 @@
 
 ## 2026-03-03 12:21 CET
 - Restored direct object edit in 3D panner: dragging an object now moves it on X/Z, with Shift-drag height (Y) adjustment while preserving Option-drag camera and empty-space marquee select
+
+## 2026-03-03 12:26 CET
+- Updated multi-object drag behavior to be relative: dragging one selected object now applies movement deltas to all selected objects (including Shift Y-height), preserving their inter-object offsets
