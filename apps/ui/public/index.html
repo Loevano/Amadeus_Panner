@@ -63,7 +63,7 @@
         <button id="cameraResetBtn" type="button">Reset View</button>
         <span id="cameraReadout" class="muted">Yaw 35, Pitch 26, Zoom 320</span>
       </div>
-      <p class="muted">Dragging a selected object applies relative movement to all selected objects (X/Z, and Shift for Y height). Ctrl+drag edits only the touched object (ignores selection and groups). Drag empty space to multi-select. Cmd+click adds/removes object selection. Option+drag changes camera view. Mouse wheel zooms.</p>
+      <p class="muted">Dragging a selected object applies relative movement to all selected objects (X/Z, and Shift for Y height). Ctrl+drag edits only the touched object (ignores selection and groups). Drag empty space to multi-select. Cmd+click adds/removes object selection. Option+drag changes camera view. Mouse wheel zooms. Right-click an object for quick Group and LFO mapping.</p>
     </section>
 
     <section class="panel inspector-panel">
@@ -254,7 +254,7 @@
       <p id="actionManagerSummary" class="muted">No actions</p>
 
       <div class="manager-grid action-manager-grid">
-        <div class="manager-block">
+        <div class="manager-block action-manager-select-block">
           <h3>Action Select</h3>
           <label for="actionManagerSelect">Action</label>
           <select id="actionManagerSelect"></select>
@@ -262,10 +262,27 @@
             <button id="actionManagerStartBtn" type="button">Start</button>
             <button id="actionManagerStopBtn" type="button">Stop</button>
             <button id="actionManagerAbortBtn" class="danger" type="button">Abort</button>
+            <button id="actionManagerLfosToggleBtn" type="button">Disable LFOs</button>
+          </div>
+          <div class="manager-table-wrap">
+            <table class="manager-table action-manager-table">
+              <thead>
+                <tr>
+                  <th>Action</th>
+                  <th>Name</th>
+                  <th>Duration</th>
+                  <th>Enabled</th>
+                  <th>Running</th>
+                  <th>LFOs</th>
+                  <th>On End</th>
+                </tr>
+              </thead>
+              <tbody id="actionManagerRows"></tbody>
+            </table>
           </div>
         </div>
 
-        <div class="manager-block">
+        <div class="manager-block action-manager-setup-block">
           <h3>Action Setup</h3>
           <div class="field-grid manager-field-grid">
             <label for="actionManagerIdInput">Action ID</label><input id="actionManagerIdInput" type="text" placeholder="action-1" />
@@ -288,7 +305,7 @@
           </div>
         </div>
 
-        <div class="manager-block">
+        <div class="manager-block action-manager-lfo-block">
           <h3>LFOs</h3>
           <div class="field-grid manager-field-grid">
             <label for="actionManagerLfoObjectInput">Object</label><select id="actionManagerLfoObjectInput"></select>
@@ -311,11 +328,14 @@
             <label for="actionManagerLfoDepthInput">Depth</label><input id="actionManagerLfoDepthInput" type="number" step="0.1" value="20" />
             <label for="actionManagerLfoOffsetInput">Offset</label><input id="actionManagerLfoOffsetInput" type="number" step="0.1" value="0" />
             <label for="actionManagerLfoPhaseInput">Phase (deg)</label><input id="actionManagerLfoPhaseInput" type="number" step="1" value="0" />
+            <label for="actionManagerLfoMappingPhaseInput">Map Phase (deg)</label><input id="actionManagerLfoMappingPhaseInput" type="number" step="1" value="0" />
           </div>
           <div class="row">
             <button id="actionManagerLfoAddBtn" type="button">Add LFO</button>
+            <button id="actionManagerLfoUpdateBtn" type="button">Update LFO</button>
             <button id="actionManagerLfoClearBtn" class="danger" type="button">Clear LFOs</button>
           </div>
+          <p id="actionManagerSelectedLfoSummary" class="muted">Selected LFO: none</p>
           <div class="manager-table-wrap">
             <table class="manager-table">
               <thead>
@@ -327,10 +347,29 @@
                   <th>Depth</th>
                   <th>Offset</th>
                   <th>Phase</th>
+                  <th>Map Phase</th>
                   <th>Remove</th>
                 </tr>
               </thead>
               <tbody id="actionManagerLfoRows"></tbody>
+            </table>
+          </div>
+
+          <h3>LFO Debug</h3>
+          <p id="actionManagerLfoDebugSummary" class="muted">No LFO debug data.</p>
+          <div class="manager-table-wrap">
+            <table class="manager-table">
+              <thead>
+                <tr>
+                  <th>Target</th>
+                  <th>Current</th>
+                  <th>Min</th>
+                  <th>Max</th>
+                  <th>Span</th>
+                  <th>State</th>
+                </tr>
+              </thead>
+              <tbody id="actionManagerLfoDebugRows"></tbody>
             </table>
           </div>
         </div>
@@ -340,12 +379,14 @@
     <section class="panel log-panel">
       <h2>Debug Events</h2>
       <div class="log-toolbar">
-        <button id="toggleDebugEventsBtn" type="button">Disable Debug Events</button>
-        <span id="debugEventsState" class="muted">Live stream on</span>
+        <button id="toggleDebugEventsBtn" type="button">Disable Debug Log</button>
+        <span id="debugEventsState" class="muted">Debug log on (sync on)</span>
       </div>
       <div id="eventLog" class="event-log"></div>
     </section>
   </main>
+
+  <div id="pannerContextMenu" class="panner-context-menu" hidden></div>
 
   <script src="/app.js" type="module"></script>
 </body>

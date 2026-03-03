@@ -1,5 +1,28 @@
 # Changelog
 
+## 2026-03-03 21:49 CET
+- Increased action runtime update frequency to 60 Hz (`ACTION_TICK_SEC`) for smoother motion.
+- Reworked LFO modulation logic to keep per-target center state, apply external/manual deltas without snapping, and sum multiple modulators targeting the same object parameter.
+- Added LFO mapping phase offset support end-to-end (`mapping_phase_deg` / `mappingPhaseDeg`) in runtime normalization, modulation, debug payloads, UI editor inputs, and action schema.
+- Added global LFO enable state and API (`POST /api/lfos/enabled`) with Action Manager toggle and status line integration.
+- Added LFO debug telemetry/event flow:
+  - backend emits throttled `lfo_debug` samples during action playback
+  - Action Manager shows live target/current/min/max/span/state debug table
+- Improved UI refresh pipeline for smooth visuals without requiring debug log:
+  - debounced status refresh queueing
+  - reconcile interval fallback
+  - requestAnimationFrame-based render scheduling
+  - noisy debug log throttling by event type
+- Added Action Manager list/table selection workflow for actions and LFO rows (click or keyboard select), plus explicit LFO update action and selected-LFO summary.
+- Added panner right-click context menu with nested hover menus:
+  - `Groups` membership toggles per object
+  - `LFOs` -> select reusable modulator signature -> param target mapping with mapping-phase prompt
+- Fixed menu interaction lockups by closing context menus on outside click, Escape, resize, and pointer down.
+- Hardened HTTP handler against benign browser disconnects by catching `ConnectionResetError`.
+- Updated Action Manager layout to a compact grid with `Action Setup` as the top block (desktop and mobile ordering updated).
+- Added reusable showfile validator CLI (`apps/control-server/showfile_validator.py`) and wired `scripts/validate-showfiles.sh` to execute it.
+- Updated template show/action data to include an additional action and current LFO-enabled examples for regression checks.
+
 ## 2026-03-03 19:09 CET
 - Improved automatic ID generation in Object Manager:
   - object auto-ID now derives from entered type when ID is blank (with numeric uniqueness suffixing)

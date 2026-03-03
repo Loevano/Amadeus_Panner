@@ -315,11 +315,78 @@ button:hover {
   gap: 12px;
 }
 
+.action-manager-grid {
+  grid-template-columns: minmax(360px, 1fr) minmax(420px, 1.2fr);
+  grid-template-areas:
+    "setup setup"
+    "select lfo";
+  align-items: start;
+}
+
+.action-manager-select-block { grid-area: select; }
+.action-manager-setup-block { grid-area: setup; }
+.action-manager-lfo-block { grid-area: lfo; }
+
 .manager-block {
   border: 1px solid var(--border);
   border-radius: 10px;
   padding: 10px;
   background: #f9fbfd;
+}
+
+.action-manager-panel .manager-block {
+  padding: 8px 9px;
+}
+
+.action-manager-panel .manager-block h3 {
+  margin: 0 0 6px;
+}
+
+.action-manager-panel .manager-field-grid {
+  margin-bottom: 8px;
+  grid-template-columns: max-content minmax(120px, 1fr) max-content minmax(120px, 1fr);
+  align-items: center;
+}
+
+.action-manager-panel .field-grid {
+  gap: 6px 8px;
+}
+
+.action-manager-panel label {
+  font-size: 0.84rem;
+  white-space: nowrap;
+}
+
+.action-manager-panel input,
+.action-manager-panel select,
+.action-manager-panel button {
+  padding: 6px 8px;
+}
+
+.action-manager-panel .manager-field-grid input,
+.action-manager-panel .manager-field-grid select {
+  width: 100%;
+  min-width: 0;
+}
+
+.action-manager-panel .row {
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.action-manager-panel .manager-table-wrap {
+  margin-top: 8px;
+  max-height: 260px;
+}
+
+.action-manager-panel .manager-table th,
+.action-manager-panel .manager-table td {
+  padding: 6px 7px;
+  font-size: 0.88rem;
+}
+
+.action-manager-panel .checkbox-row {
+  margin: 4px 0 6px;
 }
 
 .manager-field-grid {
@@ -395,6 +462,82 @@ button:hover {
 .manager-table tbody tr.is-primary {
   outline: 2px solid #0b6b66;
   outline-offset: -2px;
+}
+
+.panner-context-menu {
+  position: fixed;
+  z-index: 80;
+  min-width: 230px;
+  background: #ffffff;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 10px 26px #0000002b;
+  padding: 6px;
+}
+
+.panner-context-title {
+  margin: 0;
+  padding: 6px 8px 8px;
+  font-size: 0.82rem;
+  color: var(--muted);
+  border-bottom: 1px solid #e6ecf1;
+}
+
+.panner-menu-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 9px;
+  border-radius: 7px;
+  cursor: pointer;
+  user-select: none;
+  font-size: 0.9rem;
+  white-space: nowrap;
+}
+
+.panner-menu-item:hover {
+  background: #eef7f8;
+}
+
+.panner-menu-item.is-disabled {
+  color: var(--muted);
+  cursor: default;
+}
+
+.panner-menu-item.is-disabled:hover {
+  background: transparent;
+}
+
+.panner-menu-item.has-submenu {
+  padding-right: 22px;
+}
+
+.panner-menu-item.has-submenu::after {
+  content: "›";
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: #53707a;
+}
+
+.panner-submenu {
+  display: none;
+  position: absolute;
+  left: calc(100% - 4px);
+  top: -6px;
+  min-width: 230px;
+  background: #ffffff;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 10px 26px #0000002b;
+  padding: 6px;
+}
+
+.panner-menu-item.has-submenu:hover > .panner-submenu {
+  display: block;
 }
 
 .group-manager-grid {
@@ -609,6 +752,18 @@ button:hover {
 
   .manager-grid {
     grid-template-columns: 1fr;
+  }
+
+  .action-manager-grid {
+    grid-template-columns: 1fr;
+    grid-template-areas:
+      "setup"
+      "select"
+      "lfo";
+  }
+
+  .action-manager-panel .manager-field-grid {
+    grid-template-columns: 1fr 1fr;
   }
 
   .group-manager-editor .manager-field-grid {

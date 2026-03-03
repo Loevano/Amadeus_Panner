@@ -3,7 +3,7 @@
   "name": "Demo Show",
   "version": "0.1.0",
   "created_at": "2026-03-03T00:00:00Z",
-  "updated_at": "2026-03-03T19:40:22Z",
+  "updated_at": "2026-03-03T13:21:07Z",
   "default_scene_id": "scene-intro",
   "scenes": [
     {
@@ -15,10 +15,6 @@
     {
       "action_id": "action-fly-in",
       "file": "actions/action-fly-in.json"
-    },
-    {
-      "action_id": "action-fly-in-2",
-      "file": "actions/action-fly-in-2.json"
     }
   ],
   "metadata": {

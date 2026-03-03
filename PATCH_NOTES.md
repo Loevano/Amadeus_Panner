@@ -152,3 +152,35 @@ Release-facing summary for operators and production notes.
 
 ### Known Issues
 - JS syntax check could not be executed in this environment because `node` is unavailable.
+
+## v0.1.6 - 2026-03-03 - Smoother LFO Runtime, Debug, And Mapping UX
+
+### Added
+- Runtime API to globally toggle LFO processing:
+  - `POST /api/lfos/enabled`
+- LFO debug event stream payloads (`lfo_debug`) with sampled target/modulation data.
+- Action Manager LFO debug monitor table (target/current/min/max/span/state) and summary status.
+- Action list table in Action Manager with row selection support.
+- Action LFO row selection + update workflow and selected-LFO summary.
+- Panner right-click context menu with nested quick actions:
+  - `Groups` membership toggles
+  - `LFOs` mapping submenu by modulator signature and target parameter
+- Reusable showfile validator utility:
+  - `apps/control-server/showfile_validator.py`
+  - wired through `scripts/validate-showfiles.sh`
+
+### Changed
+- Action runtime tick moved to ~60 FPS for smoother action/LFO motion.
+- LFO calculation model now supports multi-modulator summation for same target parameter.
+- Added per-target mapping phase offset support for LFO links (`mapping_phase_deg`).
+- Action Manager layout compacted; `Action Setup` is now the top block.
+- Debug log toggle now controls logging visibility/throttle while keeping live event sync active.
+- Status/UI refresh path moved to debounced + animation-frame scheduling for smoother visuals.
+
+### Fixed
+- Reduced LFO snap-back while dragging/modifying modulated objects by shifting modulation center correctly on external writes.
+- Prevented context-menu interaction lockups by consistently closing menus on page/interaction transitions.
+- Suppressed benign `ConnectionResetError` disconnect noise in HTTP handler.
+
+### Known Issues
+- LFO definitions are still action-local; a global reusable LFO library with independent mapping is not implemented yet.

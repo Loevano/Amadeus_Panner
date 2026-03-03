@@ -50,6 +50,7 @@ LINKABLE_GROUP_PARAMS = {"x", "y", "z", "size", "gain", "mute", "algorithm", "ty
 RELATIVE_GROUP_PARAMS = {"x", "y", "z"}
 LFO_PARAMS = {"x", "y", "z", "size", "gain"}
 LFO_WAVES = {"sine", "triangle", "square", "saw"}
+ACTION_TICK_SEC = 1.0 / 60.0
 
 
 def clamp(value: float, min_max: Tuple[float, float]) -> float:
@@ -181,6 +182,10 @@ def normalize_action_lfo(raw_lfo: Dict[str, Any]) -> Dict[str, Any]:
     depth = to_float(raw_lfo.get("depth"), 0.0)
     offset = to_float(raw_lfo.get("offset"), 0.0)
     phase_deg = to_float(raw_lfo.get("phase_deg") if "phase_deg" in raw_lfo else raw_lfo.get("phaseDeg"), 0.0)
+    mapping_phase_deg = to_float(
+        raw_lfo.get("mapping_phase_deg") if "mapping_phase_deg" in raw_lfo else raw_lfo.get("mappingPhaseDeg"),
+        0.0,
+    )
 
     return {
         "objectId": object_id,
@@ -190,6 +195,7 @@ def normalize_action_lfo(raw_lfo: Dict[str, Any]) -> Dict[str, Any]:
         "depth": depth,
         "offset": offset,
         "phaseDeg": phase_deg,
+        "mappingPhaseDeg": mapping_phase_deg,
     }
 
 
@@ -244,6 +250,7 @@ def lfo_to_raw(lfo: Dict[str, Any]) -> Dict[str, Any]:
         "depth": to_float(lfo.get("depth"), 0.0),
         "offset": to_float(lfo.get("offset"), 0.0),
         "phase_deg": to_float(lfo.get("phaseDeg"), 0.0),
+        "mapping_phase_deg": to_float(lfo.get("mappingPhaseDeg"), 0.0),
     }
 
 
@@ -349,6 +356,7 @@ class Runtime:
         self.objects: Dict[str, Dict[str, Any]] = {}
         self.object_groups: Dict[str, Dict[str, Any]] = {}
         self.groups_enabled = True
+        self.lfos_enabled = True
         self.active_scene_id: Optional[str] = None
         self.running_actions: Dict[str, Dict[str, Any]] = {}
 
@@ -363,6 +371,7 @@ class Runtime:
         self.recent_events: List[Dict[str, Any]] = []
         self.max_recent_events = 250
         self.event_queues: List[queue.Queue] = []
+        self.last_lfo_debug_emit_ms: Dict[str, int] = {}
 
         self.osc_out_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.osc_in_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -475,6 +484,7 @@ class Runtime:
                 "runningActions": sorted(self.running_actions.keys()),
                 "runningActionDetails": running_action_details,
                 "groupsEnabled": self.groups_enabled,
+                "lfosEnabled": self.lfos_enabled,
                 "objectGroups": list(self.object_groups.values()),
                 "objects": list(self.objects.values()),
             }
@@ -1001,6 +1011,21 @@ class Runtime:
         )
         return next_enabled
 
+    def set_lfos_enabled(self, enabled: bool, source: str = "api") -> bool:
+        with self.lock:
+            self.lfos_enabled = bool(enabled)
+            next_enabled = self.lfos_enabled
+
+        self.emit_event(
+            "system",
+            {
+                "source": source,
+                "message": "lfos_enabled",
+                "enabled": next_enabled,
+            },
+        )
+        return next_enabled
+
     def delete_object_group(self, group_id: str, source: str = "api") -> Dict[str, Any]:
         normalized_group_id = normalize_object_id(group_id)
         if normalized_group_id.lower() == VIRTUAL_ALL_GROUP_ID:
@@ -1218,6 +1243,54 @@ class Runtime:
             current = self.objects.get(object_id, default_object(object_id))
             merged = {**current, **patch, "objectId": object_id, "object_id": object_id}
             next_obj = normalize_object(merged, object_id)
+
+            # External writes to an actively modulated target should move the LFO center,
+            # not briefly force an unmodulated value that then snaps on the next tick.
+            if not str(source or "").startswith("action:"):
+                now_mono = time.monotonic()
+                for parameter in LFO_PARAMS:
+                    if parameter not in patch:
+                        continue
+                    if parameter not in next_obj:
+                        continue
+
+                    desired_value = to_float(next_obj.get(parameter), to_float(current.get(parameter), 0.0))
+                    affected_any = False
+                    for running in self.running_actions.values():
+                        action_snapshot = running.get("action")
+                        if not isinstance(action_snapshot, dict):
+                            continue
+                        lfo_states = running.get("lfoStates")
+                        if not isinstance(lfo_states, dict):
+                            continue
+                        started_at_mono = to_float(running.get("startedAtMonotonic"), 0.0)
+                        if started_at_mono <= 0.0:
+                            continue
+
+                        elapsed_ms = int(max(0.0, (now_mono - started_at_mono) * 1000.0))
+                        total_mod = self._lfo_total_mod_for_target(action_snapshot, object_id, parameter, elapsed_ms)
+                        if total_mod is None:
+                            continue
+                        action_track_value = self._action_track_value_for_target(action_snapshot, object_id, parameter, elapsed_ms)
+
+                        lfo_key = f"{object_id}:{parameter}"
+                        state = lfo_states.get(lfo_key)
+                        if not isinstance(state, dict):
+                            state = {}
+                            lfo_states[lfo_key] = state
+
+                        if action_track_value is not None:
+                            manual_offset = desired_value - (action_track_value + total_mod)
+                            state["manualOffset"] = manual_offset
+                            state["center"] = action_track_value + manual_offset
+                        else:
+                            state.pop("manualOffset", None)
+                            state["center"] = desired_value - total_mod
+                        state["lastValue"] = desired_value
+                        affected_any = True
+
+                    if affected_any and parameter in OBJECT_LIMITS:
+                        next_obj[parameter] = clamp(desired_value, OBJECT_LIMITS[parameter])
 
             changed = [
                 k
@@ -1559,8 +1632,49 @@ class Runtime:
             return (2.0 * phase) - 1.0
         return math.sin(2.0 * math.pi * phase)
 
-    def _apply_action_frame(self, action: Dict[str, Any], elapsed_ms: int, lfo_bases: Dict[str, float]) -> None:
+    def _lfo_total_mod_for_target(self, action: Dict[str, Any], object_id: str, parameter: str, elapsed_ms: int) -> Optional[float]:
+        total = 0.0
+        matched = False
+        for lfo in action.get("lfos", []):
+            lfo_object_id = str(lfo.get("objectId") or lfo.get("object_id") or "").strip()
+            lfo_parameter = str(lfo.get("parameter") or "").strip()
+            if lfo_object_id != object_id or lfo_parameter != parameter:
+                continue
+
+            wave = str(lfo.get("wave") or "sine").strip().lower()
+            if wave not in LFO_WAVES:
+                wave = "sine"
+            rate_hz = max(0.0, to_float(lfo.get("rateHz"), 0.0))
+            depth = to_float(lfo.get("depth"), 0.0)
+            offset = to_float(lfo.get("offset"), 0.0)
+            phase_deg = to_float(lfo.get("phaseDeg"), 0.0)
+            mapping_phase_deg = to_float(lfo.get("mappingPhaseDeg"), 0.0)
+
+            phase_cycles = (elapsed_ms / 1000.0) * rate_hz + ((phase_deg + mapping_phase_deg) / 360.0)
+            sample = self._lfo_sample(wave, phase_cycles)
+            total += offset + (depth * sample)
+            matched = True
+
+        if not matched:
+            return None
+        return total
+
+    def _action_track_value_for_target(self, action: Dict[str, Any], object_id: str, parameter: str, elapsed_ms: int) -> Optional[float]:
+        for track in action.get("tracks", []):
+            track_object_id = str(track.get("object_id") or track.get("objectId") or "").strip()
+            track_parameter = str(track.get("parameter") or "").strip()
+            if track_object_id != object_id or track_parameter != parameter:
+                continue
+            numeric = self._interpolate_numeric(track.get("keyframes", []), elapsed_ms)
+            if numeric is None:
+                continue
+            if math.isfinite(numeric):
+                return float(numeric)
+        return None
+
+    def _apply_action_frame(self, action: Dict[str, Any], elapsed_ms: int, lfo_states: Dict[str, Dict[str, float]]) -> None:
         patch_by_object_id: Dict[str, Dict[str, Any]] = {}
+        lfo_debug_samples: List[Dict[str, Any]] = []
 
         for track in action.get("tracks", []):
             object_id = str(track.get("object_id") or track.get("objectId") or "")
@@ -1596,38 +1710,120 @@ class Runtime:
                 patch_by_object_id[object_id] = patch
             patch[parameter] = value
 
-        for lfo in action.get("lfos", []):
-            object_id = str(lfo.get("objectId") or lfo.get("object_id") or "").strip()
-            parameter = str(lfo.get("parameter") or "").strip()
-            if not object_id or parameter not in LFO_PARAMS:
-                continue
+        lfos_enabled = self.lfos_enabled
+        if lfos_enabled:
+            lfo_accumulators: Dict[str, Dict[str, Any]] = {}
+            for index, lfo in enumerate(action.get("lfos", [])):
+                object_id = str(lfo.get("objectId") or lfo.get("object_id") or "").strip()
+                parameter = str(lfo.get("parameter") or "").strip()
+                if not object_id or parameter not in LFO_PARAMS:
+                    continue
 
-            lfo_key = f"{object_id}:{parameter}"
-            if lfo_key not in lfo_bases:
-                with self.lock:
-                    base_object = self.objects.get(object_id, default_object(object_id))
-                    lfo_bases[lfo_key] = to_float(base_object.get(parameter), 0.0)
-            base_value = lfo_bases.get(lfo_key, 0.0)
+                lfo_key = f"{object_id}:{parameter}"
+                lfo_state = lfo_states.get(lfo_key)
+                if not isinstance(lfo_state, dict):
+                    with self.lock:
+                        base_object = self.objects.get(object_id, default_object(object_id))
+                    center_seed = to_float(base_object.get(parameter), 0.0)
+                    lfo_state = {
+                        "center": center_seed,
+                        "lastValue": center_seed,
+                    }
+                    lfo_states[lfo_key] = lfo_state
 
-            wave = str(lfo.get("wave") or "sine").strip().lower()
-            if wave not in LFO_WAVES:
-                wave = "sine"
-            rate_hz = max(0.0, to_float(lfo.get("rateHz"), 0.0))
-            depth = to_float(lfo.get("depth"), 0.0)
-            offset = to_float(lfo.get("offset"), 0.0)
-            phase_deg = to_float(lfo.get("phaseDeg"), 0.0)
+                accumulator = lfo_accumulators.get(lfo_key)
+                if not isinstance(accumulator, dict):
+                    center_value = to_float(lfo_state.get("center"), 0.0)
+                    existing_patch = patch_by_object_id.get(object_id)
+                    if existing_patch and parameter in existing_patch:
+                        track_value_raw = existing_patch.get(parameter)
+                        if isinstance(track_value_raw, (int, float)):
+                            track_value = float(track_value_raw)
+                            if math.isfinite(track_value):
+                                manual_offset = to_float(lfo_state.get("manualOffset"), 0.0)
+                                center_value = track_value + manual_offset
+                    else:
+                        # If the object changed since the previous frame (UI drag/OSC/group link),
+                        # shift the LFO center by the external delta so modulation does not snap back.
+                        lfo_state.pop("manualOffset", None)
+                        with self.lock:
+                            live_object = self.objects.get(object_id, default_object(object_id))
+                        live_value = to_float(live_object.get(parameter), center_value)
+                        last_value = to_float(lfo_state.get("lastValue"), live_value)
+                        center_value += (live_value - last_value)
 
-            phase_cycles = (elapsed_ms / 1000.0) * rate_hz + (phase_deg / 360.0)
-            sample = self._lfo_sample(wave, phase_cycles)
-            value = base_value + offset + (depth * sample)
-            if parameter in OBJECT_LIMITS:
-                value = clamp(value, OBJECT_LIMITS[parameter])
+                    accumulator = {
+                        "objectId": object_id,
+                        "parameter": parameter,
+                        "center": center_value,
+                        "totalMod": 0.0,
+                    }
+                    lfo_accumulators[lfo_key] = accumulator
 
-            patch = patch_by_object_id.get(object_id)
-            if not patch:
-                patch = {}
-                patch_by_object_id[object_id] = patch
-            patch[parameter] = value
+                center_value = to_float(accumulator.get("center"), 0.0)
+
+                wave = str(lfo.get("wave") or "sine").strip().lower()
+                if wave not in LFO_WAVES:
+                    wave = "sine"
+                rate_hz = max(0.0, to_float(lfo.get("rateHz"), 0.0))
+                depth = to_float(lfo.get("depth"), 0.0)
+                offset = to_float(lfo.get("offset"), 0.0)
+                phase_deg = to_float(lfo.get("phaseDeg"), 0.0)
+                mapping_phase_deg = to_float(lfo.get("mappingPhaseDeg"), 0.0)
+
+                phase_cycles = (elapsed_ms / 1000.0) * rate_hz + ((phase_deg + mapping_phase_deg) / 360.0)
+                sample = self._lfo_sample(wave, phase_cycles)
+                contribution = offset + (depth * sample)
+                accumulator["totalMod"] = to_float(accumulator.get("totalMod"), 0.0) + contribution
+
+                lfo_debug_samples.append(
+                    {
+                        "_lfoKey": lfo_key,
+                        "lfoIndex": index,
+                        "objectId": object_id,
+                        "parameter": parameter,
+                        "value": center_value + contribution,
+                        "center": center_value,
+                        "sample": sample,
+                        "contribution": contribution,
+                        "wave": wave,
+                        "rateHz": rate_hz,
+                        "depth": depth,
+                        "offset": offset,
+                        "phaseDeg": phase_deg,
+                        "mappingPhaseDeg": mapping_phase_deg,
+                    }
+                )
+
+            final_values_by_key: Dict[str, float] = {}
+            for lfo_key, accumulator in lfo_accumulators.items():
+                object_id = str(accumulator.get("objectId") or "").strip()
+                parameter = str(accumulator.get("parameter") or "").strip()
+                if not object_id or not parameter:
+                    continue
+
+                center_value = to_float(accumulator.get("center"), 0.0)
+                total_mod = to_float(accumulator.get("totalMod"), 0.0)
+                value = center_value + total_mod
+                if parameter in OBJECT_LIMITS:
+                    value = clamp(value, OBJECT_LIMITS[parameter])
+
+                lfo_state = lfo_states.get(lfo_key)
+                if isinstance(lfo_state, dict):
+                    lfo_state["center"] = center_value
+                    lfo_state["lastValue"] = value
+
+                patch = patch_by_object_id.get(object_id)
+                if not patch:
+                    patch = {}
+                    patch_by_object_id[object_id] = patch
+                patch[parameter] = value
+                final_values_by_key[lfo_key] = value
+
+            for debug_sample in lfo_debug_samples:
+                lfo_key = str(debug_sample.pop("_lfoKey", "")).strip()
+                if lfo_key and lfo_key in final_values_by_key:
+                    debug_sample["value"] = final_values_by_key[lfo_key]
 
         for object_id, patch in patch_by_object_id.items():
             self.update_object(
@@ -1637,6 +1833,25 @@ class Runtime:
                 emit_osc=True,
                 propagate_group_links=False,
             )
+
+        action_id = str(action.get("actionId") or "").strip()
+        if action_id and lfos_enabled and lfo_debug_samples:
+            now_ms = int(time.monotonic() * 1000)
+            should_emit = False
+            with self.lock:
+                last_emit = int(to_float(self.last_lfo_debug_emit_ms.get(action_id), 0.0))
+                if now_ms - last_emit >= 200:
+                    self.last_lfo_debug_emit_ms[action_id] = now_ms
+                    should_emit = True
+            if should_emit:
+                self.emit_event(
+                    "lfo_debug",
+                    {
+                        "actionId": action_id,
+                        "elapsedMs": int(max(0, elapsed_ms)),
+                        "samples": lfo_debug_samples,
+                    },
+                )
 
     def start_action(self, action_id: str, source: str = "api") -> None:
         normalized_action_id = normalize_action_id(action_id)
@@ -1651,26 +1866,39 @@ class Runtime:
             if not bool(action.get("enabled", True)):
                 raise ValueError(f"Action is disabled: {normalized_action_id}")
             action_snapshot = json.loads(json.dumps(action))
-            lfo_bases: Dict[str, float] = {}
+            lfo_states: Dict[str, Dict[str, float]] = {}
             for lfo in action_snapshot.get("lfos", []):
                 object_id = str(lfo.get("objectId") or "").strip()
                 parameter = str(lfo.get("parameter") or "").strip()
                 if not object_id or parameter not in LFO_PARAMS:
                     continue
                 base_object = self.objects.get(object_id, default_object(object_id))
-                lfo_bases[f"{object_id}:{parameter}"] = to_float(base_object.get(parameter), 0.0)
+                seed = to_float(base_object.get(parameter), 0.0)
+                lfo_states[f"{object_id}:{parameter}"] = {
+                    "center": seed,
+                    "lastValue": seed,
+                }
             stop_flag = threading.Event()
 
         started_at = time.monotonic()
 
         def run() -> None:
+            next_tick = time.monotonic()
             while not stop_flag.is_set():
-                elapsed_ms = int((time.monotonic() - started_at) * 1000)
-                self._apply_action_frame(action_snapshot, elapsed_ms, lfo_bases)
+                now = time.monotonic()
+                if now < next_tick:
+                    time.sleep(min(ACTION_TICK_SEC, next_tick - now))
+                    continue
+
+                elapsed_ms = int((now - started_at) * 1000)
+                self._apply_action_frame(action_snapshot, elapsed_ms, lfo_states)
                 if elapsed_ms >= action_snapshot.get("durationMs", 0):
                     self.stop_action(normalized_action_id, "complete")
                     return
-                time.sleep(0.05)
+
+                next_tick += ACTION_TICK_SEC
+                if (now - next_tick) > (ACTION_TICK_SEC * 4.0):
+                    next_tick = now + ACTION_TICK_SEC
 
         worker = threading.Thread(target=run, daemon=True)
         with self.lock:
@@ -1678,9 +1906,12 @@ class Runtime:
                 "thread": worker,
                 "stopFlag": stop_flag,
                 "startedAtMs": int(time.time() * 1000),
+                "startedAtMonotonic": started_at,
                 "source": source,
                 "action": action_snapshot,
+                "lfoStates": lfo_states,
             }
+            self.last_lfo_debug_emit_ms[normalized_action_id] = 0
 
         worker.start()
         self.emit_event("action", {"actionId": normalized_action_id, "state": "started", "source": source})
@@ -1689,6 +1920,7 @@ class Runtime:
         normalized_action_id = normalize_action_id(action_id)
         with self.lock:
             running = self.running_actions.pop(normalized_action_id, None)
+            self.last_lfo_debug_emit_ms.pop(normalized_action_id, None)
         if not running:
             return
 
@@ -1811,6 +2043,13 @@ RUNTIME = Runtime()
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "AmadeusPanner/0.1"
+
+    def handle(self) -> None:
+        try:
+            super().handle()
+        except ConnectionResetError:
+            # Browser/SSE clients can drop sockets abruptly; treat as normal disconnect.
+            pass
 
     def _send_json(self, status_code: int, payload: Dict[str, Any]) -> None:
         raw = json.dumps(payload).encode("utf-8")
@@ -2050,6 +2289,13 @@ class Handler(BaseHTTPRequestHandler):
                 body = self._read_json_body()
                 enabled = bool(body.get("enabled", True))
                 RUNTIME.set_groups_enabled(enabled, source="api")
+                self._send_json(HTTPStatus.OK, {"ok": True, "enabled": enabled, "status": RUNTIME.status()})
+                return
+
+            if path_name == "/api/lfos/enabled":
+                body = self._read_json_body()
+                enabled = bool(body.get("enabled", True))
+                RUNTIME.set_lfos_enabled(enabled, source="api")
                 self._send_json(HTTPStatus.OK, {"ok": True, "enabled": enabled, "status": RUNTIME.status()})
                 return
 

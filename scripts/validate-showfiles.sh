@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-echo "TODO: add jsonschema validation command for showfile, scene, and action files"
+cd "$(dirname "$0")/.."
+python3 apps/control-server/showfile_validator.py "$@"

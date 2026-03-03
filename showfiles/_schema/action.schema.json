@@ -47,7 +47,8 @@
           "rate_hz": { "type": "number", "minimum": 0 },
           "depth": { "type": "number" },
           "offset": { "type": "number" },
-          "phase_deg": { "type": "number" }
+          "phase_deg": { "type": "number" },
+          "mapping_phase_deg": { "type": "number" }
         },
         "additionalProperties": false
       }
