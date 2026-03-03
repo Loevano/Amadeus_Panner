@@ -3,6 +3,7 @@ import json
 import math
 import os
 import queue
+import re
 import signal
 import socket
 import struct
@@ -34,6 +35,11 @@ OBJECT_LIMITS = {
     "gain": (-120.0, 12.0),
 }
 
+OBJECT_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+COLOR_PATTERN = re.compile(r"^#[0-9a-fA-F]{6}$")
+DEFAULT_OBJECT_TYPE = "point"
+DEFAULT_OBJECT_COLOR = "#1c4f89"
+
 
 def clamp(value: float, min_max: Tuple[float, float]) -> float:
     lo, hi = min_max
@@ -54,6 +60,20 @@ def to_float(value: Any, default: float = 0.0) -> float:
     return default
 
 
+def normalize_object_id(value: Any) -> str:
+    object_id = str(value or "").strip()
+    if not OBJECT_ID_PATTERN.fullmatch(object_id):
+        raise ValueError("objectId must use only letters, numbers, dot, underscore, dash (max 64 chars)")
+    return object_id
+
+
+def normalize_color(value: Any, default: str = DEFAULT_OBJECT_COLOR) -> str:
+    raw = str(value or default).strip()
+    if COLOR_PATTERN.fullmatch(raw):
+        return raw.lower()
+    return default
+
+
 def normalize_object(input_obj: Dict[str, Any], fallback_id: str) -> Dict[str, Any]:
     object_id = str(input_obj.get("object_id") or input_obj.get("objectId") or fallback_id)
     return {
@@ -65,6 +85,8 @@ def normalize_object(input_obj: Dict[str, Any], fallback_id: str) -> Dict[str, A
         "gain": clamp(to_float(input_obj.get("gain"), 0.0), OBJECT_LIMITS["gain"]),
         "mute": bool(input_obj.get("mute", False)),
         "algorithm": str(input_obj.get("algorithm") or "default"),
+        "type": str(input_obj.get("type") or DEFAULT_OBJECT_TYPE),
+        "color": normalize_color(input_obj.get("color"), DEFAULT_OBJECT_COLOR),
     }
 
 
@@ -368,17 +390,100 @@ class Runtime:
         self._send_object_param(obj["objectId"], "mute", 1 if obj["mute"] else 0)
         self._send_object_param(obj["objectId"], "algorithm", obj["algorithm"])
 
+    def add_object(self, object_id: str, patch: Dict[str, Any], source: str = "api", emit_osc: bool = True) -> Dict[str, Any]:
+        normalized_id = normalize_object_id(object_id)
+        with self.lock:
+            if normalized_id in self.objects:
+                raise ValueError(f"Object already exists: {normalized_id}")
+            created = normalize_object({**patch, "object_id": normalized_id}, normalized_id)
+            self.objects[normalized_id] = created
+
+        if emit_osc:
+            self._send_full_object_state(created)
+
+        self.emit_event(
+            "object_manager",
+            {
+                "source": source,
+                "action": "add",
+                "object": created,
+            },
+        )
+        return created
+
+    def rename_object(self, object_id: str, new_object_id: str, source: str = "api", emit_osc: bool = True) -> Dict[str, Any]:
+        old_id = normalize_object_id(object_id)
+        next_id = normalize_object_id(new_object_id)
+        with self.lock:
+            if old_id not in self.objects:
+                raise ValueError(f"Object not found: {old_id}")
+            if next_id in self.objects and next_id != old_id:
+                raise ValueError(f"Object already exists: {next_id}")
+            obj = dict(self.objects.pop(old_id))
+            obj["objectId"] = next_id
+            self.objects[next_id] = obj
+
+        if emit_osc:
+            self._send_full_object_state(obj)
+
+        self.emit_event(
+            "object_manager",
+            {
+                "source": source,
+                "action": "rename",
+                "oldObjectId": old_id,
+                "newObjectId": next_id,
+                "object": obj,
+            },
+        )
+        return obj
+
+    def remove_object(self, object_id: str, source: str = "api") -> Dict[str, Any]:
+        normalized_id = normalize_object_id(object_id)
+        with self.lock:
+            if normalized_id not in self.objects:
+                raise ValueError(f"Object not found: {normalized_id}")
+            removed = self.objects.pop(normalized_id)
+
+        self.emit_event(
+            "object_manager",
+            {
+                "source": source,
+                "action": "remove",
+                "objectId": normalized_id,
+            },
+        )
+        return removed
+
+    def clear_objects(self, source: str = "api") -> List[str]:
+        with self.lock:
+            object_ids = sorted(self.objects.keys())
+            self.objects = {}
+
+        self.emit_event(
+            "object_manager",
+            {
+                "source": source,
+                "action": "clear",
+                "count": len(object_ids),
+                "objectIds": object_ids,
+            },
+        )
+        return object_ids
+
     def update_object(self, object_id: str, patch: Dict[str, Any], source: str = "api", emit_osc: bool = True) -> Dict[str, Any]:
         with self.lock:
             current = self.objects.get(object_id, default_object(object_id))
             merged = {**current, **patch, "objectId": object_id, "object_id": object_id}
             next_obj = normalize_object(merged, object_id)
 
-            changed = [k for k in ["x", "y", "z", "size", "gain", "mute", "algorithm"] if current.get(k) != next_obj.get(k)]
+            changed = [k for k in ["x", "y", "z", "size", "gain", "mute", "algorithm", "type", "color"] if current.get(k) != next_obj.get(k)]
             self.objects[object_id] = next_obj
 
         if emit_osc:
             for param in changed:
+                if param not in ["x", "y", "z", "size", "gain", "mute", "algorithm"]:
+                    continue
                 value = 1 if (param == "mute" and next_obj[param]) else (0 if param == "mute" else next_obj[param])
                 self._send_object_param(object_id, param, value)
 
@@ -695,8 +800,43 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(HTTPStatus.OK, {"ok": True, "sceneId": scene_id, "status": RUNTIME.status()})
                 return
 
+            if path_name == "/api/object/add":
+                body = self._read_json_body()
+                object_id = normalize_object_id(body.get("objectId") or body.get("object_id"))
+                created = RUNTIME.add_object(object_id, body, source="api", emit_osc=True)
+                self._send_json(HTTPStatus.OK, {"ok": True, "object": created, "status": RUNTIME.status()})
+                return
+
+            if path_name == "/api/object/clear":
+                _ = self._read_json_body()
+                cleared_ids = RUNTIME.clear_objects(source="api")
+                self._send_json(
+                    HTTPStatus.OK,
+                    {"ok": True, "clearedCount": len(cleared_ids), "clearedObjectIds": cleared_ids, "status": RUNTIME.status()},
+                )
+                return
+
+            if path_name.startswith("/api/object/") and path_name.endswith("/rename"):
+                parts = path_name.split("/")
+                object_id = unquote(parts[3]) if len(parts) > 3 else ""
+                body = self._read_json_body()
+                new_object_id = normalize_object_id(body.get("newObjectId") or body.get("new_object_id"))
+                renamed = RUNTIME.rename_object(object_id, new_object_id, source="api", emit_osc=True)
+                self._send_json(HTTPStatus.OK, {"ok": True, "object": renamed, "status": RUNTIME.status()})
+                return
+
+            if path_name.startswith("/api/object/") and path_name.endswith("/remove"):
+                parts = path_name.split("/")
+                object_id = unquote(parts[3]) if len(parts) > 3 else ""
+                removed = RUNTIME.remove_object(object_id, source="api")
+                self._send_json(HTTPStatus.OK, {"ok": True, "removedObjectId": removed["objectId"], "status": RUNTIME.status()})
+                return
+
             if path_name.startswith("/api/object/"):
                 parts = path_name.split("/")
+                if len(parts) != 4:
+                    self._send_json(HTTPStatus.NOT_FOUND, {"ok": False, "error": "Unknown object endpoint"})
+                    return
                 object_id = unquote(parts[3]) if len(parts) > 3 else ""
                 body = self._read_json_body()
                 updated = RUNTIME.update_object(object_id, body, source="api", emit_osc=True)

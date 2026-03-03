@@ -12,7 +12,14 @@
     <div id="statusLine" class="status-line">Connecting...</div>
   </header>
 
-  <main class="layout">
+  <div class="view-switch-wrap">
+    <div class="view-switch" role="tablist" aria-label="Main Views">
+      <button id="viewPannerBtn" class="view-btn is-active" type="button" role="tab" aria-selected="true">Panner</button>
+      <button id="viewObjectManagerBtn" class="view-btn" type="button" role="tab" aria-selected="false">Object Manager</button>
+    </div>
+  </div>
+
+  <main id="mainLayout" class="layout" data-page="panner">
     <section class="panel controls-panel">
       <h2>Show Control</h2>
       <div class="row">
@@ -62,6 +69,63 @@
       </label>
 
       <button id="applyObjectBtn" type="button">Apply Object Update</button>
+    </section>
+
+    <section class="panel object-manager-panel">
+      <h2>Object Manager</h2>
+      <p id="managerObjectCount" class="muted">0 objects</p>
+
+      <div class="manager-grid">
+        <div class="manager-block">
+          <h3>Add Object</h3>
+          <div class="field-grid manager-field-grid">
+            <label for="managerAddId">ID</label><input id="managerAddId" type="text" placeholder="obj-2" />
+            <label for="managerAddType">Type</label><input id="managerAddType" type="text" value="point" />
+            <label for="managerAddColor">Color</label><input id="managerAddColor" type="color" value="#1c4f89" />
+          </div>
+          <button id="managerAddBtn" type="button">Add Object</button>
+        </div>
+
+        <div class="manager-block">
+          <h3>Edit Selected Object</h3>
+          <label for="managerObjectSelect">Object</label>
+          <select id="managerObjectSelect"></select>
+
+          <div class="row">
+            <input id="managerRenameInput" type="text" placeholder="new-id" />
+            <button id="managerRenameBtn" type="button">Rename</button>
+          </div>
+
+          <div class="row">
+            <input id="managerTypeInput" type="text" placeholder="type" />
+            <button id="managerTypeBtn" type="button">Set Type</button>
+          </div>
+
+          <div class="row">
+            <input id="managerColorInput" type="color" value="#1c4f89" />
+            <button id="managerColorBtn" type="button">Set Color</button>
+          </div>
+
+          <div class="row">
+            <button id="managerRemoveBtn" class="danger" type="button">Remove Selected</button>
+            <button id="managerClearBtn" class="danger" type="button">Clear All</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="manager-table-wrap">
+        <table class="manager-table">
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Type</th>
+              <th>Color</th>
+              <th>Position</th>
+            </tr>
+          </thead>
+          <tbody id="managerObjectRows"></tbody>
+        </table>
+      </div>
     </section>
 
     <section class="panel log-panel">

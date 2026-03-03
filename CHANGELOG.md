@@ -33,3 +33,9 @@
 
 ## 2026-03-03 02:08 CET
 - Added requested backlog items for object manager, advanced action manager, movement types, multi-select editing, object-specific triggers, and non-selected object opacity
+
+## 2026-03-03 02:16 CET
+- Marked TODO item complete: initialized git repo and created baseline commit
+
+## 2026-03-03 02:29 CET
+- Implemented Object Manager page with add/rename/type/color/remove/clear controls and matching object lifecycle API endpoints

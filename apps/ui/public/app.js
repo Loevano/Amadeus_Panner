@@ -4,6 +4,10 @@ const LIMITS = {
   z: [-100, 100]
 };
 
+const OBJECT_ID_RE = /^[A-Za-z0-9._-]{1,64}$/;
+const DEFAULT_OBJECT_TYPE = "point";
+const DEFAULT_OBJECT_COLOR = "#1c4f89";
+
 const CAMERA_DEFAULT = {
   yawDeg: 35,
   pitchDeg: 26,
@@ -14,6 +18,7 @@ const CAMERA_DEFAULT = {
 const state = {
   status: null,
   selectedObjectId: null,
+  currentPage: "panner",
   draggingObjectId: null,
   draggingPlaneY: 0,
   draggingStartY: 0,
@@ -33,6 +38,9 @@ const state = {
 
 const els = {
   statusLine: document.getElementById("statusLine"),
+  mainLayout: document.getElementById("mainLayout"),
+  viewPannerBtn: document.getElementById("viewPannerBtn"),
+  viewObjectManagerBtn: document.getElementById("viewObjectManagerBtn"),
   showPathInput: document.getElementById("showPathInput"),
   loadShowBtn: document.getElementById("loadShowBtn"),
   showInfo: document.getElementById("showInfo"),
@@ -52,6 +60,21 @@ const els = {
   cameraDistance: document.getElementById("cameraDistance"),
   cameraResetBtn: document.getElementById("cameraResetBtn"),
   cameraReadout: document.getElementById("cameraReadout"),
+  managerObjectCount: document.getElementById("managerObjectCount"),
+  managerAddId: document.getElementById("managerAddId"),
+  managerAddType: document.getElementById("managerAddType"),
+  managerAddColor: document.getElementById("managerAddColor"),
+  managerAddBtn: document.getElementById("managerAddBtn"),
+  managerObjectSelect: document.getElementById("managerObjectSelect"),
+  managerRenameInput: document.getElementById("managerRenameInput"),
+  managerRenameBtn: document.getElementById("managerRenameBtn"),
+  managerTypeInput: document.getElementById("managerTypeInput"),
+  managerTypeBtn: document.getElementById("managerTypeBtn"),
+  managerColorInput: document.getElementById("managerColorInput"),
+  managerColorBtn: document.getElementById("managerColorBtn"),
+  managerRemoveBtn: document.getElementById("managerRemoveBtn"),
+  managerClearBtn: document.getElementById("managerClearBtn"),
+  managerObjectRows: document.getElementById("managerObjectRows"),
   eventLog: document.getElementById("eventLog"),
   canvas: document.getElementById("pannerCanvas")
 };
@@ -71,6 +94,45 @@ function normalizeYaw(deg) {
 
 function degToRad(value) {
   return value * (Math.PI / 180);
+}
+
+function normalizeHexColor(value, fallback = DEFAULT_OBJECT_COLOR) {
+  const candidate = String(value || "").trim().toLowerCase();
+  if (/^#[0-9a-f]{6}$/.test(candidate)) return candidate;
+  return fallback;
+}
+
+function parseHexColor(hex) {
+  const normalized = normalizeHexColor(hex);
+  return {
+    r: Number.parseInt(normalized.slice(1, 3), 16),
+    g: Number.parseInt(normalized.slice(3, 5), 16),
+    b: Number.parseInt(normalized.slice(5, 7), 16)
+  };
+}
+
+function rgbToHex(r, g, b) {
+  const toPart = (v) => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, "0");
+  return `#${toPart(r)}${toPart(g)}${toPart(b)}`;
+}
+
+function mixHex(colorA, colorB, ratio) {
+  const a = parseHexColor(colorA);
+  const b = parseHexColor(colorB);
+  const t = clampValue(ratio, [0, 1]);
+  return rgbToHex(
+    a.r + (b.r - a.r) * t,
+    a.g + (b.g - a.g) * t,
+    a.b + (b.b - a.b) * t
+  );
+}
+
+function sanitizeObjectId(raw) {
+  const objectId = String(raw || "").trim();
+  if (!OBJECT_ID_RE.test(objectId)) {
+    throw new Error("Object ID must use letters/numbers/dot/underscore/dash (max 64 chars)");
+  }
+  return objectId;
 }
 
 function vec(x, y, z) {
@@ -109,7 +171,7 @@ function normalizeVec(v) {
 
 function addLog(line) {
   state.logs.push(line);
-  while (state.logs.length > 140) state.logs.shift();
+  while (state.logs.length > 160) state.logs.shift();
   els.eventLog.innerHTML = state.logs
     .map((entry) => `<div class="log-line">${escapeHtml(entry)}</div>`)
     .join("");
@@ -157,6 +219,18 @@ function syncCameraInputs() {
   els.cameraPitch.value = String(Math.round(state.camera.pitchDeg));
   els.cameraDistance.value = String(Math.round(state.camera.distance));
   els.cameraReadout.textContent = `Yaw ${Math.round(state.camera.yawDeg)}°, Pitch ${Math.round(state.camera.pitchDeg)}°, Zoom ${Math.round(state.camera.distance)}`;
+}
+
+function setPage(nextPage) {
+  state.currentPage = nextPage;
+  els.mainLayout.dataset.page = nextPage;
+  els.viewPannerBtn.classList.toggle("is-active", nextPage === "panner");
+  els.viewObjectManagerBtn.classList.toggle("is-active", nextPage === "object-manager");
+  els.viewPannerBtn.setAttribute("aria-selected", nextPage === "panner" ? "true" : "false");
+  els.viewObjectManagerBtn.setAttribute("aria-selected", nextPage === "object-manager" ? "true" : "false");
+  if (nextPage === "panner") {
+    renderPanner();
+  }
 }
 
 function getCameraBasis() {
@@ -318,6 +392,8 @@ function pickObject(canvasPoint) {
 }
 
 function renderPanner() {
+  if (state.currentPage !== "panner") return;
+
   resizeCanvasToDisplaySize();
 
   const w = els.canvas.width;
@@ -377,6 +453,9 @@ function renderPanner() {
     const cx = item.projected.x;
     const cy = item.projected.y;
     const radius = item.radius;
+    const baseColor = normalizeHexColor(item.obj.color, DEFAULT_OBJECT_COLOR);
+    const colorOuter = isSelected ? mixHex(baseColor, "#003f3b", 0.38) : mixHex(baseColor, "#14253b", 0.52);
+    const colorInner = isSelected ? mixHex(baseColor, "#ffffff", 0.52) : mixHex(baseColor, "#ffffff", 0.28);
 
     const fill = ctx.createRadialGradient(
       cx - radius * 0.35,
@@ -387,13 +466,8 @@ function renderPanner() {
       radius * 1.1
     );
 
-    if (isSelected) {
-      fill.addColorStop(0, "#57ddd5");
-      fill.addColorStop(1, "#006c67");
-    } else {
-      fill.addColorStop(0, "#74b9ff");
-      fill.addColorStop(1, "#1c4f89");
-    }
+    fill.addColorStop(0, colorInner);
+    fill.addColorStop(1, colorOuter);
 
     ctx.fillStyle = fill;
     ctx.beginPath();
@@ -419,7 +493,8 @@ function renderPanner() {
       ctx.stroke();
     }
 
-    const label = `${item.obj.objectId} (${Number(item.obj.x).toFixed(1)}, ${Number(item.obj.y).toFixed(1)}, ${Number(item.obj.z).toFixed(1)})`;
+    const typeText = String(item.obj.type || DEFAULT_OBJECT_TYPE);
+    const label = `${item.obj.objectId} [${typeText}] (${Number(item.obj.x).toFixed(1)}, ${Number(item.obj.y).toFixed(1)}, ${Number(item.obj.z).toFixed(1)})`;
     ctx.font = "12px IBM Plex Sans, sans-serif";
     const tw = ctx.measureText(label).width;
     const tx = cx + radius + 6;
@@ -535,8 +610,8 @@ function renderObjectSelect() {
     els.objectSelect.appendChild(option);
   }
 
-  if (!objects.find((obj) => obj.objectId === state.selectedObjectId) && objects[0]) {
-    state.selectedObjectId = objects[0].objectId;
+  if (!objects.find((obj) => obj.objectId === state.selectedObjectId)) {
+    state.selectedObjectId = objects[0] ? objects[0].objectId : null;
   }
 }
 
@@ -559,11 +634,60 @@ function renderInspector() {
   els.muteInput.checked = Boolean(obj.mute);
 }
 
+function renderManager() {
+  const objects = getObjects();
+  els.managerObjectCount.textContent = `${objects.length} object${objects.length === 1 ? "" : "s"}`;
+
+  els.managerObjectSelect.innerHTML = "";
+  for (const obj of objects) {
+    const opt = document.createElement("option");
+    opt.value = obj.objectId;
+    opt.textContent = obj.objectId;
+    if (obj.objectId === state.selectedObjectId) opt.selected = true;
+    els.managerObjectSelect.appendChild(opt);
+  }
+
+  const selected = getSelectedObject();
+  if (selected) {
+    els.managerRenameInput.value = selected.objectId;
+    els.managerTypeInput.value = String(selected.type || DEFAULT_OBJECT_TYPE);
+    els.managerColorInput.value = normalizeHexColor(selected.color, DEFAULT_OBJECT_COLOR);
+  } else {
+    els.managerRenameInput.value = "";
+    els.managerTypeInput.value = DEFAULT_OBJECT_TYPE;
+    els.managerColorInput.value = DEFAULT_OBJECT_COLOR;
+  }
+
+  els.managerObjectRows.innerHTML = "";
+  for (const obj of objects) {
+    const row = document.createElement("tr");
+    if (obj.objectId === state.selectedObjectId) row.classList.add("is-selected");
+
+    const positionText = `${Number(obj.x).toFixed(1)}, ${Number(obj.y).toFixed(1)}, ${Number(obj.z).toFixed(1)}`;
+    const color = normalizeHexColor(obj.color, DEFAULT_OBJECT_COLOR);
+
+    row.innerHTML = `
+      <td>${escapeHtml(obj.objectId)}</td>
+      <td>${escapeHtml(String(obj.type || DEFAULT_OBJECT_TYPE))}</td>
+      <td><span class="color-chip" style="background:${escapeHtml(color)}"></span>${escapeHtml(color)}</td>
+      <td>${escapeHtml(positionText)}</td>
+    `;
+
+    row.addEventListener("click", () => {
+      state.selectedObjectId = obj.objectId;
+      renderAll();
+    });
+
+    els.managerObjectRows.appendChild(row);
+  }
+}
+
 function renderAll() {
   renderStatusLine();
   renderShowControls();
   renderObjectSelect();
   renderInspector();
+  renderManager();
   syncCameraInputs();
   renderPanner();
 }
@@ -571,8 +695,9 @@ function renderAll() {
 async function refreshStatus() {
   try {
     state.status = await api("/api/status");
-    if (!state.selectedObjectId && getObjects()[0]) {
-      state.selectedObjectId = getObjects()[0].objectId;
+    const objects = getObjects();
+    if (!objects.find((obj) => obj.objectId === state.selectedObjectId)) {
+      state.selectedObjectId = objects[0] ? objects[0].objectId : null;
     }
     renderAll();
   } catch (error) {
@@ -637,7 +762,107 @@ async function finalizePointerInteraction() {
   state.activePointerId = null;
 }
 
+async function managerAddObject() {
+  try {
+    const objectId = sanitizeObjectId(els.managerAddId.value);
+    const objectType = String(els.managerAddType.value || DEFAULT_OBJECT_TYPE).trim() || DEFAULT_OBJECT_TYPE;
+    const objectColor = normalizeHexColor(els.managerAddColor.value, DEFAULT_OBJECT_COLOR);
+    await api("/api/object/add", "POST", {
+      objectId,
+      type: objectType,
+      color: objectColor
+    });
+    state.selectedObjectId = objectId;
+    addLog(`object add -> ${objectId}`);
+    await refreshStatus();
+  } catch (error) {
+    addLog(`object add failed: ${error.message}`);
+  }
+}
+
+async function managerRenameObject() {
+  try {
+    const currentId = state.selectedObjectId;
+    if (!currentId) {
+      throw new Error("No object selected");
+    }
+    const newObjectId = sanitizeObjectId(els.managerRenameInput.value);
+    await api(`/api/object/${encodeURIComponent(currentId)}/rename`, "POST", { newObjectId });
+    state.selectedObjectId = newObjectId;
+    addLog(`object rename -> ${currentId} to ${newObjectId}`);
+    await refreshStatus();
+  } catch (error) {
+    addLog(`object rename failed: ${error.message}`);
+  }
+}
+
+async function managerSetType() {
+  try {
+    const objectId = state.selectedObjectId;
+    if (!objectId) {
+      throw new Error("No object selected");
+    }
+    const type = String(els.managerTypeInput.value || DEFAULT_OBJECT_TYPE).trim() || DEFAULT_OBJECT_TYPE;
+    await api(`/api/object/${encodeURIComponent(objectId)}`, "POST", { type });
+    addLog(`object type set -> ${objectId} = ${type}`);
+    await refreshStatus();
+  } catch (error) {
+    addLog(`set type failed: ${error.message}`);
+  }
+}
+
+async function managerSetColor() {
+  try {
+    const objectId = state.selectedObjectId;
+    if (!objectId) {
+      throw new Error("No object selected");
+    }
+    const color = normalizeHexColor(els.managerColorInput.value, DEFAULT_OBJECT_COLOR);
+    await api(`/api/object/${encodeURIComponent(objectId)}`, "POST", { color });
+    addLog(`object color set -> ${objectId} = ${color}`);
+    await refreshStatus();
+  } catch (error) {
+    addLog(`set color failed: ${error.message}`);
+  }
+}
+
+async function managerRemoveSelected() {
+  try {
+    const objectId = state.selectedObjectId;
+    if (!objectId) {
+      throw new Error("No object selected");
+    }
+    await api(`/api/object/${encodeURIComponent(objectId)}/remove`, "POST", {});
+    addLog(`object remove -> ${objectId}`);
+    await refreshStatus();
+  } catch (error) {
+    addLog(`remove failed: ${error.message}`);
+  }
+}
+
+async function managerClearAll() {
+  if (!confirm("Clear all objects from current runtime state?")) {
+    return;
+  }
+  try {
+    await api("/api/object/clear", "POST", {});
+    state.selectedObjectId = null;
+    addLog("object clear -> all");
+    await refreshStatus();
+  } catch (error) {
+    addLog(`clear failed: ${error.message}`);
+  }
+}
+
 function setupHandlers() {
+  els.viewPannerBtn.addEventListener("click", () => {
+    setPage("panner");
+  });
+
+  els.viewObjectManagerBtn.addEventListener("click", () => {
+    setPage("object-manager");
+  });
+
   els.loadShowBtn.addEventListener("click", async () => {
     try {
       const showPath = els.showPathInput.value.trim();
@@ -651,8 +876,7 @@ function setupHandlers() {
 
   els.objectSelect.addEventListener("change", () => {
     state.selectedObjectId = els.objectSelect.value;
-    renderInspector();
-    renderPanner();
+    renderAll();
   });
 
   els.applyObjectBtn.addEventListener("click", async () => {
@@ -660,6 +884,35 @@ function setupHandlers() {
     if (!id) return;
     await pushObjectPatch(id, selectedObjectPatchFromInputs());
     await refreshStatus();
+  });
+
+  els.managerObjectSelect.addEventListener("change", () => {
+    state.selectedObjectId = els.managerObjectSelect.value;
+    renderAll();
+  });
+
+  els.managerAddBtn.addEventListener("click", () => {
+    void managerAddObject();
+  });
+
+  els.managerRenameBtn.addEventListener("click", () => {
+    void managerRenameObject();
+  });
+
+  els.managerTypeBtn.addEventListener("click", () => {
+    void managerSetType();
+  });
+
+  els.managerColorBtn.addEventListener("click", () => {
+    void managerSetColor();
+  });
+
+  els.managerRemoveBtn.addEventListener("click", () => {
+    void managerRemoveSelected();
+  });
+
+  els.managerClearBtn.addEventListener("click", () => {
+    void managerClearAll();
   });
 
   const cameraInputHandler = () => {
@@ -694,6 +947,8 @@ function setupHandlers() {
   }, { passive: false });
 
   els.canvas.addEventListener("pointerdown", (event) => {
+    if (state.currentPage !== "panner") return;
+
     const pt = toCanvasPoint(event);
     state.activePointerId = event.pointerId;
     state.lastPointer = pt;
@@ -706,7 +961,7 @@ function setupHandlers() {
       state.draggingStartPointerY = pt.y;
       state.orbiting = false;
       state.selectedObjectId = hit.obj.objectId;
-      renderInspector();
+      renderAll();
     } else {
       state.draggingObjectId = null;
       state.orbiting = true;
@@ -717,6 +972,7 @@ function setupHandlers() {
   });
 
   els.canvas.addEventListener("pointermove", (event) => {
+    if (state.currentPage !== "panner") return;
     if (state.activePointerId !== event.pointerId) return;
 
     const pt = toCanvasPoint(event);
@@ -731,6 +987,7 @@ function setupHandlers() {
         const nextY = clampValue(state.draggingStartY - (pt.y - state.draggingStartPointerY) * 0.6, LIMITS.y);
         obj.y = nextY;
         renderInspector();
+        renderManager();
         renderPanner();
         maybeSendDragPatch(state.draggingObjectId, { y: nextY });
       } else {
@@ -743,6 +1000,7 @@ function setupHandlers() {
           obj.x = nextX;
           obj.z = nextZ;
           renderInspector();
+          renderManager();
           renderPanner();
           maybeSendDragPatch(state.draggingObjectId, { x: nextX, z: nextZ });
         }
@@ -758,11 +1016,13 @@ function setupHandlers() {
   });
 
   els.canvas.addEventListener("pointerup", async (event) => {
+    if (state.currentPage !== "panner") return;
     if (state.activePointerId !== event.pointerId) return;
     await finalizePointerInteraction();
   });
 
   els.canvas.addEventListener("pointercancel", async (event) => {
+    if (state.currentPage !== "panner") return;
     if (state.activePointerId !== event.pointerId) return;
     await finalizePointerInteraction();
   });
@@ -774,7 +1034,7 @@ function setupHandlers() {
 
 function setupEventStream() {
   const events = new EventSource("/api/events");
-  const types = ["status", "show", "scene", "object", "action", "osc_in", "osc_out", "osc_error", "system"];
+  const types = ["status", "show", "scene", "object", "object_manager", "action", "osc_in", "osc_out", "osc_error", "system"];
 
   for (const type of types) {
     events.addEventListener(type, (ev) => {
@@ -794,6 +1054,7 @@ function setupEventStream() {
 
 async function start() {
   syncCameraInputs();
+  setPage("panner");
   setupHandlers();
   setupEventStream();
   await refreshStatus();

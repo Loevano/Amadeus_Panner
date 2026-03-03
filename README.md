@@ -41,6 +41,8 @@ HOST=0.0.0.0 HTTP_PORT=8787 OSC_OUT_HOST=10.0.0.50 OSC_OUT_PORT=9000 OSC_IN_PORT
   - Action start/stop/abort controls.
   - Interactive perspective 3D panner with camera orbit/zoom and object drag.
   - Shift-drag gesture for Y-axis object movement.
+  - Object Manager page with add, rename, type, color, remove, and clear controls.
+  - Live object list with selection sync between manager and panner/inspector.
   - Object inspector (x/y/z/size/gain/mute/algorithm).
   - Live debug event log (OSC in/out + system events).
 - Control server with:

@@ -63,3 +63,32 @@ Release-facing summary for operators and production notes.
 ### Known Issues
 - 3D renderer is custom canvas projection, not yet a full production Three.js scene.
 - Touch gestures for advanced camera control still need dedicated iPad QA.
+
+## v0.1.3 - 2026-03-03 - Object Manager Page
+
+### Added
+- New Object Manager page view in the web UI with dedicated controls for:
+  - add object
+  - rename object
+  - set object type
+  - set object color
+  - remove selected object
+  - clear all objects
+- Object table with live state (id, type, color, position) and selection sync.
+- Object lifecycle API endpoints:
+  - `POST /api/object/add`
+  - `POST /api/object/{id}/rename`
+  - `POST /api/object/{id}/remove`
+  - `POST /api/object/clear`
+
+### Changed
+- Runtime object model now includes `type` and `color` fields.
+- 3D panner now renders per-object color and includes object type in labels.
+- View switching added between `Panner` and `Object Manager` pages.
+
+### Fixed
+- Prevented object endpoint routing ambiguity by handling object manager endpoints before generic object updates.
+
+### Known Issues
+- Object manager edits are runtime-only and are not yet persisted back to showfile scene files.
+- Clear/remove operations currently update controller state only (no explicit OSC object-delete semantics yet).
