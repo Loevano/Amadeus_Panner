@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-03-03 19:09 CET
+- Improved automatic ID generation in Object Manager:
+  - object auto-ID now derives from entered type when ID is blank (with numeric uniqueness suffixing)
+  - group auto-ID now derives from current selection context (single object, shared prefix, or shared type)
+- Improved group naming defaults: new group names now auto-humanize from generated IDs (for example `violin-1-group` -> `Violin 1 Group`).
+- Added group color support end-to-end:
+  - UI group color picker in Object Groups manager
+  - group color included in group create/update API payloads
+  - runtime group model now stores/normalizes `color`
+  - groups panel now displays a color chip per group entry
+  - enabled groups now visually override member object colors in the panner/object table, and object colors restore when groups are disabled
+- Updated Groups panel to always include the virtual `All` group pinned at the top as a locked system row.
+
 ## 2026-03-03 12:14 CET
 - Implemented showfile validation gate in Python runtime load path (`Runtime.load_show`), enforcing schema + file-reference checks before scenes/actions are accepted.
 - Added `apps/control-server/showfile_validator.py` with reusable validation logic for showfile, scene, and action schema enforcement.
@@ -119,3 +132,9 @@
 - Added Scene Manager controls in Show Control: scene dropdown with `Load Scene`, `Save Scene`, and `Save Scene As`
 - Added scene persistence endpoints (`POST /api/scene/:id/save`, `POST /api/scene/:id/save-as`) and runtime scene-save methods
 - Updated show-save internals to support scene persistence without always forcing active-scene capture (`capture_runtime_scene` option)
+
+## 2026-03-03 19:15 CET
+- Fixed Node server/UI mismatch by adding GET /api/show/list in apps/control-server/src/main.mjs (prevents repeated 'show list failed: Not found').
+
+## 2026-03-03 19:15 CET
+- Fixed group color-link UX in apps/ui/public/app.js: group color now applies to member visuals only when 'Color' is enabled in linked parameters.

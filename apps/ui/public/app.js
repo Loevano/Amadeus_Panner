@@ -7,6 +7,7 @@ const LIMITS = {
 const OBJECT_ID_RE = /^[A-Za-z0-9._-]{1,64}$/;
 const DEFAULT_OBJECT_TYPE = "point";
 const DEFAULT_OBJECT_COLOR = "#1c4f89";
+const DEFAULT_GROUP_COLOR = "#2f7f7a";
 const RELATIVE_GROUP_PARAMS = new Set(["x", "y", "z"]);
 const VIRTUAL_ALL_GROUP_ID = "all";
 const VIRTUAL_ALL_GROUP_NAME = "All";
@@ -115,6 +116,7 @@ const els = {
   managerGroupSelect: document.getElementById("managerGroupSelect"),
   managerGroupId: document.getElementById("managerGroupId"),
   managerGroupName: document.getElementById("managerGroupName"),
+  managerGroupColor: document.getElementById("managerGroupColor"),
   managerGroupSummary: document.getElementById("managerGroupSummary"),
   managerGroupCreateBtn: document.getElementById("managerGroupCreateBtn"),
   managerGroupUpdateBtn: document.getElementById("managerGroupUpdateBtn"),
@@ -316,6 +318,20 @@ function humanizeId(idValue) {
     .trim();
   if (!text) return "";
   return text.replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+function suggestGroupColorFromSelection(objectIds) {
+  const selectedObjects = (Array.isArray(objectIds) ? objectIds : [])
+    .map((objectId) => getObjectById(objectId))
+    .filter(Boolean);
+  if (!selectedObjects.length) return DEFAULT_GROUP_COLOR;
+  const uniqueColors = [
+    ...new Set(selectedObjects.map((obj) => normalizeHexColor(obj.color, DEFAULT_OBJECT_COLOR)))
+  ];
+  if (uniqueColors.length === 1) {
+    return uniqueColors[0];
+  }
+  return DEFAULT_GROUP_COLOR;
 }
 
 function autoGroupId(rawGroupId, selectedObjectIds) {
@@ -644,6 +660,41 @@ function isGroupEnabled(group) {
   return group?.enabled !== false;
 }
 
+function groupColorOrNull(group) {
+  const raw = String(group?.color || "").trim().toLowerCase();
+  if (/^#[0-9a-f]{6}$/.test(raw)) return raw;
+  return null;
+}
+
+function isColorLinkedForGroup(group) {
+  const linkParams = Array.isArray(group?.linkParams) ? group.linkParams : [];
+  return linkParams.includes("color");
+}
+
+function effectiveGroupColorForObject(objectId) {
+  if (!areGroupsEnabled()) return null;
+  const targetId = String(objectId || "").trim();
+  if (!targetId) return null;
+
+  const groups = [...getObjectGroups()]
+    .filter((group) => isGroupEnabled(group))
+    .sort((a, b) => String(a.groupId || "").localeCompare(String(b.groupId || "")));
+
+  for (const group of groups) {
+    const members = Array.isArray(group.objectIds) ? group.objectIds : [];
+    if (!members.includes(targetId)) continue;
+    if (!isColorLinkedForGroup(group)) continue;
+    const color = groupColorOrNull(group);
+    if (color) return color;
+  }
+  return null;
+}
+
+function effectiveObjectColor(obj) {
+  const baseColor = normalizeHexColor(obj?.color, DEFAULT_OBJECT_COLOR);
+  return effectiveGroupColorForObject(obj?.objectId) || baseColor;
+}
+
 function livePropagateGroupLinks(previousByObjectId, patchByObjectId) {
   const groups = getSelectableGroups();
   if (!groups.length) return;
@@ -950,7 +1001,7 @@ function renderPanner() {
     const cx = item.projected.x;
     const cy = item.projected.y;
     const radius = item.radius;
-    const baseColor = normalizeHexColor(item.obj.color, DEFAULT_OBJECT_COLOR);
+    const baseColor = effectiveObjectColor(item.obj);
     const colorOuter = isSelected ? mixHex(baseColor, "#003f3b", 0.38) : mixHex(baseColor, "#14253b", 0.52);
     const colorInner = isSelected ? mixHex(baseColor, "#ffffff", 0.52) : mixHex(baseColor, "#ffffff", 0.28);
 
@@ -1273,47 +1324,49 @@ async function setGroupsEnabled(enabled) {
 }
 
 function renderGroupsPanel() {
-  const groups = [...getObjectGroups()].sort((a, b) => String(a.groupId).localeCompare(String(b.groupId)));
+  const customGroups = [...getObjectGroups()].sort((a, b) => String(a.groupId).localeCompare(String(b.groupId)));
+  const groups = [getVirtualAllGroup(), ...customGroups];
   const groupsEnabled = areGroupsEnabled();
   els.enableGroupsToggle.checked = groupsEnabled;
   els.groupsToggleList.innerHTML = "";
-
-  if (!groups.length) {
-    els.groupsSummary.textContent = groupsEnabled ? "No groups" : "Groups disabled";
-    const empty = document.createElement("p");
-    empty.className = "muted";
-    empty.textContent = groupsEnabled ? "Create groups in Object Manager." : "Enable groups to apply group links.";
-    els.groupsToggleList.appendChild(empty);
-    return;
-  }
 
   const enabledCount = groups.filter((group) => isGroupEnabled(group)).length;
   els.groupsSummary.textContent = groupsEnabled ? `${enabledCount}/${groups.length} groups enabled` : "Groups disabled";
 
   for (const group of groups) {
+    const isVirtualAll = Boolean(group.virtual);
     const row = document.createElement("label");
     row.className = "group-toggle-row";
+    const groupColor = normalizeHexColor(group.color, DEFAULT_GROUP_COLOR);
 
     const meta = document.createElement("span");
     meta.className = "group-toggle-meta";
 
     const name = document.createElement("span");
     name.className = "group-toggle-name";
-    name.textContent = String(group.name || group.groupId);
+    const chip = document.createElement("span");
+    chip.className = "group-color-chip";
+    chip.style.background = groupColor;
+    const title = document.createElement("span");
+    title.textContent = isVirtualAll ? `${String(group.name || group.groupId)} (locked)` : String(group.name || group.groupId);
+    name.appendChild(chip);
+    name.appendChild(title);
     meta.appendChild(name);
 
     const detail = document.createElement("span");
     detail.className = "muted";
-    detail.textContent = `${group.groupId} | ${group.objectIds.length} object${group.objectIds.length === 1 ? "" : "s"}`;
+    detail.textContent = `${group.groupId} | ${group.objectIds.length} object${group.objectIds.length === 1 ? "" : "s"}${isVirtualAll ? " | system" : ""}`;
     meta.appendChild(detail);
 
     const toggle = document.createElement("input");
     toggle.type = "checkbox";
-    toggle.checked = isGroupEnabled(group);
-    toggle.disabled = !groupsEnabled;
-    toggle.addEventListener("change", () => {
-      void setGroupEnabled(group.groupId, toggle.checked);
-    });
+    toggle.checked = isVirtualAll ? groupsEnabled : isGroupEnabled(group);
+    toggle.disabled = isVirtualAll || !groupsEnabled;
+    if (!isVirtualAll) {
+      toggle.addEventListener("change", () => {
+        void setGroupEnabled(group.groupId, toggle.checked);
+      });
+    }
 
     row.appendChild(meta);
     row.appendChild(toggle);
@@ -1351,16 +1404,19 @@ function renderGroupsManager() {
   if (selectedGroup) {
     setInputValueIfIdle(els.managerGroupId, String(selectedGroup.groupId));
     setInputValueIfIdle(els.managerGroupName, String(selectedGroup.name || selectedGroup.groupId));
+    setInputValueIfIdle(els.managerGroupColor, normalizeHexColor(selectedGroup.color, DEFAULT_GROUP_COLOR));
     applyLinkParamsToInputs(selectedGroup.linkParams || []);
     els.managerGroupSummary.textContent = `Group members: ${selectedGroup.objectIds.length}. Update will replace members with current selection (${selectedObjectIds.length}).`;
   } else {
     const suggestedId = uniqueGroupId(suggestGroupBaseFromSelection(selectedObjectIds));
+    const suggestedColor = suggestGroupColorFromSelection(selectedObjectIds);
     if (!String(els.managerGroupId.value || "").trim()) {
       setInputValueIfIdle(els.managerGroupId, suggestedId);
     }
     if (!selectedLinkParamsFromInputs().length) {
       applyLinkParamsToInputs(["x", "y", "z"]);
     }
+    setInputValueIfIdle(els.managerGroupColor, normalizeHexColor(els.managerGroupColor.value, suggestedColor));
     if (!String(els.managerGroupName.value || "").trim()) {
       const groupName = humanizeId(String(els.managerGroupId.value || suggestedId));
       setInputValueIfIdle(els.managerGroupName, groupName || String(els.managerGroupId.value || suggestedId));
@@ -1422,7 +1478,10 @@ function renderManager() {
     if (obj.objectId === state.selectedObjectId) row.classList.add("is-primary");
 
     const positionText = `${Number(obj.x).toFixed(1)}, ${Number(obj.y).toFixed(1)}, ${Number(obj.z).toFixed(1)}`;
-    const color = normalizeHexColor(obj.color, DEFAULT_OBJECT_COLOR);
+    const objectColor = normalizeHexColor(obj.color, DEFAULT_OBJECT_COLOR);
+    const groupColor = effectiveGroupColorForObject(obj.objectId);
+    const color = groupColor || objectColor;
+    const colorSuffix = groupColor && groupColor !== objectColor ? " (group)" : "";
     const groupLabels = groups
       .filter((group) => Array.isArray(group.objectIds) && group.objectIds.includes(obj.objectId))
       .map((group) => `${group.groupId}${isGroupEnabled(group) ? "" : " (off)"}`);
@@ -1436,7 +1495,7 @@ function renderManager() {
       <td class="sel-cell"><input class="row-select-toggle" type="checkbox" ${rowIsSelected ? "checked" : ""} aria-label="Select ${escapeHtml(obj.objectId)}" /></td>
       <td>${escapeHtml(obj.objectId)}</td>
       <td>${escapeHtml(String(obj.type || DEFAULT_OBJECT_TYPE))}</td>
-      <td><span class="color-chip" style="background:${escapeHtml(color)}"></span>${escapeHtml(color)}</td>
+      <td><span class="color-chip" style="background:${escapeHtml(color)}"></span>${escapeHtml(color)}${escapeHtml(colorSuffix)}</td>
       <td>${escapeHtml(positionText)}</td>
       <td class="groups-cell">${escapeHtml(groupText)}</td>
       <td class="all-exclude-cell"><input class="row-exclude-all-toggle" type="checkbox" ${excludeFromAll ? "checked" : ""} aria-label="Exclude ${escapeHtml(obj.objectId)} from All" /></td>
@@ -1836,10 +1895,15 @@ async function managerCreateGroup() {
     const groupId = autoGroupId(rawGroupId, selectedObjectIds);
     const suggestedName = humanizeId(groupId);
     const name = String(els.managerGroupName.value || suggestedName || groupId).trim() || groupId;
+    const groupColor = normalizeHexColor(
+      els.managerGroupColor.value,
+      suggestGroupColorFromSelection(selectedObjectIds)
+    );
     const linkParams = selectedLinkParamsFromInputs();
     await api("/api/groups/create", "POST", {
       groupId,
       name,
+      color: groupColor,
       objectIds: selectedObjectIds,
       linkParams
     });
@@ -1849,6 +1913,7 @@ async function managerCreateGroup() {
     if (!String(els.managerGroupName.value || "").trim() && suggestedName) {
       els.managerGroupName.value = suggestedName;
     }
+    setInputValueIfIdle(els.managerGroupColor, groupColor);
     state.selectedGroupId = groupId;
     addLog(`group create -> ${groupId} (${selectedObjectIds.length} members)`);
     await refreshStatus();
@@ -1868,9 +1933,11 @@ async function managerUpdateGroup() {
       throw new Error("Select one or more objects before updating the group");
     }
     const name = String(els.managerGroupName.value || groupId).trim() || groupId;
+    const groupColor = normalizeHexColor(els.managerGroupColor.value, DEFAULT_GROUP_COLOR);
     const linkParams = selectedLinkParamsFromInputs();
     await api(`/api/groups/${encodeURIComponent(groupId)}/update`, "POST", {
       name,
+      color: groupColor,
       objectIds: selectedObjectIds,
       linkParams
     });

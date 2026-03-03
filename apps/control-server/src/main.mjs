@@ -149,6 +149,40 @@ async function readJsonBody(req) {
   return raw ? JSON.parse(raw) : {};
 }
 
+async function discoverShowPaths() {
+  const showfilesRoot = path.join(PROJECT_ROOT, "showfiles");
+
+  const paths = [];
+  const walk = async (dirPath) => {
+    const entries = await fs.readdir(dirPath, { withFileTypes: true });
+    for (const entry of entries) {
+      const absolutePath = path.join(dirPath, entry.name);
+      if (entry.isDirectory()) {
+        if (entry.name === "_schema") continue;
+        await walk(absolutePath);
+        continue;
+      }
+      if (!entry.isFile() || entry.name !== "show.json") continue;
+      paths.push(path.relative(PROJECT_ROOT, absolutePath).split(path.sep).join("/"));
+    }
+  };
+
+  try {
+    await walk(showfilesRoot);
+  } catch {
+    return [];
+  }
+
+  const uniqueSorted = [...new Set(paths)].sort();
+  const templatePath = "showfiles/_template/show.json";
+  const templateIndex = uniqueSorted.indexOf(templatePath);
+  if (templateIndex >= 0) {
+    uniqueSorted.splice(templateIndex, 1);
+    uniqueSorted.unshift(templatePath);
+  }
+  return uniqueSorted;
+}
+
 function sanitizePath(inputPath) {
   const requested = String(inputPath || "").trim();
   if (!requested) {
@@ -677,6 +711,15 @@ const server = createServer(async (req, res) => {
 
     if (req.method === "GET" && url.pathname === "/api/status") {
       sendJson(res, 200, getStatus());
+      return;
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/show/list") {
+      sendJson(res, 200, {
+        ok: true,
+        paths: await discoverShowPaths(),
+        current: state.show ? state.show.path : null
+      });
       return;
     }
 
