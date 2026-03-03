@@ -127,12 +127,52 @@ function mixHex(colorA, colorB, ratio) {
   );
 }
 
-function sanitizeObjectId(raw) {
-  const objectId = String(raw || "").trim();
-  if (!OBJECT_ID_RE.test(objectId)) {
-    throw new Error("Object ID must use letters/numbers/dot/underscore/dash (max 64 chars)");
+function normalizeObjectId(raw) {
+  let objectId = String(raw || "").trim();
+  objectId = objectId.replace(/\s+/g, "-");
+  objectId = objectId.replace(/[^A-Za-z0-9._-]/g, "-");
+  objectId = objectId.replace(/-+/g, "-");
+  objectId = objectId.replace(/^[-._]+/, "");
+  objectId = objectId.replace(/[-._]+$/, "");
+  if (objectId.length > 64) {
+    objectId = objectId.slice(0, 64);
+    objectId = objectId.replace(/[-._]+$/, "");
   }
   return objectId;
+}
+
+function uniqueObjectId(baseId) {
+  const normalizedBase = normalizeObjectId(baseId) || "obj";
+  const existing = new Set(getObjects().map((obj) => obj.objectId));
+
+  if (!existing.has(normalizedBase)) {
+    return normalizedBase;
+  }
+
+  let counter = 2;
+  while (counter < 10000) {
+    const suffix = `-${counter}`;
+    const maxBaseLen = 64 - suffix.length;
+    const trimmedBase = normalizedBase.slice(0, Math.max(1, maxBaseLen)).replace(/[-._]+$/, "") || "obj";
+    const candidate = `${trimmedBase}${suffix}`;
+    if (!existing.has(candidate)) {
+      return candidate;
+    }
+    counter += 1;
+  }
+
+  throw new Error("Could not generate a unique object ID");
+}
+
+function sanitizeObjectId(raw, options = {}) {
+  const { allowAuto = false } = options;
+  const normalized = normalizeObjectId(raw);
+  const candidate = allowAuto ? uniqueObjectId(normalized || "obj") : normalized;
+
+  if (!OBJECT_ID_RE.test(candidate)) {
+    throw new Error("Object ID must use letters/numbers/dot/underscore/dash (max 64 chars)");
+  }
+  return candidate;
 }
 
 function vec(x, y, z) {
@@ -764,7 +804,8 @@ async function finalizePointerInteraction() {
 
 async function managerAddObject() {
   try {
-    const objectId = sanitizeObjectId(els.managerAddId.value);
+    const rawObjectId = els.managerAddId.value;
+    const objectId = sanitizeObjectId(rawObjectId, { allowAuto: true });
     const objectType = String(els.managerAddType.value || DEFAULT_OBJECT_TYPE).trim() || DEFAULT_OBJECT_TYPE;
     const objectColor = normalizeHexColor(els.managerAddColor.value, DEFAULT_OBJECT_COLOR);
     await api("/api/object/add", "POST", {
@@ -772,6 +813,10 @@ async function managerAddObject() {
       type: objectType,
       color: objectColor
     });
+    if (String(rawObjectId || "").trim() !== objectId) {
+      addLog(`object id normalized -> ${objectId}`);
+    }
+    els.managerAddId.value = objectId;
     state.selectedObjectId = objectId;
     addLog(`object add -> ${objectId}`);
     await refreshStatus();

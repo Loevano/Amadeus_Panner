@@ -39,3 +39,6 @@
 
 ## 2026-03-03 02:29 CET
 - Implemented Object Manager page with add/rename/type/color/remove/clear controls and matching object lifecycle API endpoints
+
+## 2026-03-03 02:34 CET
+- Fixed Object Manager ID handling: add now auto-normalizes input and auto-generates unique IDs when empty/invalid
