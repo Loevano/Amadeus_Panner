@@ -1,0 +1,20 @@
+{
+  "action_id": "action-fly-in",
+  "name": "Fly In",
+  "duration_ms": 4000,
+  "tracks": [
+    {
+      "object_id": "obj-1",
+      "parameter": "x",
+      "keyframes": [
+        { "time_ms": 0, "value": -50, "curve": "linear" },
+        { "time_ms": 4000, "value": 0, "curve": "linear" }
+      ]
+    }
+  ],
+  "osc_triggers": {
+    "start": "/art/action/fly-in/start",
+    "stop": "/art/action/fly-in/stop",
+    "abort": "/art/action/fly-in/abort"
+  }
+}

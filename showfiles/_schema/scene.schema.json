@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local.amadeus-panner/schema/scene.schema.json",
+  "title": "ART Scene",
+  "type": "object",
+  "required": ["scene_id", "name", "objects"],
+  "properties": {
+    "scene_id": {
+      "type": "string"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "transition_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "default": 0
+    },
+    "objects": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["object_id", "x", "y", "z", "size", "gain", "mute", "algorithm"],
+        "properties": {
+          "object_id": { "type": "string" },
+          "x": { "type": "number", "minimum": -100, "maximum": 100 },
+          "y": { "type": "number", "minimum": -100, "maximum": 100 },
+          "z": { "type": "number", "minimum": -100, "maximum": 100 },
+          "size": { "type": "number", "minimum": 0, "maximum": 100 },
+          "gain": { "type": "number", "minimum": -120, "maximum": 12 },
+          "mute": { "type": "boolean" },
+          "algorithm": { "type": "string" }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

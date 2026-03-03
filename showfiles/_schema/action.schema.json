@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local.amadeus-panner/schema/action.schema.json",
+  "title": "ART Action",
+  "type": "object",
+  "required": ["action_id", "name", "duration_ms", "tracks", "osc_triggers"],
+  "properties": {
+    "action_id": { "type": "string" },
+    "name": { "type": "string", "minLength": 1 },
+    "duration_ms": { "type": "integer", "minimum": 0 },
+    "tracks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["object_id", "parameter", "keyframes"],
+        "properties": {
+          "object_id": { "type": "string" },
+          "parameter": { "type": "string" },
+          "keyframes": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["time_ms", "value"],
+              "properties": {
+                "time_ms": { "type": "integer", "minimum": 0 },
+                "value": { "type": ["number", "boolean", "string"] },
+                "curve": { "type": "string", "enum": ["step", "linear", "ease-in", "ease-out"] }
+              },
+              "additionalProperties": false
+            }
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "osc_triggers": {
+      "type": "object",
+      "required": ["start", "stop", "abort"],
+      "properties": {
+        "start": { "type": "string" },
+        "stop": { "type": "string" },
+        "abort": { "type": "string" }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

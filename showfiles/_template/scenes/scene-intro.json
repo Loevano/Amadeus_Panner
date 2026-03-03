@@ -1,0 +1,17 @@
+{
+  "scene_id": "scene-intro",
+  "name": "Intro",
+  "transition_ms": 1500,
+  "objects": [
+    {
+      "object_id": "obj-1",
+      "x": 0,
+      "y": 0,
+      "z": 0,
+      "size": 25,
+      "gain": -6,
+      "mute": false,
+      "algorithm": "default"
+    }
+  ]
+}

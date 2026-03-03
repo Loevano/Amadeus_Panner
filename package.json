@@ -1,0 +1,18 @@
+{
+  "name": "amadeus-panner",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Web-based OSC control scaffold for Amadeus ART",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "./scripts/run-dev.sh",
+    "start": "./scripts/run-dev.sh",
+    "check": "echo 'TODO: add lint/typecheck/test pipeline'",
+    "validate:showfiles": "./scripts/validate-showfiles.sh",
+    "new:show": "./scripts/new-showfile.sh",
+    "new:patch-note": "./scripts/new-patch-note.sh"
+  }
+}
