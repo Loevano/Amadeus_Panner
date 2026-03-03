@@ -66,6 +66,8 @@ const els = {
   sceneButtons: document.getElementById("sceneButtons"),
   actionButtons: document.getElementById("actionButtons"),
   selectionSummary: document.getElementById("selectionSummary"),
+  groupsSummary: document.getElementById("groupsSummary"),
+  groupsToggleList: document.getElementById("groupsToggleList"),
   objectSelect: document.getElementById("objectSelect"),
   xInput: document.getElementById("xInput"),
   yInput: document.getElementById("yInput"),
@@ -384,6 +386,10 @@ function getSelectedObject() {
 function getSelectedGroup() {
   const groups = getObjectGroups();
   return groups.find((group) => group.groupId === state.selectedGroupId) || null;
+}
+
+function isGroupEnabled(group) {
+  return group?.enabled !== false;
 }
 
 function selectedLinkParamsFromInputs() {
@@ -878,6 +884,62 @@ function renderInspector() {
   els.muteInput.checked = Boolean(obj.mute);
 }
 
+async function setGroupEnabled(groupId, enabled) {
+  try {
+    await api(`/api/groups/${encodeURIComponent(groupId)}/update`, "POST", { enabled: Boolean(enabled) });
+    addLog(`group ${enabled ? "enabled" : "disabled"} -> ${groupId}`);
+    await refreshStatus();
+  } catch (error) {
+    addLog(`group toggle failed (${groupId}): ${error.message}`);
+  }
+}
+
+function renderGroupsPanel() {
+  const groups = [...getObjectGroups()].sort((a, b) => String(a.groupId).localeCompare(String(b.groupId)));
+  els.groupsToggleList.innerHTML = "";
+
+  if (!groups.length) {
+    els.groupsSummary.textContent = "No groups";
+    const empty = document.createElement("p");
+    empty.className = "muted";
+    empty.textContent = "Create groups in Object Manager.";
+    els.groupsToggleList.appendChild(empty);
+    return;
+  }
+
+  const enabledCount = groups.filter((group) => isGroupEnabled(group)).length;
+  els.groupsSummary.textContent = `${enabledCount}/${groups.length} groups enabled`;
+
+  for (const group of groups) {
+    const row = document.createElement("label");
+    row.className = "group-toggle-row";
+
+    const meta = document.createElement("span");
+    meta.className = "group-toggle-meta";
+
+    const name = document.createElement("span");
+    name.className = "group-toggle-name";
+    name.textContent = String(group.name || group.groupId);
+    meta.appendChild(name);
+
+    const detail = document.createElement("span");
+    detail.className = "muted";
+    detail.textContent = `${group.groupId} | ${group.objectIds.length} object${group.objectIds.length === 1 ? "" : "s"}`;
+    meta.appendChild(detail);
+
+    const toggle = document.createElement("input");
+    toggle.type = "checkbox";
+    toggle.checked = isGroupEnabled(group);
+    toggle.addEventListener("change", () => {
+      void setGroupEnabled(group.groupId, toggle.checked);
+    });
+
+    row.appendChild(meta);
+    row.appendChild(toggle);
+    els.groupsToggleList.appendChild(row);
+  }
+}
+
 function renderGroupsManager() {
   const selectedObjectIds = selectedObjectTargets();
   const groups = [...getObjectGroups()].sort((a, b) => String(a.groupId).localeCompare(String(b.groupId)));
@@ -899,7 +961,7 @@ function renderGroupsManager() {
   for (const group of groups) {
     const option = document.createElement("option");
     option.value = group.groupId;
-    option.textContent = `${group.groupId} (${group.objectIds.length})`;
+    option.textContent = `${group.groupId} (${group.objectIds.length})${isGroupEnabled(group) ? "" : " [off]"}`;
     if (group.groupId === state.selectedGroupId) option.selected = true;
     els.managerGroupSelect.appendChild(option);
   }
@@ -1001,6 +1063,7 @@ function renderAll() {
   renderDebugControls();
   renderObjectSelect();
   renderInspector();
+  renderGroupsPanel();
   renderManager();
   syncCameraInputs();
   renderPanner();

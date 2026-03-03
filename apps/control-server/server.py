@@ -403,7 +403,15 @@ class Runtime:
         self._send_object_param(obj["objectId"], "mute", 1 if obj["mute"] else 0)
         self._send_object_param(obj["objectId"], "algorithm", obj["algorithm"])
 
-    def create_object_group(self, group_id: str, name: str, object_ids: List[str], link_params: List[str], source: str = "api") -> Dict[str, Any]:
+    def create_object_group(
+        self,
+        group_id: str,
+        name: str,
+        object_ids: List[str],
+        link_params: List[str],
+        enabled: bool = True,
+        source: str = "api",
+    ) -> Dict[str, Any]:
         normalized_group_id = normalize_object_id(group_id)
         normalized_object_ids = sorted(
             set(normalize_object_id(object_id) for object_id in object_ids if str(object_id or "").strip())
@@ -422,6 +430,7 @@ class Runtime:
                 "name": group_name,
                 "objectIds": normalized_object_ids,
                 "linkParams": normalized_link_params,
+                "enabled": bool(enabled),
             }
             self.object_groups[normalized_group_id] = group
 
@@ -462,6 +471,8 @@ class Runtime:
                 if raw_params is None:
                     raw_params = patch.get("link_params")
                 current["linkParams"] = normalize_link_params(raw_params)
+            if "enabled" in patch:
+                current["enabled"] = bool(patch.get("enabled"))
 
             self.object_groups[normalized_group_id] = current
 
@@ -545,6 +556,8 @@ class Runtime:
             groups_snapshot = [dict(group) for group in self.object_groups.values() if object_id in group["objectIds"]]
 
         for group in groups_snapshot:
+            if not bool(group.get("enabled", True)):
+                continue
             linked_params = [param for param in changed if param in group["linkParams"]]
             if not linked_params:
                 continue
@@ -1048,6 +1061,7 @@ class Handler(BaseHTTPRequestHandler):
                     name=str(body.get("name") or group_id),
                     object_ids=body.get("objectIds") or body.get("object_ids") or [],
                     link_params=body.get("linkParams") or body.get("link_params") or [],
+                    enabled=bool(body.get("enabled", True)),
                     source="api",
                 )
                 self._send_json(HTTPStatus.OK, {"ok": True, "group": group, "status": RUNTIME.status()})

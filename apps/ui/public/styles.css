@@ -80,12 +80,13 @@ body {
   grid-template-columns: 320px 1fr 320px;
   grid-template-areas:
     "controls panner inspector"
-    "log      panner inspector";
+    "log      panner groups";
 }
 
 .controls-panel { grid-area: controls; }
 .panner-panel { grid-area: panner; }
 .inspector-panel { grid-area: inspector; }
+.groups-panel { grid-area: groups; }
 .log-panel { grid-area: log; }
 .object-manager-panel {
   grid-column: 2 / 4;
@@ -94,7 +95,8 @@ body {
 }
 
 .layout[data-page="object-manager"] .panner-panel,
-.layout[data-page="object-manager"] .inspector-panel {
+.layout[data-page="object-manager"] .inspector-panel,
+.layout[data-page="object-manager"] .groups-panel {
   display: none;
 }
 
@@ -301,6 +303,32 @@ button:hover {
   font-size: 0.9rem;
 }
 
+.groups-toggle-list {
+  display: grid;
+  gap: 8px;
+}
+
+.group-toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #f7fbfd;
+}
+
+.group-toggle-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.group-toggle-name {
+  font-weight: 600;
+}
+
 .log-toolbar {
   display: flex;
   align-items: center;
@@ -332,6 +360,7 @@ button:hover {
       "controls"
       "panner"
       "inspector"
+      "groups"
       "log";
   }
 

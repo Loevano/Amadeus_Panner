@@ -69,3 +69,7 @@
 ## 2026-03-03 12:46 CET
 - Added UI toggle to enable/disable live debug event stream logging in the Debug Events panel
 - Added TODO follow-ups for boundary clamp smoothness tuning and Shift-drag mode-transition smoothing
+
+## 2026-03-03 12:53 CET
+- Added a new Groups panel below Object Inspector with per-group on/off toggles
+- Added runtime group `enabled` state and propagation guard so disabled groups stop linked-parameter follow behavior
