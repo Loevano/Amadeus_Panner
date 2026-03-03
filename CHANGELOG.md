@@ -59,3 +59,6 @@
 - Implemented multi-object selection and simultaneous editing with marquee select, Cmd+click additive selection, and batch inspector/object-manager updates
 - Changed 3D panner interaction model: Option+drag now controls camera orbit, normal drag now performs multi-selection box
 - Added object groups with linkable parameters, including group create/update/delete UI and runtime propagation of linked parameter updates
+
+## 2026-03-03 12:21 CET
+- Restored direct object edit in 3D panner: dragging an object now moves it on X/Z, with Shift-drag height (Y) adjustment while preserving Option-drag camera and empty-space marquee select
