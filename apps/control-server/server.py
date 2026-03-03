@@ -38,6 +38,8 @@ OBJECT_LIMITS = {
 }
 
 OBJECT_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+SHOW_ID_PATTERN = re.compile(r"^[a-z0-9-]+$")
+VERSION_PATTERN = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
 COLOR_PATTERN = re.compile(r"^#[0-9a-fA-F]{6}$")
 DEFAULT_OBJECT_TYPE = "point"
 DEFAULT_OBJECT_COLOR = "#1c4f89"
@@ -75,6 +77,24 @@ def normalize_color(value: Any, default: str = DEFAULT_OBJECT_COLOR) -> str:
     raw = str(value or default).strip()
     if COLOR_PATTERN.fullmatch(raw):
         return raw.lower()
+    return default
+
+
+def normalize_show_id(value: Any) -> str:
+    show_id = str(value or "").strip().lower()
+    show_id = re.sub(r"[^a-z0-9-]+", "-", show_id)
+    show_id = re.sub(r"-+", "-", show_id).strip("-")
+    if not show_id:
+        show_id = "new-show"
+    if not SHOW_ID_PATTERN.fullmatch(show_id):
+        raise ValueError("show_id must use only lowercase letters, numbers, and dash")
+    return show_id
+
+
+def normalize_show_version(value: Any, default: str = "0.1.0") -> str:
+    version = str(value or default).strip()
+    if VERSION_PATTERN.fullmatch(version):
+        return version
     return default
 
 
@@ -310,19 +330,354 @@ class Runtime:
                 "objects": list(self.objects.values()),
             }
 
-    def _sanitize_project_path(self, requested: str) -> Path:
-        requested = (requested or "").strip()
-        if not requested:
-            requested = "showfiles/_template/show.json"
-        absolute = (PROJECT_ROOT / requested).resolve()
+    def _sanitize_project_path(self, requested: str, default_path: str = "showfiles/_template/show.json") -> Path:
+        requested_path = (requested or "").strip()
+        if not requested_path:
+            requested_path = (default_path or "").strip()
+        if not requested_path:
+            raise ValueError("Path is required")
+        if requested_path.endswith("/"):
+            raise ValueError("Path must point to a file, not a folder")
+        absolute = (PROJECT_ROOT / requested_path).resolve()
         if PROJECT_ROOT not in absolute.parents and absolute != PROJECT_ROOT:
             raise ValueError("Path must stay inside project root")
+        if absolute.exists() and absolute.is_dir():
+            raise ValueError("Path must point to a file, not a folder")
         return absolute
+
+    def _relative_project_path(self, absolute_path: Path) -> str:
+        return str(absolute_path.relative_to(PROJECT_ROOT)).replace("\\", "/")
+
+    def _write_json_atomic(self, absolute_path: Path, payload: Dict[str, Any]) -> None:
+        absolute_path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = absolute_path.with_suffix(absolute_path.suffix + ".tmp")
+        temp_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        os.replace(temp_path, absolute_path)
+
+    def _resolve_show_asset_path(self, show_dir: Path, file_ref: str, label: str) -> Path:
+        normalized_ref = str(file_ref or "").strip().replace("\\", "/")
+        if not normalized_ref:
+            raise ValueError(f"{label} file path cannot be empty")
+        if normalized_ref.startswith("/"):
+            raise ValueError(f"{label} file path must be relative to show directory")
+        absolute = (show_dir / normalized_ref).resolve()
+        if show_dir not in absolute.parents and absolute != show_dir:
+            raise ValueError(f"{label} file path must stay inside show directory")
+        if PROJECT_ROOT not in absolute.parents and absolute != PROJECT_ROOT:
+            raise ValueError(f"{label} file path must stay inside project root")
+        return absolute
+
+    def _scene_object_to_raw(self, obj: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "object_id": str(obj.get("objectId") or obj.get("object_id") or "obj-1"),
+            "x": clamp(to_float(obj.get("x"), 0.0), OBJECT_LIMITS["x"]),
+            "y": clamp(to_float(obj.get("y"), 0.0), OBJECT_LIMITS["y"]),
+            "z": clamp(to_float(obj.get("z"), 0.0), OBJECT_LIMITS["z"]),
+            "size": clamp(to_float(obj.get("size"), 25.0), OBJECT_LIMITS["size"]),
+            "gain": clamp(to_float(obj.get("gain"), 0.0), OBJECT_LIMITS["gain"]),
+            "mute": bool(obj.get("mute", False)),
+            "algorithm": str(obj.get("algorithm") or "default"),
+        }
+
+    def _derive_show_id_from_path(self, show_path: Path) -> str:
+        if show_path.name.lower() == "show.json":
+            return normalize_show_id(show_path.parent.name or "new-show")
+        return normalize_show_id(show_path.stem or "new-show")
+
+    def _derive_show_name(self, show_id: str) -> str:
+        words = [part for part in show_id.split("-") if part]
+        if not words:
+            return "New Show"
+        return " ".join(word.capitalize() for word in words)
+
+    def create_new_show(self, show_path: str, overwrite: bool = False) -> Dict[str, Any]:
+        requested = str(show_path or "").strip()
+        if not requested:
+            raise ValueError("New show path is required")
+
+        absolute_show_path = self._sanitize_project_path(requested, default_path="")
+        if absolute_show_path.exists() and not overwrite:
+            raise ValueError("Show file already exists")
+
+        show_id = self._derive_show_id_from_path(absolute_show_path)
+        show_name = self._derive_show_name(show_id)
+        show_version = "0.1.0"
+        timestamp = now_iso()
+
+        scene_id = "scene-main"
+        scene_file = f"scenes/{scene_id}.json"
+        show_dir = absolute_show_path.parent
+        absolute_scene_path = self._resolve_show_asset_path(show_dir, scene_file, f"Scene '{scene_id}'")
+
+        scene_payload = {
+            "scene_id": scene_id,
+            "name": "Main",
+            "transition_ms": 0,
+            "objects": [],
+        }
+        show_payload = {
+            "show_id": show_id,
+            "name": show_name,
+            "version": show_version,
+            "created_at": timestamp,
+            "updated_at": timestamp,
+            "default_scene_id": scene_id,
+            "scenes": [{"scene_id": scene_id, "file": scene_file}],
+            "actions": [],
+            "metadata": {"created_by": "amadeus-panner-ui"},
+        }
+
+        self._write_json_atomic(absolute_scene_path, scene_payload)
+        self._write_json_atomic(absolute_show_path, show_payload)
+        validate_show_bundle(PROJECT_ROOT, absolute_show_path)
+
+        relative_path = self._relative_project_path(absolute_show_path)
+        self.load_show(relative_path)
+        self.emit_event(
+            "show",
+            {
+                "status": "created",
+                "showId": show_id,
+                "path": relative_path,
+            },
+        )
+        return {"path": relative_path, "showId": show_id, "name": show_name}
+
+    def save_show(self, show_path: Optional[str] = None, set_as_current: bool = True) -> Dict[str, Any]:
+        with self.lock:
+            if not self.show:
+                raise ValueError("No show loaded")
+            show_snapshot = json.loads(json.dumps(self.show))
+            objects_snapshot = json.loads(json.dumps(list(self.objects.values())))
+            active_scene_id = str(self.active_scene_id or "")
+
+        source_path = str(show_snapshot.get("path") or "").strip()
+        requested_path = str(show_path or "").strip()
+        absolute_show_path = self._sanitize_project_path(
+            requested_path or source_path,
+            default_path=source_path or "showfiles/_template/show.json",
+        )
+        relative_show_path = self._relative_project_path(absolute_show_path)
+        show_dir = absolute_show_path.parent
+
+        show_id = normalize_show_id(show_snapshot.get("showId") or self._derive_show_id_from_path(absolute_show_path))
+        show_name = str(show_snapshot.get("name") or self._derive_show_name(show_id)).strip() or self._derive_show_name(show_id)
+        show_version = normalize_show_version(show_snapshot.get("version") or "0.1.0")
+        created_at = str(show_snapshot.get("createdAt") or now_iso())
+        updated_at = now_iso()
+
+        metadata = show_snapshot.get("metadata")
+        if not isinstance(metadata, dict):
+            metadata = {}
+
+        input_scenes = show_snapshot.get("scenesById")
+        if not isinstance(input_scenes, dict):
+            input_scenes = {}
+        input_actions = show_snapshot.get("actionsById")
+        if not isinstance(input_actions, dict):
+            input_actions = {}
+        scene_files = show_snapshot.get("sceneFiles")
+        if not isinstance(scene_files, dict):
+            scene_files = {}
+        action_files = show_snapshot.get("actionFiles")
+        if not isinstance(action_files, dict):
+            action_files = {}
+
+        normalized_scenes: Dict[str, Dict[str, Any]] = {}
+        for scene_key, raw_scene in input_scenes.items():
+            scene_id = str((raw_scene or {}).get("sceneId") or scene_key).strip()
+            if not scene_id:
+                continue
+            objects: List[Dict[str, Any]] = []
+            raw_objects = (raw_scene or {}).get("objects", [])
+            if isinstance(raw_objects, list):
+                for index, obj in enumerate(raw_objects):
+                    fallback_id = str((obj or {}).get("objectId") or (obj or {}).get("object_id") or f"{scene_id}-obj-{index + 1}")
+                    objects.append(normalize_object(obj or {}, fallback_id))
+            normalized_scenes[scene_id] = {
+                "sceneId": scene_id,
+                "name": str((raw_scene or {}).get("name") or scene_id),
+                "transitionMs": int(to_float((raw_scene or {}).get("transitionMs"), 0.0)),
+                "objects": objects,
+            }
+
+        normalized_actions: Dict[str, Dict[str, Any]] = {}
+        for action_key, raw_action in input_actions.items():
+            action_id = str((raw_action or {}).get("actionId") or action_key).strip()
+            if not action_id:
+                continue
+            tracks = (raw_action or {}).get("tracks", [])
+            if not isinstance(tracks, list):
+                tracks = []
+            osc_triggers_raw = (raw_action or {}).get("oscTriggers", {})
+            if not isinstance(osc_triggers_raw, dict):
+                osc_triggers_raw = {}
+            normalized_actions[action_id] = {
+                "actionId": action_id,
+                "name": str((raw_action or {}).get("name") or action_id),
+                "durationMs": int(to_float((raw_action or {}).get("durationMs"), 0.0)),
+                "tracks": tracks,
+                "oscTriggers": {
+                    "start": str(osc_triggers_raw.get("start", "")),
+                    "stop": str(osc_triggers_raw.get("stop", "")),
+                    "abort": str(osc_triggers_raw.get("abort", "")),
+                },
+            }
+
+        default_scene_id = str(show_snapshot.get("defaultSceneId") or "").strip()
+        if not default_scene_id:
+            if active_scene_id:
+                default_scene_id = active_scene_id
+            elif normalized_scenes:
+                default_scene_id = sorted(normalized_scenes.keys())[0]
+            else:
+                default_scene_id = "scene-main"
+
+        capture_scene_id = active_scene_id or default_scene_id
+        captured_objects: List[Dict[str, Any]] = []
+        for index, obj in enumerate(objects_snapshot):
+            fallback_id = str((obj or {}).get("objectId") or (obj or {}).get("object_id") or f"obj-{index + 1}")
+            captured_objects.append(normalize_object(obj or {}, fallback_id))
+
+        if capture_scene_id:
+            if capture_scene_id not in normalized_scenes:
+                normalized_scenes[capture_scene_id] = {
+                    "sceneId": capture_scene_id,
+                    "name": capture_scene_id,
+                    "transitionMs": 0,
+                    "objects": [],
+                }
+            normalized_scenes[capture_scene_id]["objects"] = captured_objects
+
+        if default_scene_id not in normalized_scenes:
+            normalized_scenes[default_scene_id] = {
+                "sceneId": default_scene_id,
+                "name": default_scene_id,
+                "transitionMs": 0,
+                "objects": [],
+            }
+
+        scene_refs: List[Dict[str, str]] = []
+        updated_scene_files: Dict[str, str] = {}
+        for scene_id in sorted(normalized_scenes.keys()):
+            scene = normalized_scenes[scene_id]
+            scene_file = str(scene_files.get(scene_id) or f"scenes/{scene_id}.json").strip().replace("\\", "/")
+            absolute_scene_path = self._resolve_show_asset_path(show_dir, scene_file, f"Scene '{scene_id}'")
+            scene_payload = {
+                "scene_id": scene_id,
+                "name": str(scene.get("name") or scene_id),
+                "transition_ms": int(to_float(scene.get("transitionMs"), 0.0)),
+                "objects": [self._scene_object_to_raw(obj) for obj in scene.get("objects", [])],
+            }
+            self._write_json_atomic(absolute_scene_path, scene_payload)
+            scene_refs.append({"scene_id": scene_id, "file": scene_file})
+            updated_scene_files[scene_id] = scene_file
+
+            normalized_objects = [
+                normalize_object(raw_obj, str(raw_obj.get("object_id") or f"{scene_id}-obj-{index + 1}"))
+                for index, raw_obj in enumerate(scene_payload["objects"])
+            ]
+            normalized_scenes[scene_id] = {
+                "sceneId": scene_id,
+                "name": scene_payload["name"],
+                "transitionMs": scene_payload["transition_ms"],
+                "objects": normalized_objects,
+            }
+
+        action_refs: List[Dict[str, str]] = []
+        updated_action_files: Dict[str, str] = {}
+        for action_id in sorted(normalized_actions.keys()):
+            action = normalized_actions[action_id]
+            action_file = str(action_files.get(action_id) or f"actions/{action_id}.json").strip().replace("\\", "/")
+            absolute_action_path = self._resolve_show_asset_path(show_dir, action_file, f"Action '{action_id}'")
+            action_payload = {
+                "action_id": action_id,
+                "name": str(action.get("name") or action_id),
+                "duration_ms": int(to_float(action.get("durationMs"), 0.0)),
+                "tracks": action.get("tracks", []),
+                "osc_triggers": {
+                    "start": str(action.get("oscTriggers", {}).get("start", "")),
+                    "stop": str(action.get("oscTriggers", {}).get("stop", "")),
+                    "abort": str(action.get("oscTriggers", {}).get("abort", "")),
+                },
+            }
+            self._write_json_atomic(absolute_action_path, action_payload)
+            action_refs.append({"action_id": action_id, "file": action_file})
+            updated_action_files[action_id] = action_file
+
+            normalized_actions[action_id] = {
+                "actionId": action_id,
+                "name": action_payload["name"],
+                "durationMs": action_payload["duration_ms"],
+                "tracks": action_payload["tracks"],
+                "oscTriggers": {
+                    "start": action_payload["osc_triggers"]["start"],
+                    "stop": action_payload["osc_triggers"]["stop"],
+                    "abort": action_payload["osc_triggers"]["abort"],
+                },
+            }
+
+        show_payload = {
+            "show_id": show_id,
+            "name": show_name,
+            "version": show_version,
+            "created_at": created_at,
+            "updated_at": updated_at,
+            "default_scene_id": default_scene_id,
+            "scenes": scene_refs,
+            "actions": action_refs,
+            "metadata": metadata,
+        }
+        self._write_json_atomic(absolute_show_path, show_payload)
+        validate_show_bundle(PROJECT_ROOT, absolute_show_path)
+
+        with self.lock:
+            if not self.show:
+                raise ValueError("No show loaded")
+            self.show["showId"] = show_id
+            self.show["name"] = show_name
+            self.show["version"] = show_version
+            self.show["createdAt"] = created_at
+            self.show["updatedAt"] = updated_at
+            self.show["defaultSceneId"] = default_scene_id
+            self.show["scenesById"] = normalized_scenes
+            self.show["actionsById"] = normalized_actions
+            self.show["sceneFiles"] = updated_scene_files
+            self.show["actionFiles"] = updated_action_files
+            self.show["metadata"] = metadata
+            if set_as_current:
+                self.show["path"] = relative_show_path
+
+        self.emit_event(
+            "show",
+            {
+                "status": "saved",
+                "path": relative_show_path,
+                "setAsCurrent": bool(set_as_current),
+                "scenes": len(scene_refs),
+                "actions": len(action_refs),
+            },
+        )
+        return {"path": relative_show_path, "showId": show_id}
 
     def load_show(self, show_path: str) -> None:
         absolute_show_path = self._sanitize_project_path(show_path)
         bundle = validate_show_bundle(PROJECT_ROOT, absolute_show_path)
         raw_show = bundle.raw_show
+
+        scene_files: Dict[str, str] = {}
+        for ref in raw_show.get("scenes", []):
+            scene_id = str(ref.get("scene_id") or "").strip()
+            file_ref = str(ref.get("file") or "").strip()
+            if scene_id and file_ref:
+                scene_files[scene_id] = file_ref
+
+        action_files: Dict[str, str] = {}
+        for ref in raw_show.get("actions", []):
+            action_id = str(ref.get("action_id") or "").strip()
+            file_ref = str(ref.get("file") or "").strip()
+            if action_id and file_ref:
+                action_files[action_id] = file_ref
 
         scenes_by_id: Dict[str, Dict[str, Any]] = {}
         for scene_id, raw_scene in bundle.scenes_by_id.items():
@@ -349,15 +704,27 @@ class Runtime:
             }
 
         with self.lock:
+            running_action_ids = list(self.running_actions.keys())
+        for action_id in running_action_ids:
+            self.stop_action(action_id, "show-load")
+
+        with self.lock:
             self.object_groups = {}
+            self.objects = {}
+            self.active_scene_id = None
             self.show = {
-                "path": str(absolute_show_path.relative_to(PROJECT_ROOT)),
+                "path": self._relative_project_path(absolute_show_path),
                 "showId": str(raw_show.get("show_id", "show")),
                 "name": str(raw_show.get("name", "Show")),
-                "version": str(raw_show.get("version", "0.0.0")),
+                "version": normalize_show_version(raw_show.get("version", "0.0.0"), default="0.0.0"),
+                "createdAt": str(raw_show.get("created_at") or now_iso()),
+                "updatedAt": str(raw_show.get("updated_at") or now_iso()),
                 "defaultSceneId": str(raw_show.get("default_scene_id", "")),
                 "scenesById": scenes_by_id,
                 "actionsById": actions_by_id,
+                "sceneFiles": scene_files,
+                "actionFiles": action_files,
+                "metadata": raw_show.get("metadata", {}) if isinstance(raw_show.get("metadata"), dict) else {},
                 "loadedAt": now_iso(),
             }
 
@@ -1018,6 +1385,24 @@ class Handler(BaseHTTPRequestHandler):
                 body = self._read_json_body()
                 RUNTIME.load_show(str(body.get("path", "showfiles/_template/show.json")))
                 self._send_json(HTTPStatus.OK, {"ok": True, "status": RUNTIME.status()})
+                return
+
+            if path_name == "/api/show/save":
+                body = self._read_json_body()
+                result = RUNTIME.save_show(
+                    show_path=body.get("path"),
+                    set_as_current=bool(body.get("setAsCurrent", True)),
+                )
+                self._send_json(HTTPStatus.OK, {"ok": True, **result, "status": RUNTIME.status()})
+                return
+
+            if path_name == "/api/show/new":
+                body = self._read_json_body()
+                result = RUNTIME.create_new_show(
+                    show_path=str(body.get("path", "")),
+                    overwrite=bool(body.get("overwrite", False)),
+                )
+                self._send_json(HTTPStatus.OK, {"ok": True, **result, "status": RUNTIME.status()})
                 return
 
             if path_name.startswith("/api/scene/") and path_name.endswith("/recall"):

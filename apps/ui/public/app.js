@@ -63,6 +63,9 @@ const els = {
   viewObjectManagerBtn: document.getElementById("viewObjectManagerBtn"),
   showPathInput: document.getElementById("showPathInput"),
   loadShowBtn: document.getElementById("loadShowBtn"),
+  saveShowBtn: document.getElementById("saveShowBtn"),
+  saveShowAsBtn: document.getElementById("saveShowAsBtn"),
+  newShowBtn: document.getElementById("newShowBtn"),
   showInfo: document.getElementById("showInfo"),
   sceneButtons: document.getElementById("sceneButtons"),
   actionButtons: document.getElementById("actionButtons"),
@@ -836,6 +839,7 @@ function renderShowControls() {
     return;
   }
 
+  setInputValueIfIdle(els.showPathInput, String(status.show.path || ""));
   els.showInfo.textContent = `${status.show.name} (${status.show.version}) - ${status.show.path}`;
 
   els.sceneButtons.innerHTML = "";
@@ -1560,6 +1564,71 @@ async function managerDeleteGroup() {
   }
 }
 
+function requestedShowPath() {
+  return String(els.showPathInput.value || "").trim() || "showfiles/_template/show.json";
+}
+
+async function loadShowFromInput() {
+  try {
+    const showPath = requestedShowPath();
+    await api("/api/show/load", "POST", { path: showPath });
+    addLog(`show loaded -> ${showPath}`);
+    await refreshStatus();
+  } catch (error) {
+    addLog(`show load failed: ${error.message}`);
+  }
+}
+
+async function saveShow() {
+  try {
+    const data = await api("/api/show/save", "POST", {});
+    addLog(`show saved -> ${data.path || state.status?.show?.path || "-"}`);
+    await refreshStatus();
+  } catch (error) {
+    addLog(`show save failed: ${error.message}`);
+  }
+}
+
+async function saveShowAs() {
+  try {
+    const showPath = requestedShowPath();
+    await api("/api/show/save", "POST", {
+      path: showPath,
+      setAsCurrent: true
+    });
+    addLog(`show saved as -> ${showPath}`);
+    await refreshStatus();
+  } catch (error) {
+    addLog(`show save-as failed: ${error.message}`);
+  }
+}
+
+async function createNewShow() {
+  const showPath = requestedShowPath();
+  try {
+    await api("/api/show/new", "POST", { path: showPath, overwrite: false });
+    addLog(`show created -> ${showPath}`);
+    await refreshStatus();
+  } catch (error) {
+    if (String(error.message || "").toLowerCase().includes("already exists")) {
+      const confirmed = confirm(`Show file already exists at "${showPath}". Overwrite it?`);
+      if (!confirmed) {
+        addLog("new show cancelled");
+        return;
+      }
+      try {
+        await api("/api/show/new", "POST", { path: showPath, overwrite: true });
+        addLog(`show overwritten -> ${showPath}`);
+        await refreshStatus();
+      } catch (overwriteError) {
+        addLog(`new show failed: ${overwriteError.message}`);
+      }
+      return;
+    }
+    addLog(`new show failed: ${error.message}`);
+  }
+}
+
 function setupHandlers() {
   els.viewPannerBtn.addEventListener("click", () => {
     setPage("panner");
@@ -1569,15 +1638,20 @@ function setupHandlers() {
     setPage("object-manager");
   });
 
-  els.loadShowBtn.addEventListener("click", async () => {
-    try {
-      const showPath = els.showPathInput.value.trim();
-      await api("/api/show/load", "POST", { path: showPath });
-      addLog(`show loaded -> ${showPath}`);
-      await refreshStatus();
-    } catch (error) {
-      addLog(`show load failed: ${error.message}`);
-    }
+  els.loadShowBtn.addEventListener("click", () => {
+    void loadShowFromInput();
+  });
+
+  els.saveShowBtn.addEventListener("click", () => {
+    void saveShow();
+  });
+
+  els.saveShowAsBtn.addEventListener("click", () => {
+    void saveShowAs();
+  });
+
+  els.newShowBtn.addEventListener("click", () => {
+    void createNewShow();
   });
 
   els.objectSelect.addEventListener("change", () => {

@@ -126,6 +126,16 @@ body {
   flex: 1;
 }
 
+.show-actions-row {
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+
+.show-actions-row button {
+  flex: 1 1 calc(50% - 8px);
+  min-width: 130px;
+}
+
 input,
 select,
 button {
