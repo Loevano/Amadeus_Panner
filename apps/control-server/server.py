@@ -1066,7 +1066,23 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 object_id = unquote(parts[3]) if len(parts) > 3 else ""
                 body = self._read_json_body()
-                updated = RUNTIME.update_object(object_id, body, source="api", emit_osc=True)
+                propagate_group_links = True
+                if isinstance(body, dict):
+                    if "propagateGroupLinks" in body:
+                        propagate_group_links = bool(body.get("propagateGroupLinks"))
+                        body = dict(body)
+                        body.pop("propagateGroupLinks", None)
+                    elif "propagate_group_links" in body:
+                        propagate_group_links = bool(body.get("propagate_group_links"))
+                        body = dict(body)
+                        body.pop("propagate_group_links", None)
+                updated = RUNTIME.update_object(
+                    object_id,
+                    body,
+                    source="api",
+                    emit_osc=True,
+                    propagate_group_links=propagate_group_links,
+                )
                 self._send_json(HTTPStatus.OK, {"ok": True, "object": updated, "status": RUNTIME.status()})
                 return
 

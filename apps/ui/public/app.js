@@ -438,12 +438,16 @@ function livePropagateGroupLinks(previousByObjectId, patchByObjectId) {
   if (!groups.length) return;
 
   const objectMap = new Map(getObjects().map((obj) => [obj.objectId, obj]));
+  const directlyPatchedIds = new Set(Object.keys(patchByObjectId));
 
   for (const [sourceId, patch] of Object.entries(patchByObjectId)) {
     const sourcePrev = previousByObjectId[sourceId] || {};
     for (const group of groups) {
       const members = Array.isArray(group.objectIds) ? group.objectIds : [];
       if (!members.includes(sourceId)) continue;
+      if (members.length && members.every((memberId) => directlyPatchedIds.has(memberId))) {
+        continue;
+      }
       const linkParams = new Set(Array.isArray(group.linkParams) ? group.linkParams : []);
 
       for (const targetId of members) {
@@ -1175,10 +1179,14 @@ async function refreshStatus() {
   }
 }
 
-async function pushObjectPatch(objectId, patch) {
+async function pushObjectPatch(objectId, patch, options = {}) {
+  const { propagateGroupLinks = true } = options;
   if (!objectId) return;
   try {
-    await api(`/api/object/${encodeURIComponent(objectId)}`, "POST", patch);
+    await api(`/api/object/${encodeURIComponent(objectId)}`, "POST", {
+      ...patch,
+      propagateGroupLinks: Boolean(propagateGroupLinks)
+    });
   } catch (error) {
     addLog(`object update failed (${objectId}): ${error.message}`);
   }
@@ -1274,12 +1282,13 @@ function configureDragMode(mode, point) {
   }
 }
 
-function maybeSendDragBatch(patchByObjectId) {
+function maybeSendDragBatch(patchByObjectId, options = {}) {
+  const { propagateGroupLinks = true } = options;
   const now = Date.now();
   if (now - state.lastDragSendMs > 70) {
     state.lastDragSendMs = now;
     for (const [objectId, patch] of Object.entries(patchByObjectId)) {
-      void pushObjectPatch(objectId, patch);
+      void pushObjectPatch(objectId, patch, { propagateGroupLinks });
     }
   }
 }
@@ -1290,11 +1299,15 @@ async function finalizeObjectDrag() {
     state.draggingObjectIds.map((objectId) => {
       const obj = getObjectById(objectId);
       if (!obj) return Promise.resolve();
-      return pushObjectPatch(objectId, {
-        x: Number(obj.x),
-        y: Number(obj.y),
-        z: Number(obj.z)
-      });
+      return pushObjectPatch(
+        objectId,
+        {
+          x: Number(obj.x),
+          y: Number(obj.y),
+          z: Number(obj.z)
+        },
+        { propagateGroupLinks: false }
+      );
     })
   );
   await refreshStatus();
@@ -1743,7 +1756,7 @@ function setupHandlers() {
         renderInspector();
         renderManager();
         renderPanner();
-        maybeSendDragBatch(patchByObjectId);
+        maybeSendDragBatch(patchByObjectId, { propagateGroupLinks: false });
       } else {
         const camera = getCameraBasis();
         const ray = screenRay(camera, pt.x, pt.y);
@@ -1768,7 +1781,7 @@ function setupHandlers() {
           renderInspector();
           renderManager();
           renderPanner();
-          maybeSendDragBatch(patchByObjectId);
+          maybeSendDragBatch(patchByObjectId, { propagateGroupLinks: false });
         }
       }
     } else if (state.orbiting) {

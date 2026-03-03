@@ -86,3 +86,7 @@
 ## 2026-03-03 13:30 CET
 - Updated selection logic to expand by enabled group membership, so selecting any member selects/highlights/modifies the full enabled group
 - Cmd/Ctrl additive selection now adds/removes whole enabled group units (supports combining multiple groups in one selection)
+
+## 2026-03-03 13:36 CET
+- Fixed jumpy group+selection drag behavior by avoiding duplicate group propagation when full group members are already in the direct drag patch set
+- Added API-level `propagateGroupLinks` control and disabled backend group re-propagation for drag batch updates to prevent double-apply
