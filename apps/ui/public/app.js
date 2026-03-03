@@ -21,6 +21,13 @@ const state = {
   selectedObjectIds: [],
   selectedGroupId: null,
   currentPage: "panner",
+  draggingObjectId: null,
+  draggingMode: null,
+  draggingPlaneY: 0,
+  draggingStartY: 0,
+  draggingStartPointerY: 0,
+  draggingOffsetXZ: { x: 0, z: 0 },
+  lastDragSendMs: 0,
   orbiting: false,
   activePointerId: null,
   pointerDownHitObjectId: null,
@@ -1050,6 +1057,50 @@ function selectionRectObjectIds(startX, startY, currentX, currentY) {
   return objectIds;
 }
 
+function beginObjectDrag(objectId, point, useHeightMode) {
+  const obj = getObjectById(objectId);
+  if (!obj) return;
+  state.draggingObjectId = objectId;
+  state.draggingMode = useHeightMode ? "y" : "xz";
+  state.draggingPlaneY = Number(obj.y);
+  state.draggingStartY = Number(obj.y);
+  state.draggingStartPointerY = point.y;
+  state.draggingOffsetXZ = { x: 0, z: 0 };
+
+  if (state.draggingMode === "xz") {
+    const camera = getCameraBasis();
+    const ray = screenRay(camera, point.x, point.y);
+    const planeHit = intersectRayPlaneY(ray, state.draggingPlaneY);
+    if (planeHit) {
+      state.draggingOffsetXZ = {
+        x: Number(obj.x) - planeHit.x,
+        z: Number(obj.z) - planeHit.z
+      };
+    }
+  }
+}
+
+function maybeSendDragPatch(objectId, patch) {
+  const now = Date.now();
+  if (now - state.lastDragSendMs > 70) {
+    state.lastDragSendMs = now;
+    void pushObjectPatch(objectId, patch);
+  }
+}
+
+async function finalizeObjectDrag() {
+  const objectId = state.draggingObjectId;
+  if (!objectId) return;
+  const obj = getObjectById(objectId);
+  if (!obj) return;
+  await pushObjectPatch(objectId, {
+    x: Number(obj.x),
+    y: Number(obj.y),
+    z: Number(obj.z)
+  });
+  await refreshStatus();
+}
+
 function applySelectionBox(additive) {
   const selectedInRect = selectionRectObjectIds(
     state.selectionBox.startX,
@@ -1065,6 +1116,12 @@ function applySelectionBox(additive) {
 }
 
 function resetPointerInteraction() {
+  state.draggingObjectId = null;
+  state.draggingMode = null;
+  state.draggingPlaneY = 0;
+  state.draggingStartY = 0;
+  state.draggingStartPointerY = 0;
+  state.draggingOffsetXZ = { x: 0, z: 0 };
   state.orbiting = false;
   state.activePointerId = null;
   state.pointerDownHitObjectId = null;
@@ -1400,11 +1457,22 @@ function setupHandlers() {
     const pt = toCanvasPoint(event);
     state.activePointerId = event.pointerId;
     state.lastPointer = pt;
-    state.pointerDownHitObjectId = pickObject(pt)?.obj.objectId || null;
+    const hit = pickObject(pt);
+    state.pointerDownHitObjectId = hit?.obj.objectId || null;
 
     if (event.altKey) {
       state.orbiting = true;
       state.selectionBox.active = false;
+    } else if (hit && !(event.metaKey || event.ctrlKey)) {
+      if (!isObjectSelected(hit.obj.objectId)) {
+        setSingleSelection(hit.obj.objectId);
+      } else if (state.selectedObjectId !== hit.obj.objectId) {
+        state.selectedObjectId = hit.obj.objectId;
+      }
+      state.selectionBox.active = false;
+      state.orbiting = false;
+      beginObjectDrag(hit.obj.objectId, pt, event.shiftKey);
+      renderAll();
     } else {
       const additive = event.metaKey || event.ctrlKey;
       state.orbiting = false;
@@ -1429,7 +1497,57 @@ function setupHandlers() {
     const dx = pt.x - state.lastPointer.x;
     const dy = pt.y - state.lastPointer.y;
 
-    if (state.orbiting) {
+    if (state.draggingObjectId) {
+      const obj = getObjectById(state.draggingObjectId);
+      if (!obj) return;
+
+      const wantedMode = event.shiftKey ? "y" : "xz";
+      if (state.draggingMode !== wantedMode) {
+        state.draggingMode = wantedMode;
+        if (wantedMode === "y") {
+          state.draggingStartY = Number(obj.y);
+          state.draggingStartPointerY = pt.y;
+        } else {
+          state.draggingPlaneY = Number(obj.y);
+          const camera = getCameraBasis();
+          const ray = screenRay(camera, pt.x, pt.y);
+          const planeHit = intersectRayPlaneY(ray, state.draggingPlaneY);
+          if (planeHit) {
+            state.draggingOffsetXZ = {
+              x: Number(obj.x) - planeHit.x,
+              z: Number(obj.z) - planeHit.z
+            };
+          } else {
+            state.draggingOffsetXZ = { x: 0, z: 0 };
+          }
+        }
+        state.lastPointer = pt;
+        return;
+      }
+
+      if (state.draggingMode === "y") {
+        const nextY = clampValue(state.draggingStartY - (pt.y - state.draggingStartPointerY) * 0.6, LIMITS.y);
+        obj.y = nextY;
+        renderInspector();
+        renderManager();
+        renderPanner();
+        maybeSendDragPatch(state.draggingObjectId, { y: nextY });
+      } else {
+        const camera = getCameraBasis();
+        const ray = screenRay(camera, pt.x, pt.y);
+        const hitPoint = intersectRayPlaneY(ray, state.draggingPlaneY);
+        if (hitPoint) {
+          const nextX = clampValue(hitPoint.x + state.draggingOffsetXZ.x, LIMITS.x);
+          const nextZ = clampValue(hitPoint.z + state.draggingOffsetXZ.z, LIMITS.z);
+          obj.x = nextX;
+          obj.z = nextZ;
+          renderInspector();
+          renderManager();
+          renderPanner();
+          maybeSendDragPatch(state.draggingObjectId, { x: nextX, z: nextZ });
+        }
+      }
+    } else if (state.orbiting) {
       state.camera.yawDeg = normalizeYaw(state.camera.yawDeg + dx * 0.25);
       state.camera.pitchDeg = clampValue(state.camera.pitchDeg - dy * 0.2, [8, 80]);
       syncCameraInputs();
@@ -1446,10 +1564,18 @@ function setupHandlers() {
     state.lastPointer = pt;
   });
 
-  els.canvas.addEventListener("pointerup", (event) => {
+  els.canvas.addEventListener("pointerup", async (event) => {
     if (state.currentPage !== "panner") return;
     if (state.activePointerId !== event.pointerId) return;
-    if (state.selectionBox.active) {
+    if (state.draggingObjectId) {
+      await finalizeObjectDrag();
+      try {
+        els.canvas.releasePointerCapture(event.pointerId);
+      } catch {
+        // Ignore release errors when pointer capture is already gone.
+      }
+      resetPointerInteraction();
+    } else if (state.selectionBox.active) {
       finishSelectionInteraction(event);
     } else {
       try {
@@ -1462,9 +1588,12 @@ function setupHandlers() {
     renderAll();
   });
 
-  els.canvas.addEventListener("pointercancel", (event) => {
+  els.canvas.addEventListener("pointercancel", async (event) => {
     if (state.currentPage !== "panner") return;
     if (state.activePointerId !== event.pointerId) return;
+    if (state.draggingObjectId) {
+      await finalizeObjectDrag();
+    }
     try {
       els.canvas.releasePointerCapture(event.pointerId);
     } catch {
