@@ -73,3 +73,6 @@
 ## 2026-03-03 12:53 CET
 - Added a new Groups panel below Object Inspector with per-group on/off toggles
 - Added runtime group `enabled` state and propagation guard so disabled groups stop linked-parameter follow behavior
+
+## 2026-03-03 13:20 CET
+- Changed group link propagation for `x/y/z` from absolute copy to relative delta application, so grouped objects preserve their spacing when one object moves

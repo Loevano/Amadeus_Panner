@@ -42,6 +42,7 @@ COLOR_PATTERN = re.compile(r"^#[0-9a-fA-F]{6}$")
 DEFAULT_OBJECT_TYPE = "point"
 DEFAULT_OBJECT_COLOR = "#1c4f89"
 LINKABLE_GROUP_PARAMS = {"x", "y", "z", "size", "gain", "mute", "algorithm", "type", "color"}
+RELATIVE_GROUP_PARAMS = {"x", "y", "z"}
 
 
 def clamp(value: float, min_max: Tuple[float, float]) -> float:
@@ -548,6 +549,7 @@ class Runtime:
         self,
         object_id: str,
         changed: List[str],
+        previous_object: Dict[str, Any],
         next_object: Dict[str, Any],
         source: str,
         emit_osc: bool,
@@ -565,8 +567,23 @@ class Runtime:
             if not targets:
                 continue
 
-            patch = {param: next_object[param] for param in linked_params if param in next_object}
             for target_id in targets:
+                with self.lock:
+                    target_current = dict(self.objects.get(target_id, default_object(target_id)))
+                patch: Dict[str, Any] = {}
+                for param in linked_params:
+                    if param not in next_object:
+                        continue
+                    if param in RELATIVE_GROUP_PARAMS:
+                        source_before = to_float(previous_object.get(param), to_float(next_object.get(param), 0.0))
+                        source_after = to_float(next_object.get(param), source_before)
+                        delta = source_after - source_before
+                        target_value = to_float(target_current.get(param), 0.0)
+                        patch[param] = target_value + delta
+                    else:
+                        patch[param] = next_object[param]
+                if not patch:
+                    continue
                 self.update_object(
                     target_id,
                     patch,
@@ -695,7 +712,7 @@ class Runtime:
                 self._send_object_param(object_id, param, value)
 
         if propagate_group_links and changed:
-            self._propagate_group_links(object_id, changed, next_obj, source, emit_osc)
+            self._propagate_group_links(object_id, changed, current, next_obj, source, emit_osc)
 
         self.emit_event(
             "object",
