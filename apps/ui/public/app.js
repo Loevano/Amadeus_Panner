@@ -5,6 +5,7 @@ const LIMITS = {
 };
 
 const OBJECT_ID_RE = /^[A-Za-z0-9._-]{1,64}$/;
+const ACTION_ID_RE = OBJECT_ID_RE;
 const DEFAULT_OBJECT_TYPE = "point";
 const DEFAULT_OBJECT_COLOR = "#1c4f89";
 const DEFAULT_GROUP_COLOR = "#2f7f7a";
@@ -25,6 +26,7 @@ const state = {
   selectedObjectIds: [],
   selectedGroupId: null,
   selectedSceneId: null,
+  selectedActionId: null,
   currentPage: "panner",
   draggingObjectId: null,
   draggingObjectIds: [],
@@ -67,6 +69,7 @@ const els = {
   uiStatusBar: document.getElementById("uiStatusBar"),
   mainLayout: document.getElementById("mainLayout"),
   viewPannerBtn: document.getElementById("viewPannerBtn"),
+  viewActionManagerBtn: document.getElementById("viewActionManagerBtn"),
   viewObjectManagerBtn: document.getElementById("viewObjectManagerBtn"),
   viewGroupManagerBtn: document.getElementById("viewGroupManagerBtn"),
   showPathInput: document.getElementById("showPathInput"),
@@ -123,8 +126,44 @@ const els = {
   managerGroupUpdateBtn: document.getElementById("managerGroupUpdateBtn"),
   managerGroupDeleteBtn: document.getElementById("managerGroupDeleteBtn"),
   managerGroupLinkInputs: Array.from(document.querySelectorAll(".manager-group-link")),
+  actionManagerSummary: document.getElementById("actionManagerSummary"),
+  actionManagerSelect: document.getElementById("actionManagerSelect"),
+  actionManagerStartBtn: document.getElementById("actionManagerStartBtn"),
+  actionManagerStopBtn: document.getElementById("actionManagerStopBtn"),
+  actionManagerAbortBtn: document.getElementById("actionManagerAbortBtn"),
+  actionManagerIdInput: document.getElementById("actionManagerIdInput"),
+  actionManagerNameInput: document.getElementById("actionManagerNameInput"),
+  actionManagerDurationInput: document.getElementById("actionManagerDurationInput"),
+  actionManagerOnEndInput: document.getElementById("actionManagerOnEndInput"),
+  actionManagerOscStartInput: document.getElementById("actionManagerOscStartInput"),
+  actionManagerOscStopInput: document.getElementById("actionManagerOscStopInput"),
+  actionManagerOscAbortInput: document.getElementById("actionManagerOscAbortInput"),
+  actionManagerEnabledInput: document.getElementById("actionManagerEnabledInput"),
+  actionManagerCreateBtn: document.getElementById("actionManagerCreateBtn"),
+  actionManagerSaveBtn: document.getElementById("actionManagerSaveBtn"),
+  actionManagerSaveAsBtn: document.getElementById("actionManagerSaveAsBtn"),
+  actionManagerDeleteBtn: document.getElementById("actionManagerDeleteBtn"),
+  actionManagerLfoObjectInput: document.getElementById("actionManagerLfoObjectInput"),
+  actionManagerLfoParamInput: document.getElementById("actionManagerLfoParamInput"),
+  actionManagerLfoWaveInput: document.getElementById("actionManagerLfoWaveInput"),
+  actionManagerLfoRateInput: document.getElementById("actionManagerLfoRateInput"),
+  actionManagerLfoDepthInput: document.getElementById("actionManagerLfoDepthInput"),
+  actionManagerLfoOffsetInput: document.getElementById("actionManagerLfoOffsetInput"),
+  actionManagerLfoPhaseInput: document.getElementById("actionManagerLfoPhaseInput"),
+  actionManagerLfoAddBtn: document.getElementById("actionManagerLfoAddBtn"),
+  actionManagerLfoClearBtn: document.getElementById("actionManagerLfoClearBtn"),
+  actionManagerLfoRows: document.getElementById("actionManagerLfoRows"),
   groupManagerSummary: document.getElementById("groupManagerSummary"),
   groupManagerRows: document.getElementById("groupManagerRows"),
+  groupManagerEditSelect: document.getElementById("groupManagerEditSelect"),
+  groupManagerEditName: document.getElementById("groupManagerEditName"),
+  groupManagerEditColor: document.getElementById("groupManagerEditColor"),
+  groupManagerEditLinkInputs: Array.from(document.querySelectorAll(".group-manager-link-input")),
+  groupManagerEditMembers: document.getElementById("groupManagerEditMembers"),
+  groupManagerMembersSummary: document.getElementById("groupManagerMembersSummary"),
+  groupManagerEditSummary: document.getElementById("groupManagerEditSummary"),
+  groupManagerEditSaveBtn: document.getElementById("groupManagerEditSaveBtn"),
+  groupManagerEditDeleteBtn: document.getElementById("groupManagerEditDeleteBtn"),
   toggleDebugEventsBtn: document.getElementById("toggleDebugEventsBtn"),
   debugEventsState: document.getElementById("debugEventsState"),
   eventLog: document.getElementById("eventLog"),
@@ -358,6 +397,14 @@ function uniqueSceneId(baseId) {
   return nextNumericId(baseId, "scene", getSceneIds());
 }
 
+function getActionIds() {
+  return Array.isArray(state.status?.show?.actionIds) ? state.status.show.actionIds : [];
+}
+
+function uniqueActionId(baseId) {
+  return nextNumericId(baseId, "action", getActionIds());
+}
+
 function sanitizeGroupId(raw, options = {}) {
   const { allowAuto = false } = options;
   const normalized = normalizeObjectId(raw);
@@ -377,6 +424,19 @@ function sanitizeSceneId(raw, options = {}) {
   const candidate = allowAuto ? uniqueSceneId(normalized || "scene") : normalized;
   if (!OBJECT_ID_RE.test(candidate)) {
     throw new Error("Scene ID must use letters/numbers/dot/underscore/dash (max 64 chars)");
+  }
+  return candidate;
+}
+
+function sanitizeActionId(raw, options = {}) {
+  const { allowAuto = false, allowEmpty = false } = options;
+  const normalized = normalizeObjectId(raw);
+  if (!normalized && allowEmpty) {
+    return "";
+  }
+  const candidate = allowAuto ? uniqueActionId(normalized || "action") : normalized;
+  if (!ACTION_ID_RE.test(candidate)) {
+    throw new Error("Action ID must use letters/numbers/dot/underscore/dash (max 64 chars)");
   }
   return candidate;
 }
@@ -522,6 +582,17 @@ function getObjects() {
 
 function getObjectGroups() {
   return Array.isArray(state.status?.objectGroups) ? state.status.objectGroups : [];
+}
+
+function getActionsById() {
+  const actionsById = state.status?.show?.actionsById;
+  return actionsById && typeof actionsById === "object" ? actionsById : {};
+}
+
+function getActionById(actionId) {
+  const normalized = String(actionId || "").trim();
+  if (!normalized) return null;
+  return getActionsById()[normalized] || null;
 }
 
 function areGroupsEnabled() {
@@ -775,9 +846,11 @@ function setPage(nextPage) {
   state.currentPage = nextPage;
   els.mainLayout.dataset.page = nextPage;
   els.viewPannerBtn.classList.toggle("is-active", nextPage === "panner");
+  els.viewActionManagerBtn.classList.toggle("is-active", nextPage === "action-manager");
   els.viewObjectManagerBtn.classList.toggle("is-active", nextPage === "object-manager");
   els.viewGroupManagerBtn.classList.toggle("is-active", nextPage === "group-manager");
   els.viewPannerBtn.setAttribute("aria-selected", nextPage === "panner" ? "true" : "false");
+  els.viewActionManagerBtn.setAttribute("aria-selected", nextPage === "action-manager" ? "true" : "false");
   els.viewObjectManagerBtn.setAttribute("aria-selected", nextPage === "object-manager" ? "true" : "false");
   els.viewGroupManagerBtn.setAttribute("aria-selected", nextPage === "group-manager" ? "true" : "false");
   if (nextPage === "panner") {
@@ -1153,23 +1226,30 @@ function renderShowControls() {
   }
 
   els.actionButtons.innerHTML = "";
+  const actionsById = getActionsById();
+  const runningActions = new Set(Array.isArray(state.status?.runningActions) ? state.status.runningActions : []);
   for (const actionId of status.show.actionIds) {
+    const action = actionsById[actionId] || null;
+    const enabled = action?.enabled !== false;
+    const isRunning = runningActions.has(actionId);
     const row = document.createElement("div");
     row.className = "action-chip";
 
     const title = document.createElement("strong");
-    title.textContent = actionId;
+    title.textContent = enabled ? actionId : `${actionId} [off]`;
     row.appendChild(title);
 
     const start = document.createElement("button");
     start.type = "button";
     start.textContent = "Start";
+    start.disabled = !enabled || isRunning;
     start.addEventListener("click", () => runAction(actionId, "start"));
     row.appendChild(start);
 
     const stop = document.createElement("button");
     stop.type = "button";
     stop.textContent = "Stop";
+    stop.disabled = !isRunning;
     stop.addEventListener("click", () => runAction(actionId, "stop"));
     row.appendChild(stop);
 
@@ -1177,6 +1257,7 @@ function renderShowControls() {
     abort.type = "button";
     abort.textContent = "Abort";
     abort.className = "danger";
+    abort.disabled = !isRunning;
     abort.addEventListener("click", () => runAction(actionId, "abort"));
     row.appendChild(abort);
 
@@ -1241,6 +1322,390 @@ async function runAction(actionId, command) {
     await refreshStatus();
   } catch (error) {
     addLog(`action ${command} failed for ${actionId}: ${error.message}`);
+  }
+}
+
+function parseFiniteNumber(value, fallback = 0) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function selectedActionIdOrThrow() {
+  const actionId = String(state.selectedActionId || els.actionManagerSelect.value || "").trim();
+  if (!actionId) {
+    throw new Error("No action selected");
+  }
+  return actionId;
+}
+
+function selectedActionOrNull() {
+  const actionId = String(state.selectedActionId || "").trim();
+  if (!actionId) return null;
+  return getActionById(actionId);
+}
+
+function defaultActionOscPath(actionId, verb) {
+  return `/art/action/${actionId}/${verb}`;
+}
+
+function actionPayloadFromInputs(baseAction = null, options = {}) {
+  const base = baseAction && typeof baseAction === "object" ? baseAction : {};
+  const fallbackActionId = String(options.fallbackActionId || state.selectedActionId || "action").trim() || "action";
+  const actionId = sanitizeActionId(els.actionManagerIdInput.value || fallbackActionId, { allowAuto: true });
+  const name = String(els.actionManagerNameInput.value || humanizeId(actionId) || actionId).trim() || actionId;
+  const durationMs = Math.max(0, Math.round(parseFiniteNumber(els.actionManagerDurationInput.value, 0)));
+  const onEndActionId = sanitizeActionId(els.actionManagerOnEndInput.value || "", { allowAuto: false, allowEmpty: true });
+  const oscStart = String(els.actionManagerOscStartInput.value || defaultActionOscPath(actionId, "start")).trim();
+  const oscStop = String(els.actionManagerOscStopInput.value || defaultActionOscPath(actionId, "stop")).trim();
+  const oscAbort = String(els.actionManagerOscAbortInput.value || defaultActionOscPath(actionId, "abort")).trim();
+
+  return {
+    actionId,
+    name,
+    durationMs,
+    enabled: Boolean(els.actionManagerEnabledInput.checked),
+    onEndActionId: onEndActionId || "",
+    tracks: Array.isArray(base.tracks) ? base.tracks : [],
+    lfos: Array.isArray(base.lfos) ? base.lfos : [],
+    oscTriggers: {
+      start: oscStart,
+      stop: oscStop,
+      abort: oscAbort
+    }
+  };
+}
+
+function lfoPayloadFromInputs() {
+  const objectId = sanitizeObjectId(els.actionManagerLfoObjectInput.value || "");
+  if (!objectId) {
+    throw new Error("Select an object for the LFO");
+  }
+
+  const parameter = String(els.actionManagerLfoParamInput.value || "").trim();
+  if (!parameter) {
+    throw new Error("LFO parameter is required");
+  }
+  const wave = String(els.actionManagerLfoWaveInput.value || "sine").trim();
+  const rateHz = Math.max(0, parseFiniteNumber(els.actionManagerLfoRateInput.value, 0));
+  const depth = parseFiniteNumber(els.actionManagerLfoDepthInput.value, 0);
+  const offset = parseFiniteNumber(els.actionManagerLfoOffsetInput.value, 0);
+  const phaseDeg = parseFiniteNumber(els.actionManagerLfoPhaseInput.value, 0);
+
+  return {
+    objectId,
+    parameter,
+    wave,
+    rateHz,
+    depth,
+    offset,
+    phaseDeg
+  };
+}
+
+async function actionManagerCreate() {
+  try {
+    const payload = actionPayloadFromInputs(null, { fallbackActionId: "action" });
+    await api("/api/action/create", "POST", payload);
+    if (String(els.actionManagerIdInput.value || "").trim() !== payload.actionId) {
+      addLog(`action id normalized -> ${payload.actionId}`);
+    }
+    state.selectedActionId = payload.actionId;
+    addLog(`action create -> ${payload.actionId}`);
+    await refreshStatus();
+  } catch (error) {
+    addLog(`action create failed: ${error.message}`);
+  }
+}
+
+async function actionManagerSave() {
+  try {
+    const actionId = selectedActionIdOrThrow();
+    const currentAction = selectedActionOrNull();
+    if (!currentAction) {
+      throw new Error(`Action not found: ${actionId}`);
+    }
+    const payload = actionPayloadFromInputs(currentAction, { fallbackActionId: actionId });
+    await api(`/api/action/${encodeURIComponent(actionId)}/update`, "POST", payload);
+    addLog(`action save -> ${actionId}`);
+    await refreshStatus();
+  } catch (error) {
+    addLog(`action save failed: ${error.message}`);
+  }
+}
+
+async function actionManagerSaveAs() {
+  try {
+    const sourceActionId = selectedActionIdOrThrow();
+    const currentAction = selectedActionOrNull();
+    if (!currentAction) {
+      throw new Error(`Action not found: ${sourceActionId}`);
+    }
+
+    const suggestedActionId = uniqueActionId(sourceActionId);
+    const rawNewActionId = prompt("New action ID", suggestedActionId);
+    if (rawNewActionId === null) {
+      addLog("action save-as cancelled");
+      return;
+    }
+
+    const newActionId = sanitizeActionId(rawNewActionId, { allowAuto: true });
+    const payload = actionPayloadFromInputs(currentAction, { fallbackActionId: sourceActionId });
+    await api(`/api/action/${encodeURIComponent(sourceActionId)}/save-as`, "POST", {
+      ...payload,
+      newActionId
+    });
+
+    if (String(rawNewActionId || "").trim() !== newActionId) {
+      addLog(`action id normalized -> ${newActionId}`);
+    }
+    state.selectedActionId = newActionId;
+    addLog(`action save-as -> ${sourceActionId} as ${newActionId}`);
+    await refreshStatus();
+  } catch (error) {
+    addLog(`action save-as failed: ${error.message}`);
+  }
+}
+
+async function actionManagerDelete() {
+  try {
+    const actionId = selectedActionIdOrThrow();
+    if (!confirm(`Delete action "${actionId}"?`)) {
+      return;
+    }
+    await api(`/api/action/${encodeURIComponent(actionId)}/delete`, "POST", {});
+    if (state.selectedActionId === actionId) {
+      state.selectedActionId = null;
+    }
+    addLog(`action delete -> ${actionId}`);
+    await refreshStatus();
+  } catch (error) {
+    addLog(`action delete failed: ${error.message}`);
+  }
+}
+
+async function actionManagerAddLfo() {
+  try {
+    const actionId = selectedActionIdOrThrow();
+    const action = selectedActionOrNull();
+    if (!action) {
+      throw new Error(`Action not found: ${actionId}`);
+    }
+    const lfo = lfoPayloadFromInputs();
+    const currentLfos = Array.isArray(action.lfos) ? action.lfos : [];
+    await api(`/api/action/${encodeURIComponent(actionId)}/update`, "POST", {
+      lfos: [...currentLfos, lfo]
+    });
+    addLog(`action lfo add -> ${actionId} (${lfo.objectId}.${lfo.parameter})`);
+    await refreshStatus();
+  } catch (error) {
+    addLog(`action lfo add failed: ${error.message}`);
+  }
+}
+
+async function actionManagerRemoveLfo(index) {
+  try {
+    const actionId = selectedActionIdOrThrow();
+    const action = selectedActionOrNull();
+    if (!action) {
+      throw new Error(`Action not found: ${actionId}`);
+    }
+    const currentLfos = Array.isArray(action.lfos) ? action.lfos : [];
+    if (index < 0 || index >= currentLfos.length) {
+      return;
+    }
+    const nextLfos = currentLfos.filter((_, lfoIndex) => lfoIndex !== index);
+    await api(`/api/action/${encodeURIComponent(actionId)}/update`, "POST", {
+      lfos: nextLfos
+    });
+    addLog(`action lfo remove -> ${actionId} #${index + 1}`);
+    await refreshStatus();
+  } catch (error) {
+    addLog(`action lfo remove failed: ${error.message}`);
+  }
+}
+
+async function actionManagerClearLfos() {
+  try {
+    const actionId = selectedActionIdOrThrow();
+    const action = selectedActionOrNull();
+    if (!action) {
+      throw new Error(`Action not found: ${actionId}`);
+    }
+    const currentLfos = Array.isArray(action.lfos) ? action.lfos : [];
+    if (!currentLfos.length) {
+      return;
+    }
+    if (!confirm(`Clear all LFOs from "${actionId}"?`)) {
+      return;
+    }
+    await api(`/api/action/${encodeURIComponent(actionId)}/update`, "POST", { lfos: [] });
+    addLog(`action lfo clear -> ${actionId}`);
+    await refreshStatus();
+  } catch (error) {
+    addLog(`action lfo clear failed: ${error.message}`);
+  }
+}
+
+function renderActionManager() {
+  const actionsById = getActionsById();
+  const actionIds = Object.keys(actionsById).sort((a, b) => a.localeCompare(b));
+  const runningActions = new Set(Array.isArray(state.status?.runningActions) ? state.status.runningActions : []);
+
+  if (state.selectedActionId && !actionIds.includes(state.selectedActionId)) {
+    state.selectedActionId = null;
+  }
+  if (!state.selectedActionId && actionIds.length) {
+    state.selectedActionId = actionIds[0];
+  }
+
+  els.actionManagerSelect.innerHTML = "";
+  if (!actionIds.length) {
+    const emptyOption = document.createElement("option");
+    emptyOption.value = "";
+    emptyOption.textContent = "No actions";
+    emptyOption.disabled = true;
+    emptyOption.selected = true;
+    els.actionManagerSelect.appendChild(emptyOption);
+  } else {
+    for (const actionId of actionIds) {
+      const action = actionsById[actionId] || {};
+      const option = document.createElement("option");
+      option.value = actionId;
+      option.textContent = action.enabled === false ? `${actionId} [off]` : actionId;
+      if (actionId === state.selectedActionId) {
+        option.selected = true;
+      }
+      els.actionManagerSelect.appendChild(option);
+    }
+  }
+  els.actionManagerSelect.disabled = !actionIds.length;
+
+  const selectedAction = state.selectedActionId ? actionsById[state.selectedActionId] : null;
+  const isRunning = selectedAction ? runningActions.has(selectedAction.actionId) : false;
+  const runningList = [...runningActions].sort((a, b) => a.localeCompare(b));
+  els.actionManagerSummary.textContent = `${actionIds.length} action${actionIds.length === 1 ? "" : "s"} | running: ${runningList.length ? runningList.join(", ") : "-"}`;
+
+  els.actionManagerOnEndInput.innerHTML = "";
+  const noneOption = document.createElement("option");
+  noneOption.value = "";
+  noneOption.textContent = "None";
+  noneOption.selected = true;
+  els.actionManagerOnEndInput.appendChild(noneOption);
+  for (const actionId of actionIds) {
+    if (selectedAction && actionId === selectedAction.actionId) continue;
+    const option = document.createElement("option");
+    option.value = actionId;
+    option.textContent = actionId;
+    if (selectedAction && String(selectedAction.onEndActionId || "") === actionId) {
+      option.selected = true;
+      noneOption.selected = false;
+    }
+    els.actionManagerOnEndInput.appendChild(option);
+  }
+
+  const objects = getObjects().map((obj) => obj.objectId).sort((a, b) => a.localeCompare(b));
+  const currentLfoObject = String(els.actionManagerLfoObjectInput.value || "").trim();
+  els.actionManagerLfoObjectInput.innerHTML = "";
+  if (!objects.length) {
+    const emptyOption = document.createElement("option");
+    emptyOption.value = "";
+    emptyOption.textContent = "No objects";
+    emptyOption.selected = true;
+    emptyOption.disabled = true;
+    els.actionManagerLfoObjectInput.appendChild(emptyOption);
+  } else {
+    for (const objectId of objects) {
+      const option = document.createElement("option");
+      option.value = objectId;
+      option.textContent = objectId;
+      if (objectId === currentLfoObject) {
+        option.selected = true;
+      }
+      els.actionManagerLfoObjectInput.appendChild(option);
+    }
+    if (!currentLfoObject || !objects.includes(currentLfoObject)) {
+      els.actionManagerLfoObjectInput.value = objects[0];
+    }
+  }
+  els.actionManagerLfoObjectInput.disabled = !objects.length;
+
+  if (selectedAction) {
+    const actionId = String(selectedAction.actionId || state.selectedActionId || "action");
+    setInputValueIfIdle(els.actionManagerIdInput, actionId);
+    setInputValueIfIdle(els.actionManagerNameInput, String(selectedAction.name || actionId));
+    setInputValueIfIdle(els.actionManagerDurationInput, String(Math.max(0, Math.round(parseFiniteNumber(selectedAction.durationMs, 0)))));
+    setInputValueIfIdle(els.actionManagerOscStartInput, String(selectedAction.oscTriggers?.start || defaultActionOscPath(actionId, "start")));
+    setInputValueIfIdle(els.actionManagerOscStopInput, String(selectedAction.oscTriggers?.stop || defaultActionOscPath(actionId, "stop")));
+    setInputValueIfIdle(els.actionManagerOscAbortInput, String(selectedAction.oscTriggers?.abort || defaultActionOscPath(actionId, "abort")));
+    els.actionManagerEnabledInput.checked = selectedAction.enabled !== false;
+    if (!document.activeElement || document.activeElement !== els.actionManagerOnEndInput) {
+      els.actionManagerOnEndInput.value = String(selectedAction.onEndActionId || "");
+    }
+  } else {
+    const suggestedActionId = uniqueActionId("action");
+    if (!String(els.actionManagerIdInput.value || "").trim()) {
+      setInputValueIfIdle(els.actionManagerIdInput, suggestedActionId);
+    }
+    if (!String(els.actionManagerNameInput.value || "").trim()) {
+      setInputValueIfIdle(els.actionManagerNameInput, humanizeId(els.actionManagerIdInput.value || suggestedActionId) || suggestedActionId);
+    }
+    if (!String(els.actionManagerDurationInput.value || "").trim()) {
+      setInputValueIfIdle(els.actionManagerDurationInput, "4000");
+    }
+    const fallbackId = String(els.actionManagerIdInput.value || suggestedActionId).trim() || suggestedActionId;
+    if (!String(els.actionManagerOscStartInput.value || "").trim()) {
+      setInputValueIfIdle(els.actionManagerOscStartInput, defaultActionOscPath(fallbackId, "start"));
+    }
+    if (!String(els.actionManagerOscStopInput.value || "").trim()) {
+      setInputValueIfIdle(els.actionManagerOscStopInput, defaultActionOscPath(fallbackId, "stop"));
+    }
+    if (!String(els.actionManagerOscAbortInput.value || "").trim()) {
+      setInputValueIfIdle(els.actionManagerOscAbortInput, defaultActionOscPath(fallbackId, "abort"));
+    }
+    if (!document.activeElement || document.activeElement !== els.actionManagerEnabledInput) {
+      els.actionManagerEnabledInput.checked = true;
+    }
+    if (!document.activeElement || document.activeElement !== els.actionManagerOnEndInput) {
+      els.actionManagerOnEndInput.value = "";
+    }
+  }
+
+  els.actionManagerStartBtn.disabled = !selectedAction || selectedAction.enabled === false || isRunning;
+  els.actionManagerStopBtn.disabled = !selectedAction || !isRunning;
+  els.actionManagerAbortBtn.disabled = !selectedAction || !isRunning;
+  els.actionManagerSaveBtn.disabled = !selectedAction;
+  els.actionManagerSaveAsBtn.disabled = !selectedAction;
+  els.actionManagerDeleteBtn.disabled = !selectedAction;
+  els.actionManagerLfoAddBtn.disabled = !selectedAction || !objects.length;
+  const selectedLfos = Array.isArray(selectedAction?.lfos) ? selectedAction.lfos : [];
+  els.actionManagerLfoClearBtn.disabled = !selectedAction || !selectedLfos.length;
+
+  els.actionManagerLfoRows.innerHTML = "";
+  if (!selectedAction || !selectedLfos.length) {
+    const row = document.createElement("tr");
+    row.innerHTML = '<td class="muted" colspan="8">No LFOs configured.</td>';
+    els.actionManagerLfoRows.appendChild(row);
+  } else {
+    selectedLfos.forEach((lfo, index) => {
+      const row = document.createElement("tr");
+      row.innerHTML = `
+        <td>${escapeHtml(String(lfo.objectId || "-"))}</td>
+        <td>${escapeHtml(String(lfo.parameter || "-"))}</td>
+        <td>${escapeHtml(String(lfo.wave || "sine"))}</td>
+        <td>${escapeHtml(String(parseFiniteNumber(lfo.rateHz, 0).toFixed(3)))}</td>
+        <td>${escapeHtml(String(parseFiniteNumber(lfo.depth, 0).toFixed(3)))}</td>
+        <td>${escapeHtml(String(parseFiniteNumber(lfo.offset, 0).toFixed(3)))}</td>
+        <td>${escapeHtml(String(parseFiniteNumber(lfo.phaseDeg, 0).toFixed(2)))}</td>
+        <td><button class="danger action-lfo-remove-btn" data-index="${index}" type="button">Remove</button></td>
+      `;
+      const removeBtn = row.querySelector(".action-lfo-remove-btn");
+      if (removeBtn) {
+        removeBtn.addEventListener("click", () => {
+          void actionManagerRemoveLfo(index);
+        });
+      }
+      els.actionManagerLfoRows.appendChild(row);
+    });
   }
 }
 
@@ -1446,8 +1911,119 @@ function summarizeGroupItems(values, maxVisible = 4) {
   return { preview, full: normalized.join(", ") };
 }
 
+function selectedGroupManagerLinkParams() {
+  return els.groupManagerEditLinkInputs
+    .filter((input) => input.checked)
+    .map((input) => String(input.dataset.param || "").trim())
+    .filter(Boolean);
+}
+
+function applyGroupManagerLinkParams(linkParams) {
+  const selected = new Set(Array.isArray(linkParams) ? linkParams : []);
+  for (const input of els.groupManagerEditLinkInputs) {
+    const param = String(input.dataset.param || "").trim();
+    input.checked = selected.has(param);
+  }
+}
+
+function selectedGroupManagerMemberIds() {
+  const inputs = Array.from(els.groupManagerEditMembers.querySelectorAll("input[data-object-id]"));
+  return inputs
+    .filter((input) => input.checked)
+    .map((input) => String(input.dataset.objectId || "").trim())
+    .filter(Boolean);
+}
+
+function renderGroupManagerDraftSummary() {
+  const selectedGroup = getSelectedGroup();
+  if (!selectedGroup) {
+    if (els.groupManagerMembersSummary) {
+      els.groupManagerMembersSummary.textContent = "Members";
+    }
+    els.groupManagerEditSummary.textContent = "No group selected.";
+    return;
+  }
+
+  const groupId = String(selectedGroup.groupId || "").trim();
+  const memberCount = selectedGroupManagerMemberIds().length;
+  const linkCount = selectedGroupManagerLinkParams().length;
+  if (els.groupManagerMembersSummary) {
+    els.groupManagerMembersSummary.textContent = `Members (${memberCount})`;
+  }
+  els.groupManagerEditSummary.textContent = `Editing ${groupId}: ${memberCount} member${memberCount === 1 ? "" : "s"}, ${linkCount} linked param${linkCount === 1 ? "" : "s"}.`;
+}
+
+function renderGroupManagerEditor(selectedGroup, objects) {
+  const hasGroup = Boolean(selectedGroup);
+  els.groupManagerEditName.disabled = !hasGroup;
+  els.groupManagerEditColor.disabled = !hasGroup;
+  els.groupManagerEditSaveBtn.disabled = !hasGroup;
+  els.groupManagerEditDeleteBtn.disabled = !hasGroup;
+  for (const input of els.groupManagerEditLinkInputs) {
+    input.disabled = !hasGroup;
+  }
+
+  if (!hasGroup) {
+    els.groupManagerEditSelect.innerHTML = '<option value="">No groups</option>';
+    setInputValueIfIdle(els.groupManagerEditName, "");
+    setInputValueIfIdle(els.groupManagerEditColor, DEFAULT_GROUP_COLOR);
+    applyGroupManagerLinkParams([]);
+    els.groupManagerEditMembers.innerHTML = '<p class="muted">No members available.</p>';
+    renderGroupManagerDraftSummary();
+    return;
+  }
+
+  const groupId = String(selectedGroup.groupId || "").trim();
+  const members = new Set((Array.isArray(selectedGroup.objectIds) ? selectedGroup.objectIds : []).map((id) => String(id || "").trim()));
+  const linkParams = Array.isArray(selectedGroup.linkParams) ? selectedGroup.linkParams : [];
+
+  setInputValueIfIdle(els.groupManagerEditName, String(selectedGroup.name || groupId));
+  setInputValueIfIdle(els.groupManagerEditColor, normalizeHexColor(selectedGroup.color, DEFAULT_GROUP_COLOR));
+  applyGroupManagerLinkParams(linkParams);
+
+  els.groupManagerEditMembers.innerHTML = "";
+  if (!objects.length) {
+    els.groupManagerEditMembers.innerHTML = '<p class="muted">No objects available.</p>';
+  } else {
+    for (const objectId of objects.map((obj) => String(obj.objectId || "").trim()).filter(Boolean)) {
+      const label = document.createElement("label");
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.dataset.objectId = objectId;
+      checkbox.checked = members.has(objectId);
+      label.appendChild(checkbox);
+      label.append(` ${objectId}`);
+      els.groupManagerEditMembers.appendChild(label);
+    }
+  }
+
+  renderGroupManagerDraftSummary();
+}
+
 function renderGroupManager() {
+  const objects = [...getObjects()].sort((a, b) => String(a.objectId || "").localeCompare(String(b.objectId || "")));
   const groups = [...getObjectGroups()].sort((a, b) => String(a.groupId || "").localeCompare(String(b.groupId || "")));
+
+  if (state.selectedGroupId && !groups.find((group) => group.groupId === state.selectedGroupId)) {
+    state.selectedGroupId = null;
+  }
+  if (!state.selectedGroupId && groups.length) {
+    state.selectedGroupId = groups[0].groupId;
+  }
+
+  els.groupManagerEditSelect.innerHTML = "";
+  if (!groups.length) {
+    els.groupManagerEditSelect.innerHTML = '<option value="">No groups</option>';
+  } else {
+    for (const group of groups) {
+      const option = document.createElement("option");
+      option.value = group.groupId;
+      option.textContent = `${group.groupId} (${Array.isArray(group.objectIds) ? group.objectIds.length : 0})`;
+      if (group.groupId === state.selectedGroupId) option.selected = true;
+      els.groupManagerEditSelect.appendChild(option);
+    }
+  }
+
   els.groupManagerRows.innerHTML = "";
   els.groupManagerSummary.textContent = groups.length
     ? `${groups.length} group${groups.length === 1 ? "" : "s"}`
@@ -1457,6 +2033,7 @@ function renderGroupManager() {
     const row = document.createElement("tr");
     row.innerHTML = '<td class="muted" colspan="7">No groups created yet.</td>';
     els.groupManagerRows.appendChild(row);
+    renderGroupManagerEditor(null, objects);
     return;
   }
 
@@ -1464,26 +2041,31 @@ function renderGroupManager() {
     const groupId = String(group.groupId || "").trim();
     const groupName = String(group.name || groupId).trim() || groupId;
     const groupColor = normalizeHexColor(group.color, DEFAULT_GROUP_COLOR);
-    const enabled = isGroupEnabled(group);
+    const enabledText = isGroupEnabled(group) ? "On" : "Off";
     const memberSummary = summarizeGroupItems(group.objectIds, 3);
     const linkSummary = summarizeGroupItems(group.linkParams, 4);
 
     const row = document.createElement("tr");
     row.dataset.groupId = groupId;
+    if (groupId === state.selectedGroupId) {
+      row.classList.add("is-selected");
+    }
     row.innerHTML = `
       <td>${escapeHtml(groupId)}</td>
-      <td><input class="group-manager-name-input" type="text" value="${escapeHtml(groupName)}" /></td>
-      <td><input class="group-manager-color-input" type="color" value="${escapeHtml(groupColor)}" /></td>
-      <td class="group-manager-enabled-cell"><input class="group-manager-enabled-input" type="checkbox" ${enabled ? "checked" : ""} /></td>
+      <td>${escapeHtml(groupName)}</td>
+      <td><span class="color-chip" style="background:${escapeHtml(groupColor)}"></span>${escapeHtml(groupColor)}</td>
+      <td class="group-manager-enabled-cell">${escapeHtml(enabledText)}</td>
       <td title="${escapeHtml(memberSummary.full)}">${escapeHtml(memberSummary.preview)}</td>
       <td title="${escapeHtml(linkSummary.full)}">${escapeHtml(linkSummary.preview)}</td>
       <td class="group-manager-actions">
-        <button class="group-manager-save-btn" type="button">Save</button>
+        <button class="group-manager-edit-btn" type="button">Edit</button>
         <button class="group-manager-delete-btn danger" type="button">Delete</button>
       </td>
     `;
     els.groupManagerRows.appendChild(row);
   }
+
+  renderGroupManagerEditor(getSelectedGroup(), objects);
 }
 
 function renderManager() {
@@ -1606,6 +2188,7 @@ function renderAll() {
   syncSelectedIdsWithObjects();
   renderStatusLine();
   renderShowControls();
+  renderActionManager();
   renderDebugControls();
   renderObjectSelect();
   renderInspector();
@@ -1621,6 +2204,13 @@ async function refreshStatus() {
     state.status = await api("/api/status");
     await refreshShowList();
     syncSelectedIdsWithObjects();
+    const actionIds = getActionIds();
+    if (state.selectedActionId && !actionIds.includes(state.selectedActionId)) {
+      state.selectedActionId = null;
+    }
+    if (!state.selectedActionId && actionIds.length) {
+      state.selectedActionId = actionIds[0];
+    }
     const groups = getObjectGroups();
     if (state.selectedGroupId && !groups.find((group) => group.groupId === state.selectedGroupId)) {
       state.selectedGroupId = null;
@@ -2026,49 +2616,53 @@ async function managerDeleteGroup() {
   }
 }
 
-async function groupManagerSaveRow(row) {
-  if (!row) return;
-  const groupId = String(row.dataset.groupId || "").trim();
-  if (!groupId) return;
-
-  try {
-    const nameInput = row.querySelector(".group-manager-name-input");
-    const colorInput = row.querySelector(".group-manager-color-input");
-    const enabledInput = row.querySelector(".group-manager-enabled-input");
-    const name = String(nameInput?.value || groupId).trim() || groupId;
-    const color = normalizeHexColor(colorInput?.value, DEFAULT_GROUP_COLOR);
-    const enabled = Boolean(enabledInput?.checked);
-
-    await api(`/api/groups/${encodeURIComponent(groupId)}/update`, "POST", {
-      name,
-      color,
-      enabled
-    });
-    addLog(`group updated -> ${groupId}`);
-    await refreshStatus();
-  } catch (error) {
-    addLog(`group update failed (${groupId}): ${error.message}`);
-  }
-}
-
-async function groupManagerDeleteRow(row) {
-  if (!row) return;
-  const groupId = String(row.dataset.groupId || "").trim();
-  if (!groupId) return;
-
-  if (!confirm(`Delete group "${groupId}"?`)) {
+async function groupManagerDeleteById(groupId) {
+  const normalizedGroupId = String(groupId || "").trim();
+  if (!normalizedGroupId) return;
+  if (!confirm(`Delete group "${normalizedGroupId}"?`)) {
     return;
   }
 
   try {
-    await api(`/api/groups/${encodeURIComponent(groupId)}/delete`, "POST", {});
-    if (state.selectedGroupId === groupId) {
+    await api(`/api/groups/${encodeURIComponent(normalizedGroupId)}/delete`, "POST", {});
+    if (state.selectedGroupId === normalizedGroupId) {
       state.selectedGroupId = null;
     }
-    addLog(`group deleted -> ${groupId}`);
+    addLog(`group deleted -> ${normalizedGroupId}`);
     await refreshStatus();
   } catch (error) {
-    addLog(`group delete failed (${groupId}): ${error.message}`);
+    addLog(`group delete failed (${normalizedGroupId}): ${error.message}`);
+  }
+}
+
+async function groupManagerSaveEditor() {
+  const selectedGroup = getSelectedGroup();
+  if (!selectedGroup) {
+    addLog("group update failed: No group selected");
+    return;
+  }
+  const groupId = String(selectedGroup.groupId || "").trim();
+  if (!groupId) {
+    addLog("group update failed: Invalid group ID");
+    return;
+  }
+
+  try {
+    const name = String(els.groupManagerEditName.value || groupId).trim() || groupId;
+    const color = normalizeHexColor(els.groupManagerEditColor.value, DEFAULT_GROUP_COLOR);
+    const linkParams = selectedGroupManagerLinkParams();
+    const objectIds = selectedGroupManagerMemberIds();
+
+    await api(`/api/groups/${encodeURIComponent(groupId)}/update`, "POST", {
+      name,
+      color,
+      linkParams,
+      objectIds
+    });
+    addLog(`group updated -> ${groupId} (${objectIds.length} members)`);
+    await refreshStatus();
+  } catch (error) {
+    addLog(`group update failed (${groupId}): ${error.message}`);
   }
 }
 
@@ -2145,6 +2739,10 @@ function setupHandlers() {
     setPage("panner");
   });
 
+  els.viewActionManagerBtn.addEventListener("click", () => {
+    setPage("action-manager");
+  });
+
   els.viewObjectManagerBtn.addEventListener("click", () => {
     setPage("object-manager");
   });
@@ -2184,6 +2782,53 @@ function setupHandlers() {
 
   els.saveSceneAsBtn.addEventListener("click", () => {
     void runSceneSaveAs();
+  });
+
+  els.actionManagerSelect.addEventListener("change", () => {
+    state.selectedActionId = String(els.actionManagerSelect.value || "").trim() || null;
+    renderActionManager();
+  });
+
+  els.actionManagerStartBtn.addEventListener("click", () => {
+    const actionId = String(state.selectedActionId || els.actionManagerSelect.value || "").trim();
+    if (!actionId) return;
+    void runAction(actionId, "start");
+  });
+
+  els.actionManagerStopBtn.addEventListener("click", () => {
+    const actionId = String(state.selectedActionId || els.actionManagerSelect.value || "").trim();
+    if (!actionId) return;
+    void runAction(actionId, "stop");
+  });
+
+  els.actionManagerAbortBtn.addEventListener("click", () => {
+    const actionId = String(state.selectedActionId || els.actionManagerSelect.value || "").trim();
+    if (!actionId) return;
+    void runAction(actionId, "abort");
+  });
+
+  els.actionManagerCreateBtn.addEventListener("click", () => {
+    void actionManagerCreate();
+  });
+
+  els.actionManagerSaveBtn.addEventListener("click", () => {
+    void actionManagerSave();
+  });
+
+  els.actionManagerSaveAsBtn.addEventListener("click", () => {
+    void actionManagerSaveAs();
+  });
+
+  els.actionManagerDeleteBtn.addEventListener("click", () => {
+    void actionManagerDelete();
+  });
+
+  els.actionManagerLfoAddBtn.addEventListener("click", () => {
+    void actionManagerAddLfo();
+  });
+
+  els.actionManagerLfoClearBtn.addEventListener("click", () => {
+    void actionManagerClearLfos();
   });
 
   els.enableGroupsToggle.addEventListener("change", () => {
@@ -2256,29 +2901,57 @@ function setupHandlers() {
     void managerDeleteGroup();
   });
 
+  els.groupManagerEditSelect.addEventListener("change", () => {
+    state.selectedGroupId = String(els.groupManagerEditSelect.value || "").trim() || null;
+    renderGroupManager();
+  });
+
+  els.groupManagerEditSaveBtn.addEventListener("click", () => {
+    void groupManagerSaveEditor();
+  });
+
+  els.groupManagerEditDeleteBtn.addEventListener("click", () => {
+    const selectedGroup = getSelectedGroup();
+    if (!selectedGroup) return;
+    void groupManagerDeleteById(selectedGroup.groupId);
+  });
+
+  els.groupManagerEditMembers.addEventListener("change", () => {
+    renderGroupManagerDraftSummary();
+  });
+
+  for (const input of els.groupManagerEditLinkInputs) {
+    input.addEventListener("change", () => {
+      renderGroupManagerDraftSummary();
+    });
+  }
+
   els.groupManagerRows.addEventListener("click", (event) => {
     const target = event.target;
     if (!(target instanceof Element)) return;
     const row = target.closest("tr");
     if (!row) return;
-    if (target.closest(".group-manager-save-btn")) {
-      void groupManagerSaveRow(row);
+    const groupId = String(row.dataset.groupId || "").trim();
+    if (!groupId) return;
+    if (target.closest(".group-manager-delete-btn")) {
+      void groupManagerDeleteById(groupId);
       return;
     }
-    if (target.closest(".group-manager-delete-btn")) {
-      void groupManagerDeleteRow(row);
-    }
+    state.selectedGroupId = groupId;
+    renderGroupManager();
   });
 
   els.groupManagerRows.addEventListener("keydown", (event) => {
     if (event.key !== "Enter") return;
     const target = event.target;
     if (!(target instanceof Element)) return;
-    if (!target.classList.contains("group-manager-name-input")) return;
-    event.preventDefault();
     const row = target.closest("tr");
     if (!row) return;
-    void groupManagerSaveRow(row);
+    const groupId = String(row.dataset.groupId || "").trim();
+    if (!groupId) return;
+    event.preventDefault();
+    state.selectedGroupId = groupId;
+    renderGroupManager();
   });
 
   els.toggleDebugEventsBtn.addEventListener("click", () => {
@@ -2536,7 +3209,13 @@ async function start() {
   await refreshStatus();
 
   setInterval(() => {
-    if (state.activePointerId === null) {
+    const activeEl = document.activeElement;
+    const isEditingGroupManager = (
+      state.currentPage === "group-manager"
+      && activeEl instanceof Element
+      && Boolean(activeEl.closest(".group-manager-editor"))
+    );
+    if (state.activePointerId === null && !isEditingGroupManager) {
       void refreshStatus();
     }
   }, 1000);

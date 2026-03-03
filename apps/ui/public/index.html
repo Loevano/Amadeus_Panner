@@ -195,6 +195,42 @@
     <section class="panel group-manager-panel">
       <h2>Group Manager</h2>
       <p id="groupManagerSummary" class="muted">No groups</p>
+      <div class="manager-grid group-manager-grid">
+        <div class="manager-block group-manager-editor">
+          <h3>Edit Group</h3>
+          <label for="groupManagerEditSelect">Group</label>
+          <div class="row group-manager-top-row">
+            <select id="groupManagerEditSelect"></select>
+            <button id="groupManagerEditSaveBtn" type="button">Save</button>
+            <button id="groupManagerEditDeleteBtn" class="danger" type="button">Delete</button>
+          </div>
+
+          <div class="field-grid manager-field-grid">
+            <label for="groupManagerEditName">Name</label><input id="groupManagerEditName" type="text" placeholder="Group name" />
+            <label for="groupManagerEditColor">Color</label><input id="groupManagerEditColor" type="color" value="#2f7f7a" />
+          </div>
+
+          <div class="manager-links group-manager-links">
+            <span class="muted">Linked Parameters</span>
+            <label><input class="group-manager-link-input" data-param="x" type="checkbox" /> X</label>
+            <label><input class="group-manager-link-input" data-param="y" type="checkbox" /> Y</label>
+            <label><input class="group-manager-link-input" data-param="z" type="checkbox" /> Z</label>
+            <label><input class="group-manager-link-input" data-param="size" type="checkbox" /> Size</label>
+            <label><input class="group-manager-link-input" data-param="gain" type="checkbox" /> Gain</label>
+            <label><input class="group-manager-link-input" data-param="mute" type="checkbox" /> Mute</label>
+            <label><input class="group-manager-link-input" data-param="algorithm" type="checkbox" /> Algorithm</label>
+            <label><input class="group-manager-link-input" data-param="type" type="checkbox" /> Type</label>
+            <label><input class="group-manager-link-input" data-param="color" type="checkbox" /> Color</label>
+          </div>
+
+          <details class="group-members-details">
+            <summary id="groupManagerMembersSummary" class="muted">Members</summary>
+            <div id="groupManagerEditMembers" class="group-member-list"></div>
+          </details>
+
+          <p id="groupManagerEditSummary" class="muted">No group selected.</p>
+        </div>
+      </div>
       <div class="manager-table-wrap">
         <table class="manager-table group-manager-table">
           <thead>

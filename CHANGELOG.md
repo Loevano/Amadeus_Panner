@@ -141,3 +141,9 @@
 
 ## 2026-03-03 19:31 CET
 - Added Group Manager page with full group overview table, inline name/color/enabled editing, and direct delete actions wired to existing group update/delete APIs.
+
+## 2026-03-03 19:42 CET
+- Added Group Manager editor panel with editable Name, Color, Linked Params, and Members, plus save/delete wiring in the Group Manager tab.
+
+## 2026-03-03 19:46 CET
+- Compacted Group Manager editor layout: moved save/delete to top row, tightened field/link density, and made members section collapsible with live member/link counts.
