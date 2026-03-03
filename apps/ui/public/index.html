@@ -47,11 +47,12 @@
         <button id="cameraResetBtn" type="button">Reset View</button>
         <span id="cameraReadout" class="muted">Yaw 35, Pitch 26, Zoom 320</span>
       </div>
-      <p class="muted">Drag an object to move on X/Z plane. Hold Shift while dragging to adjust Y. Drag empty space to orbit camera. Use mouse wheel to zoom.</p>
+      <p class="muted">Normal drag creates multi-selection box. Cmd+click adds/removes object from selection. Option+drag changes camera view. Mouse wheel zooms.</p>
     </section>
 
     <section class="panel inspector-panel">
       <h2>Object Inspector</h2>
+      <p id="selectionSummary" class="muted">Selected: 0</p>
       <label for="objectSelect">Object</label>
       <select id="objectSelect"></select>
 
@@ -87,7 +88,7 @@
         </div>
 
         <div class="manager-block">
-          <h3>Edit Selected Object</h3>
+          <h3>Edit Selected Object(s)</h3>
           <label for="managerObjectSelect">Object</label>
           <select id="managerObjectSelect"></select>
 
@@ -109,6 +110,37 @@
           <div class="row">
             <button id="managerRemoveBtn" class="danger" type="button">Remove Selected</button>
             <button id="managerClearBtn" class="danger" type="button">Clear All</button>
+          </div>
+        </div>
+
+        <div class="manager-block">
+          <h3>Object Groups</h3>
+          <label for="managerGroupSelect">Group</label>
+          <select id="managerGroupSelect"></select>
+
+          <div class="field-grid manager-field-grid">
+            <label for="managerGroupId">Group ID</label><input id="managerGroupId" type="text" placeholder="group-a" />
+            <label for="managerGroupName">Name</label><input id="managerGroupName" type="text" placeholder="Front Vocals" />
+          </div>
+
+          <div class="manager-links">
+            <span class="muted">Linked Parameters</span>
+            <label><input class="manager-group-link" data-param="x" type="checkbox" checked /> X</label>
+            <label><input class="manager-group-link" data-param="y" type="checkbox" checked /> Y</label>
+            <label><input class="manager-group-link" data-param="z" type="checkbox" checked /> Z</label>
+            <label><input class="manager-group-link" data-param="size" type="checkbox" /> Size</label>
+            <label><input class="manager-group-link" data-param="gain" type="checkbox" /> Gain</label>
+            <label><input class="manager-group-link" data-param="mute" type="checkbox" /> Mute</label>
+            <label><input class="manager-group-link" data-param="algorithm" type="checkbox" /> Algorithm</label>
+            <label><input class="manager-group-link" data-param="type" type="checkbox" /> Type</label>
+            <label><input class="manager-group-link" data-param="color" type="checkbox" /> Color</label>
+          </div>
+
+          <p id="managerGroupSummary" class="muted">Selected objects become members on create/update.</p>
+          <div class="row">
+            <button id="managerGroupCreateBtn" type="button">Create From Selection</button>
+            <button id="managerGroupUpdateBtn" type="button">Update Group</button>
+            <button id="managerGroupDeleteBtn" class="danger" type="button">Delete Group</button>
           </div>
         </div>
       </div>

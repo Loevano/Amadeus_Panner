@@ -15,6 +15,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import unquote, urlparse
 
+from showfile_validator import validate_show_bundle
+
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 UI_ROOT = PROJECT_ROOT / "apps" / "ui" / "public"
 
@@ -39,6 +41,7 @@ OBJECT_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 COLOR_PATTERN = re.compile(r"^#[0-9a-fA-F]{6}$")
 DEFAULT_OBJECT_TYPE = "point"
 DEFAULT_OBJECT_COLOR = "#1c4f89"
+LINKABLE_GROUP_PARAMS = {"x", "y", "z", "size", "gain", "mute", "algorithm", "type", "color"}
 
 
 def clamp(value: float, min_max: Tuple[float, float]) -> float:
@@ -72,6 +75,19 @@ def normalize_color(value: Any, default: str = DEFAULT_OBJECT_COLOR) -> str:
     if COLOR_PATTERN.fullmatch(raw):
         return raw.lower()
     return default
+
+
+def normalize_link_params(values: Any) -> List[str]:
+    if not isinstance(values, list):
+        return []
+    normalized: List[str] = []
+    seen = set()
+    for value in values:
+        param = str(value or "").strip()
+        if param in LINKABLE_GROUP_PARAMS and param not in seen:
+            normalized.append(param)
+            seen.add(param)
+    return normalized
 
 
 def normalize_object(input_obj: Dict[str, Any], fallback_id: str) -> Dict[str, Any]:
@@ -173,6 +189,7 @@ class Runtime:
         self.lock = threading.RLock()
         self.show: Optional[Dict[str, Any]] = None
         self.objects: Dict[str, Dict[str, Any]] = {}
+        self.object_groups: Dict[str, Dict[str, Any]] = {}
         self.active_scene_id: Optional[str] = None
         self.running_actions: Dict[str, Dict[str, Any]] = {}
 
@@ -288,6 +305,7 @@ class Runtime:
                 "show": show_payload,
                 "activeSceneId": self.active_scene_id,
                 "runningActions": sorted(self.running_actions.keys()),
+                "objectGroups": list(self.object_groups.values()),
                 "objects": list(self.objects.values()),
             }
 
@@ -302,14 +320,11 @@ class Runtime:
 
     def load_show(self, show_path: str) -> None:
         absolute_show_path = self._sanitize_project_path(show_path)
-        raw_show = json.loads(absolute_show_path.read_text(encoding="utf-8"))
-        show_dir = absolute_show_path.parent
+        bundle = validate_show_bundle(PROJECT_ROOT, absolute_show_path)
+        raw_show = bundle.raw_show
 
         scenes_by_id: Dict[str, Dict[str, Any]] = {}
-        for scene_ref in raw_show.get("scenes", []):
-            scene_path = (show_dir / str(scene_ref.get("file", ""))).resolve()
-            raw_scene = json.loads(scene_path.read_text(encoding="utf-8"))
-            scene_id = str(raw_scene.get("scene_id"))
+        for scene_id, raw_scene in bundle.scenes_by_id.items():
             objects = [normalize_object(obj, str(obj.get("object_id", "obj-1"))) for obj in raw_scene.get("objects", [])]
             scenes_by_id[scene_id] = {
                 "sceneId": scene_id,
@@ -319,10 +334,7 @@ class Runtime:
             }
 
         actions_by_id: Dict[str, Dict[str, Any]] = {}
-        for action_ref in raw_show.get("actions", []):
-            action_path = (show_dir / str(action_ref.get("file", ""))).resolve()
-            raw_action = json.loads(action_path.read_text(encoding="utf-8"))
-            action_id = str(raw_action.get("action_id"))
+        for action_id, raw_action in bundle.actions_by_id.items():
             actions_by_id[action_id] = {
                 "actionId": action_id,
                 "name": str(raw_action.get("name", action_id)),
@@ -336,6 +348,7 @@ class Runtime:
             }
 
         with self.lock:
+            self.object_groups = {}
             self.show = {
                 "path": str(absolute_show_path.relative_to(PROJECT_ROOT)),
                 "showId": str(raw_show.get("show_id", "show")),
@@ -390,6 +403,165 @@ class Runtime:
         self._send_object_param(obj["objectId"], "mute", 1 if obj["mute"] else 0)
         self._send_object_param(obj["objectId"], "algorithm", obj["algorithm"])
 
+    def create_object_group(self, group_id: str, name: str, object_ids: List[str], link_params: List[str], source: str = "api") -> Dict[str, Any]:
+        normalized_group_id = normalize_object_id(group_id)
+        normalized_object_ids = sorted(
+            set(normalize_object_id(object_id) for object_id in object_ids if str(object_id or "").strip())
+        )
+        normalized_link_params = normalize_link_params(link_params)
+        group_name = str(name or normalized_group_id).strip() or normalized_group_id
+
+        with self.lock:
+            if normalized_group_id in self.object_groups:
+                raise ValueError(f"Group already exists: {normalized_group_id}")
+            for object_id in normalized_object_ids:
+                if object_id not in self.objects:
+                    raise ValueError(f"Object not found for group membership: {object_id}")
+            group = {
+                "groupId": normalized_group_id,
+                "name": group_name,
+                "objectIds": normalized_object_ids,
+                "linkParams": normalized_link_params,
+            }
+            self.object_groups[normalized_group_id] = group
+
+        self.emit_event(
+            "object_group",
+            {
+                "source": source,
+                "action": "create",
+                "group": group,
+            },
+        )
+        return group
+
+    def update_object_group(self, group_id: str, patch: Dict[str, Any], source: str = "api") -> Dict[str, Any]:
+        normalized_group_id = normalize_object_id(group_id)
+        with self.lock:
+            if normalized_group_id not in self.object_groups:
+                raise ValueError(f"Group not found: {normalized_group_id}")
+            current = dict(self.object_groups[normalized_group_id])
+
+            if "name" in patch:
+                current["name"] = str(patch.get("name") or normalized_group_id).strip() or normalized_group_id
+            if "objectIds" in patch or "object_ids" in patch:
+                raw_ids = patch.get("objectIds")
+                if raw_ids is None:
+                    raw_ids = patch.get("object_ids")
+                if not isinstance(raw_ids, list):
+                    raise ValueError("objectIds must be a list")
+                normalized_ids = sorted(
+                    set(normalize_object_id(object_id) for object_id in raw_ids if str(object_id or "").strip())
+                )
+                for object_id in normalized_ids:
+                    if object_id not in self.objects:
+                        raise ValueError(f"Object not found for group membership: {object_id}")
+                current["objectIds"] = normalized_ids
+            if "linkParams" in patch or "link_params" in patch:
+                raw_params = patch.get("linkParams")
+                if raw_params is None:
+                    raw_params = patch.get("link_params")
+                current["linkParams"] = normalize_link_params(raw_params)
+
+            self.object_groups[normalized_group_id] = current
+
+        self.emit_event(
+            "object_group",
+            {
+                "source": source,
+                "action": "update",
+                "group": current,
+            },
+        )
+        return current
+
+    def delete_object_group(self, group_id: str, source: str = "api") -> Dict[str, Any]:
+        normalized_group_id = normalize_object_id(group_id)
+        with self.lock:
+            if normalized_group_id not in self.object_groups:
+                raise ValueError(f"Group not found: {normalized_group_id}")
+            deleted = self.object_groups.pop(normalized_group_id)
+
+        self.emit_event(
+            "object_group",
+            {
+                "source": source,
+                "action": "delete",
+                "groupId": normalized_group_id,
+            },
+        )
+        return deleted
+
+    def _cleanup_groups_for_object(self, object_id: str) -> None:
+        with self.lock:
+            updates: List[Dict[str, Any]] = []
+            for group in self.object_groups.values():
+                if object_id in group["objectIds"]:
+                    next_ids = [member_id for member_id in group["objectIds"] if member_id != object_id]
+                    if next_ids != group["objectIds"]:
+                        group["objectIds"] = next_ids
+                        updates.append(dict(group))
+
+        for group in updates:
+            self.emit_event(
+                "object_group",
+                {
+                    "source": "system",
+                    "action": "membership_update",
+                    "group": group,
+                },
+            )
+
+    def _rename_groups_for_object(self, old_object_id: str, new_object_id: str) -> None:
+        with self.lock:
+            updates: List[Dict[str, Any]] = []
+            for group in self.object_groups.values():
+                if old_object_id in group["objectIds"]:
+                    next_ids = []
+                    for member_id in group["objectIds"]:
+                        next_ids.append(new_object_id if member_id == old_object_id else member_id)
+                    group["objectIds"] = sorted(set(next_ids))
+                    updates.append(dict(group))
+
+        for group in updates:
+            self.emit_event(
+                "object_group",
+                {
+                    "source": "system",
+                    "action": "membership_update",
+                    "group": group,
+                },
+            )
+
+    def _propagate_group_links(
+        self,
+        object_id: str,
+        changed: List[str],
+        next_object: Dict[str, Any],
+        source: str,
+        emit_osc: bool,
+    ) -> None:
+        with self.lock:
+            groups_snapshot = [dict(group) for group in self.object_groups.values() if object_id in group["objectIds"]]
+
+        for group in groups_snapshot:
+            linked_params = [param for param in changed if param in group["linkParams"]]
+            if not linked_params:
+                continue
+            targets = [target_id for target_id in group["objectIds"] if target_id != object_id]
+            if not targets:
+                continue
+
+            patch = {param: next_object[param] for param in linked_params if param in next_object}
+            for target_id in targets:
+                self.update_object(
+                    target_id,
+                    patch,
+                    source=f"group:{group['groupId']}:{source}",
+                    emit_osc=emit_osc,
+                    propagate_group_links=False,
+                )
+
     def add_object(self, object_id: str, patch: Dict[str, Any], source: str = "api", emit_osc: bool = True) -> Dict[str, Any]:
         normalized_id = normalize_object_id(object_id)
         with self.lock:
@@ -423,6 +595,8 @@ class Runtime:
             obj["objectId"] = next_id
             self.objects[next_id] = obj
 
+        self._rename_groups_for_object(old_id, next_id)
+
         if emit_osc:
             self._send_full_object_state(obj)
 
@@ -445,6 +619,8 @@ class Runtime:
                 raise ValueError(f"Object not found: {normalized_id}")
             removed = self.objects.pop(normalized_id)
 
+        self._cleanup_groups_for_object(normalized_id)
+
         self.emit_event(
             "object_manager",
             {
@@ -459,6 +635,8 @@ class Runtime:
         with self.lock:
             object_ids = sorted(self.objects.keys())
             self.objects = {}
+            for group in self.object_groups.values():
+                group["objectIds"] = []
 
         self.emit_event(
             "object_manager",
@@ -469,9 +647,25 @@ class Runtime:
                 "objectIds": object_ids,
             },
         )
+        for group in list(self.object_groups.values()):
+            self.emit_event(
+                "object_group",
+                {
+                    "source": "system",
+                    "action": "membership_update",
+                    "group": dict(group),
+                },
+            )
         return object_ids
 
-    def update_object(self, object_id: str, patch: Dict[str, Any], source: str = "api", emit_osc: bool = True) -> Dict[str, Any]:
+    def update_object(
+        self,
+        object_id: str,
+        patch: Dict[str, Any],
+        source: str = "api",
+        emit_osc: bool = True,
+        propagate_group_links: bool = True,
+    ) -> Dict[str, Any]:
         with self.lock:
             current = self.objects.get(object_id, default_object(object_id))
             merged = {**current, **patch, "objectId": object_id, "object_id": object_id}
@@ -486,6 +680,9 @@ class Runtime:
                     continue
                 value = 1 if (param == "mute" and next_obj[param]) else (0 if param == "mute" else next_obj[param])
                 self._send_object_param(object_id, param, value)
+
+        if propagate_group_links and changed:
+            self._propagate_group_links(object_id, changed, next_obj, source, emit_osc)
 
         self.emit_event(
             "object",
@@ -841,6 +1038,41 @@ class Handler(BaseHTTPRequestHandler):
                 body = self._read_json_body()
                 updated = RUNTIME.update_object(object_id, body, source="api", emit_osc=True)
                 self._send_json(HTTPStatus.OK, {"ok": True, "object": updated, "status": RUNTIME.status()})
+                return
+
+            if path_name == "/api/groups/create":
+                body = self._read_json_body()
+                group_id = normalize_object_id(body.get("groupId") or body.get("group_id"))
+                group = RUNTIME.create_object_group(
+                    group_id=group_id,
+                    name=str(body.get("name") or group_id),
+                    object_ids=body.get("objectIds") or body.get("object_ids") or [],
+                    link_params=body.get("linkParams") or body.get("link_params") or [],
+                    source="api",
+                )
+                self._send_json(HTTPStatus.OK, {"ok": True, "group": group, "status": RUNTIME.status()})
+                return
+
+            if path_name.startswith("/api/groups/") and path_name.endswith("/update"):
+                parts = path_name.split("/")
+                if len(parts) < 5:
+                    self._send_json(HTTPStatus.NOT_FOUND, {"ok": False, "error": "Unknown groups endpoint"})
+                    return
+                group_id = unquote(parts[3])
+                body = self._read_json_body()
+                group = RUNTIME.update_object_group(group_id, body, source="api")
+                self._send_json(HTTPStatus.OK, {"ok": True, "group": group, "status": RUNTIME.status()})
+                return
+
+            if path_name.startswith("/api/groups/") and path_name.endswith("/delete"):
+                parts = path_name.split("/")
+                if len(parts) < 5:
+                    self._send_json(HTTPStatus.NOT_FOUND, {"ok": False, "error": "Unknown groups endpoint"})
+                    return
+                group_id = unquote(parts[3])
+                _ = self._read_json_body()
+                deleted = RUNTIME.delete_object_group(group_id, source="api")
+                self._send_json(HTTPStatus.OK, {"ok": True, "groupId": deleted["groupId"], "status": RUNTIME.status()})
                 return
 
             if path_name.startswith("/api/action/"):

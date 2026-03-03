@@ -18,17 +18,22 @@ const CAMERA_DEFAULT = {
 const state = {
   status: null,
   selectedObjectId: null,
+  selectedObjectIds: [],
+  selectedGroupId: null,
   currentPage: "panner",
-  draggingObjectId: null,
-  draggingMode: null,
-  draggingPlaneY: 0,
-  draggingStartY: 0,
-  draggingStartPointerY: 0,
-  draggingOffsetXZ: { x: 0, z: 0 },
   orbiting: false,
   activePointerId: null,
+  pointerDownHitObjectId: null,
   lastPointer: { x: 0, y: 0 },
-  lastDragSendMs: 0,
+  selectionBox: {
+    active: false,
+    additive: false,
+    startX: 0,
+    startY: 0,
+    currentX: 0,
+    currentY: 0,
+    baseSelection: []
+  },
   logs: [],
   camera: {
     yawDeg: CAMERA_DEFAULT.yawDeg,
@@ -48,6 +53,7 @@ const els = {
   showInfo: document.getElementById("showInfo"),
   sceneButtons: document.getElementById("sceneButtons"),
   actionButtons: document.getElementById("actionButtons"),
+  selectionSummary: document.getElementById("selectionSummary"),
   objectSelect: document.getElementById("objectSelect"),
   xInput: document.getElementById("xInput"),
   yInput: document.getElementById("yInput"),
@@ -77,6 +83,14 @@ const els = {
   managerRemoveBtn: document.getElementById("managerRemoveBtn"),
   managerClearBtn: document.getElementById("managerClearBtn"),
   managerObjectRows: document.getElementById("managerObjectRows"),
+  managerGroupSelect: document.getElementById("managerGroupSelect"),
+  managerGroupId: document.getElementById("managerGroupId"),
+  managerGroupName: document.getElementById("managerGroupName"),
+  managerGroupSummary: document.getElementById("managerGroupSummary"),
+  managerGroupCreateBtn: document.getElementById("managerGroupCreateBtn"),
+  managerGroupUpdateBtn: document.getElementById("managerGroupUpdateBtn"),
+  managerGroupDeleteBtn: document.getElementById("managerGroupDeleteBtn"),
+  managerGroupLinkInputs: Array.from(document.querySelectorAll(".manager-group-link")),
   eventLog: document.getElementById("eventLog"),
   canvas: document.getElementById("pannerCanvas")
 };
@@ -177,6 +191,39 @@ function sanitizeObjectId(raw, options = {}) {
   return candidate;
 }
 
+function uniqueGroupId(baseId) {
+  const normalizedBase = normalizeObjectId(baseId) || "group";
+  const existing = new Set(getObjectGroups().map((group) => group.groupId));
+
+  if (!existing.has(normalizedBase)) {
+    return normalizedBase;
+  }
+
+  let counter = 2;
+  while (counter < 10000) {
+    const suffix = `-${counter}`;
+    const maxBaseLen = 64 - suffix.length;
+    const trimmedBase = normalizedBase.slice(0, Math.max(1, maxBaseLen)).replace(/[-._]+$/, "") || "group";
+    const candidate = `${trimmedBase}${suffix}`;
+    if (!existing.has(candidate)) {
+      return candidate;
+    }
+    counter += 1;
+  }
+
+  throw new Error("Could not generate a unique group ID");
+}
+
+function sanitizeGroupId(raw, options = {}) {
+  const { allowAuto = false } = options;
+  const normalized = normalizeObjectId(raw);
+  const candidate = allowAuto ? uniqueGroupId(normalized || "group") : normalized;
+  if (!OBJECT_ID_RE.test(candidate)) {
+    throw new Error("Group ID must use letters/numbers/dot/underscore/dash (max 64 chars)");
+  }
+  return candidate;
+}
+
 function vec(x, y, z) {
   return { x, y, z };
 }
@@ -244,12 +291,100 @@ function getObjects() {
   return Array.isArray(state.status?.objects) ? state.status.objects : [];
 }
 
-function getSelectedObject() {
+function getObjectGroups() {
+  return Array.isArray(state.status?.objectGroups) ? state.status.objectGroups : [];
+}
+
+function syncSelectedIdsWithObjects() {
   const objects = getObjects();
-  if (!state.selectedObjectId && objects[0]) {
-    state.selectedObjectId = objects[0].objectId;
+  const objectIdSet = new Set(objects.map((obj) => obj.objectId));
+  state.selectedObjectIds = state.selectedObjectIds.filter((objectId) => objectIdSet.has(objectId));
+
+  if (!state.selectedObjectIds.length && state.selectedObjectId && objectIdSet.has(state.selectedObjectId)) {
+    state.selectedObjectIds = [state.selectedObjectId];
   }
-  return objects.find((obj) => obj.objectId === state.selectedObjectId) || null;
+
+  if (state.selectedObjectIds.length) {
+    if (!state.selectedObjectIds.includes(state.selectedObjectId)) {
+      state.selectedObjectId = state.selectedObjectIds[0];
+    }
+  } else {
+    state.selectedObjectId = null;
+  }
+}
+
+function setSelection(objectIds) {
+  const unique = [];
+  const seen = new Set();
+  for (const objectId of objectIds) {
+    const normalized = String(objectId || "").trim();
+    if (!normalized || seen.has(normalized)) continue;
+    unique.push(normalized);
+    seen.add(normalized);
+  }
+  state.selectedObjectIds = unique;
+  state.selectedObjectId = unique.length ? unique[0] : null;
+}
+
+function setSingleSelection(objectId) {
+  if (!objectId) {
+    setSelection([]);
+    return;
+  }
+  setSelection([objectId]);
+}
+
+function toggleSelection(objectId) {
+  if (!objectId) return;
+  const hasObject = state.selectedObjectIds.includes(objectId);
+  if (hasObject) {
+    const next = state.selectedObjectIds.filter((selectedId) => selectedId !== objectId);
+    setSelection(next);
+  } else {
+    setSelection([objectId, ...state.selectedObjectIds]);
+  }
+}
+
+function isObjectSelected(objectId) {
+  return state.selectedObjectIds.includes(objectId);
+}
+
+function selectedObjectTargets() {
+  syncSelectedIdsWithObjects();
+  if (state.selectedObjectIds.length) return [...state.selectedObjectIds];
+  if (state.selectedObjectId) return [state.selectedObjectId];
+  return [];
+}
+
+function getSelectedObject() {
+  syncSelectedIdsWithObjects();
+  if (!state.selectedObjectId) return null;
+  return getObjects().find((obj) => obj.objectId === state.selectedObjectId) || null;
+}
+
+function getSelectedGroup() {
+  const groups = getObjectGroups();
+  return groups.find((group) => group.groupId === state.selectedGroupId) || null;
+}
+
+function selectedLinkParamsFromInputs() {
+  return els.managerGroupLinkInputs
+    .filter((input) => input.checked)
+    .map((input) => String(input.dataset.param || "").trim())
+    .filter(Boolean);
+}
+
+function applyLinkParamsToInputs(linkParams) {
+  const selected = new Set(Array.isArray(linkParams) ? linkParams : []);
+  for (const input of els.managerGroupLinkInputs) {
+    const param = String(input.dataset.param || "");
+    input.checked = selected.has(param);
+  }
+}
+
+function setInputValueIfIdle(input, value) {
+  if (document.activeElement === input) return;
+  input.value = value;
 }
 
 function getObjectById(objectId) {
@@ -471,7 +606,8 @@ function renderPanner() {
   renderables.sort((a, b) => b.projected.depth - a.projected.depth);
 
   for (const item of renderables) {
-    const isSelected = item.obj.objectId === state.selectedObjectId;
+    const isSelected = isObjectSelected(item.obj.objectId);
+    const isPrimarySelected = item.obj.objectId === state.selectedObjectId;
 
     if (item.floorProjected) {
       const shadowRadius = Math.max(5, item.radius * 0.9);
@@ -516,11 +652,17 @@ function renderPanner() {
     ctx.arc(cx, cy, radius, 0, Math.PI * 2);
     ctx.fill();
 
-    if (isSelected) {
+    if (isPrimarySelected) {
       ctx.strokeStyle = "#003f3b";
       ctx.lineWidth = 2;
       ctx.beginPath();
       ctx.arc(cx, cy, radius + 2, 0, Math.PI * 2);
+      ctx.stroke();
+    } else if (isSelected) {
+      ctx.strokeStyle = "#12756f";
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.arc(cx, cy, radius + 1.5, 0, Math.PI * 2);
       ctx.stroke();
     }
 
@@ -551,6 +693,20 @@ function renderPanner() {
   ctx.fillStyle = "#385067";
   ctx.font = "12px IBM Plex Sans, sans-serif";
   ctx.fillText("X axis: red | Y axis: green | Z axis: blue", 12, 20);
+
+  if (state.selectionBox.active) {
+    const x = Math.min(state.selectionBox.startX, state.selectionBox.currentX);
+    const y = Math.min(state.selectionBox.startY, state.selectionBox.currentY);
+    const wBox = Math.abs(state.selectionBox.currentX - state.selectionBox.startX);
+    const hBox = Math.abs(state.selectionBox.currentY - state.selectionBox.startY);
+    ctx.save();
+    ctx.fillStyle = "#006c6733";
+    ctx.strokeStyle = "#006c67";
+    ctx.lineWidth = 1.2;
+    ctx.fillRect(x, y, wBox, hBox);
+    ctx.strokeRect(x, y, wBox, hBox);
+    ctx.restore();
+  }
 }
 
 function renderStatusLine() {
@@ -641,8 +797,16 @@ async function runAction(actionId, command) {
 }
 
 function renderObjectSelect() {
+  syncSelectedIdsWithObjects();
   const objects = getObjects();
   els.objectSelect.innerHTML = "";
+
+  const placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = objects.length ? "Primary selected object..." : "No objects";
+  placeholder.disabled = true;
+  placeholder.selected = !state.selectedObjectId;
+  els.objectSelect.appendChild(placeholder);
 
   for (const obj of objects) {
     const option = document.createElement("option");
@@ -652,35 +816,113 @@ function renderObjectSelect() {
     els.objectSelect.appendChild(option);
   }
 
-  if (!objects.find((obj) => obj.objectId === state.selectedObjectId)) {
-    state.selectedObjectId = objects[0] ? objects[0].objectId : null;
+  els.objectSelect.disabled = !objects.length;
+}
+
+function renderSelectionSummary() {
+  const selectedIds = selectedObjectTargets();
+  if (!selectedIds.length) {
+    els.selectionSummary.textContent = "Selected: 0";
+    return;
   }
+
+  if (selectedIds.length === 1) {
+    els.selectionSummary.textContent = `Selected: 1 (${selectedIds[0]})`;
+    return;
+  }
+
+  els.selectionSummary.textContent = `Selected: ${selectedIds.length} (primary: ${state.selectedObjectId || "-"})`;
 }
 
 function renderInspector() {
+  const selectedIds = selectedObjectTargets();
   const obj = getSelectedObject();
+  renderSelectionSummary();
+
+  els.applyObjectBtn.disabled = selectedIds.length === 0;
+  els.applyObjectBtn.textContent = selectedIds.length > 1 ? `Apply To ${selectedIds.length} Objects` : "Apply Object Update";
+
   if (!obj) {
     for (const input of [els.xInput, els.yInput, els.zInput, els.sizeInput, els.gainInput, els.algorithmInput]) {
-      input.value = "";
+      setInputValueIfIdle(input, "");
     }
     els.muteInput.checked = false;
     return;
   }
 
-  els.xInput.value = String(Number(obj.x).toFixed(2));
-  els.yInput.value = String(Number(obj.y).toFixed(2));
-  els.zInput.value = String(Number(obj.z).toFixed(2));
-  els.sizeInput.value = String(Number(obj.size).toFixed(2));
-  els.gainInput.value = String(Number(obj.gain).toFixed(2));
-  els.algorithmInput.value = String(obj.algorithm || "default");
+  setInputValueIfIdle(els.xInput, String(Number(obj.x).toFixed(2)));
+  setInputValueIfIdle(els.yInput, String(Number(obj.y).toFixed(2)));
+  setInputValueIfIdle(els.zInput, String(Number(obj.z).toFixed(2)));
+  setInputValueIfIdle(els.sizeInput, String(Number(obj.size).toFixed(2)));
+  setInputValueIfIdle(els.gainInput, String(Number(obj.gain).toFixed(2)));
+  setInputValueIfIdle(els.algorithmInput, String(obj.algorithm || "default"));
   els.muteInput.checked = Boolean(obj.mute);
 }
 
+function renderGroupsManager() {
+  const selectedObjectIds = selectedObjectTargets();
+  const groups = [...getObjectGroups()].sort((a, b) => String(a.groupId).localeCompare(String(b.groupId)));
+
+  if (state.selectedGroupId && !groups.find((group) => group.groupId === state.selectedGroupId)) {
+    state.selectedGroupId = null;
+  }
+  if (!state.selectedGroupId && groups.length) {
+    state.selectedGroupId = groups[0].groupId;
+  }
+
+  els.managerGroupSelect.innerHTML = "";
+  const newOpt = document.createElement("option");
+  newOpt.value = "";
+  newOpt.textContent = "New group...";
+  if (!state.selectedGroupId) newOpt.selected = true;
+  els.managerGroupSelect.appendChild(newOpt);
+
+  for (const group of groups) {
+    const option = document.createElement("option");
+    option.value = group.groupId;
+    option.textContent = `${group.groupId} (${group.objectIds.length})`;
+    if (group.groupId === state.selectedGroupId) option.selected = true;
+    els.managerGroupSelect.appendChild(option);
+  }
+
+  const selectedGroup = getSelectedGroup();
+  if (selectedGroup) {
+    setInputValueIfIdle(els.managerGroupId, String(selectedGroup.groupId));
+    setInputValueIfIdle(els.managerGroupName, String(selectedGroup.name || selectedGroup.groupId));
+    applyLinkParamsToInputs(selectedGroup.linkParams || []);
+    els.managerGroupSummary.textContent = `Group members: ${selectedGroup.objectIds.length}. Update will replace members with current selection (${selectedObjectIds.length}).`;
+  } else {
+    const suggestedId = uniqueGroupId("group");
+    if (!String(els.managerGroupId.value || "").trim()) {
+      setInputValueIfIdle(els.managerGroupId, suggestedId);
+    }
+    if (!selectedLinkParamsFromInputs().length) {
+      applyLinkParamsToInputs(["x", "y", "z"]);
+    }
+    if (!String(els.managerGroupName.value || "").trim()) {
+      setInputValueIfIdle(els.managerGroupName, String(els.managerGroupId.value || suggestedId));
+    }
+    els.managerGroupSummary.textContent = `${groups.length} group${groups.length === 1 ? "" : "s"} total. Create/Update uses current selection (${selectedObjectIds.length}).`;
+  }
+
+  els.managerGroupUpdateBtn.disabled = !state.selectedGroupId;
+  els.managerGroupDeleteBtn.disabled = !state.selectedGroupId;
+}
+
 function renderManager() {
+  syncSelectedIdsWithObjects();
   const objects = getObjects();
+  const selectedIds = selectedObjectTargets();
   els.managerObjectCount.textContent = `${objects.length} object${objects.length === 1 ? "" : "s"}`;
 
   els.managerObjectSelect.innerHTML = "";
+  const placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = objects.length ? "Primary selected object..." : "No objects";
+  placeholder.disabled = true;
+  placeholder.selected = !state.selectedObjectId;
+  els.managerObjectSelect.appendChild(placeholder);
+
   for (const obj of objects) {
     const opt = document.createElement("option");
     opt.value = obj.objectId;
@@ -688,22 +930,25 @@ function renderManager() {
     if (obj.objectId === state.selectedObjectId) opt.selected = true;
     els.managerObjectSelect.appendChild(opt);
   }
+  els.managerObjectSelect.disabled = !objects.length;
 
   const selected = getSelectedObject();
   if (selected) {
-    els.managerRenameInput.value = selected.objectId;
-    els.managerTypeInput.value = String(selected.type || DEFAULT_OBJECT_TYPE);
-    els.managerColorInput.value = normalizeHexColor(selected.color, DEFAULT_OBJECT_COLOR);
+    setInputValueIfIdle(els.managerRenameInput, selected.objectId);
+    setInputValueIfIdle(els.managerTypeInput, String(selected.type || DEFAULT_OBJECT_TYPE));
+    setInputValueIfIdle(els.managerColorInput, normalizeHexColor(selected.color, DEFAULT_OBJECT_COLOR));
   } else {
-    els.managerRenameInput.value = "";
-    els.managerTypeInput.value = DEFAULT_OBJECT_TYPE;
-    els.managerColorInput.value = DEFAULT_OBJECT_COLOR;
+    setInputValueIfIdle(els.managerRenameInput, "");
+    setInputValueIfIdle(els.managerTypeInput, DEFAULT_OBJECT_TYPE);
+    setInputValueIfIdle(els.managerColorInput, DEFAULT_OBJECT_COLOR);
   }
+  els.managerRenameBtn.disabled = selectedIds.length !== 1;
 
   els.managerObjectRows.innerHTML = "";
   for (const obj of objects) {
     const row = document.createElement("tr");
-    if (obj.objectId === state.selectedObjectId) row.classList.add("is-selected");
+    if (isObjectSelected(obj.objectId)) row.classList.add("is-selected");
+    if (obj.objectId === state.selectedObjectId) row.classList.add("is-primary");
 
     const positionText = `${Number(obj.x).toFixed(1)}, ${Number(obj.y).toFixed(1)}, ${Number(obj.z).toFixed(1)}`;
     const color = normalizeHexColor(obj.color, DEFAULT_OBJECT_COLOR);
@@ -715,16 +960,23 @@ function renderManager() {
       <td>${escapeHtml(positionText)}</td>
     `;
 
-    row.addEventListener("click", () => {
-      state.selectedObjectId = obj.objectId;
+    row.addEventListener("click", (event) => {
+      if (event.metaKey || event.ctrlKey) {
+        toggleSelection(obj.objectId);
+      } else {
+        setSingleSelection(obj.objectId);
+      }
       renderAll();
     });
 
     els.managerObjectRows.appendChild(row);
   }
+
+  renderGroupsManager();
 }
 
 function renderAll() {
+  syncSelectedIdsWithObjects();
   renderStatusLine();
   renderShowControls();
   renderObjectSelect();
@@ -737,9 +989,10 @@ function renderAll() {
 async function refreshStatus() {
   try {
     state.status = await api("/api/status");
-    const objects = getObjects();
-    if (!objects.find((obj) => obj.objectId === state.selectedObjectId)) {
-      state.selectedObjectId = objects[0] ? objects[0].objectId : null;
+    syncSelectedIdsWithObjects();
+    const groups = getObjectGroups();
+    if (state.selectedGroupId && !groups.find((group) => group.groupId === state.selectedGroupId)) {
+      state.selectedGroupId = null;
     }
     renderAll();
   } catch (error) {
@@ -778,32 +1031,77 @@ function toCanvasPoint(event) {
   };
 }
 
-function maybeSendDragPatch(objectId, patch) {
-  const now = Date.now();
-  if (now - state.lastDragSendMs > 70) {
-    state.lastDragSendMs = now;
-    void pushObjectPatch(objectId, patch);
-  }
-}
+function selectionRectObjectIds(startX, startY, currentX, currentY) {
+  const left = Math.min(startX, currentX);
+  const right = Math.max(startX, currentX);
+  const top = Math.min(startY, currentY);
+  const bottom = Math.max(startY, currentY);
+  const camera = getCameraBasis();
+  const objectIds = [];
 
-async function finalizePointerInteraction() {
-  if (state.draggingObjectId) {
-    const obj = getObjectById(state.draggingObjectId);
-    if (obj) {
-      await pushObjectPatch(state.draggingObjectId, {
-        x: Number(obj.x),
-        y: Number(obj.y),
-        z: Number(obj.z)
-      });
-      await refreshStatus();
+  for (const obj of getObjects()) {
+    const projected = projectPoint(camera, vec(Number(obj.x), Number(obj.y), Number(obj.z)));
+    if (!projected) continue;
+    if (projected.x >= left && projected.x <= right && projected.y >= top && projected.y <= bottom) {
+      objectIds.push(obj.objectId);
     }
   }
 
-  state.draggingObjectId = null;
-  state.draggingMode = null;
-  state.draggingOffsetXZ = { x: 0, z: 0 };
+  return objectIds;
+}
+
+function applySelectionBox(additive) {
+  const selectedInRect = selectionRectObjectIds(
+    state.selectionBox.startX,
+    state.selectionBox.startY,
+    state.selectionBox.currentX,
+    state.selectionBox.currentY
+  );
+  if (additive) {
+    setSelection([...state.selectionBox.baseSelection, ...selectedInRect]);
+  } else {
+    setSelection(selectedInRect);
+  }
+}
+
+function resetPointerInteraction() {
   state.orbiting = false;
   state.activePointerId = null;
+  state.pointerDownHitObjectId = null;
+  state.selectionBox.active = false;
+  state.selectionBox.additive = false;
+  state.selectionBox.baseSelection = [];
+}
+
+function finishSelectionInteraction(event) {
+  const dx = state.selectionBox.currentX - state.selectionBox.startX;
+  const dy = state.selectionBox.currentY - state.selectionBox.startY;
+  const draggedFar = Math.hypot(dx, dy) > 6;
+  const additive = state.selectionBox.additive;
+  const hitObjectId = state.pointerDownHitObjectId;
+
+  if (!draggedFar) {
+    if (hitObjectId) {
+      if (additive) {
+        toggleSelection(hitObjectId);
+      } else {
+        setSingleSelection(hitObjectId);
+      }
+    } else if (!additive) {
+      setSelection([]);
+    }
+  } else {
+    applySelectionBox(additive);
+  }
+
+  if (event?.pointerId !== undefined) {
+    try {
+      els.canvas.releasePointerCapture(event.pointerId);
+    } catch {
+      // Ignore release errors when pointer capture is already gone.
+    }
+  }
+  resetPointerInteraction();
 }
 
 async function managerAddObject() {
@@ -821,7 +1119,7 @@ async function managerAddObject() {
       addLog(`object id normalized -> ${objectId}`);
     }
     els.managerAddId.value = objectId;
-    state.selectedObjectId = objectId;
+    setSingleSelection(objectId);
     addLog(`object add -> ${objectId}`);
     await refreshStatus();
   } catch (error) {
@@ -831,13 +1129,17 @@ async function managerAddObject() {
 
 async function managerRenameObject() {
   try {
-    const currentId = state.selectedObjectId;
+    const selectedIds = selectedObjectTargets();
+    if (selectedIds.length !== 1) {
+      throw new Error("Rename requires exactly one selected object");
+    }
+    const currentId = selectedIds[0];
     if (!currentId) {
       throw new Error("No object selected");
     }
     const newObjectId = sanitizeObjectId(els.managerRenameInput.value);
     await api(`/api/object/${encodeURIComponent(currentId)}/rename`, "POST", { newObjectId });
-    state.selectedObjectId = newObjectId;
+    setSingleSelection(newObjectId);
     addLog(`object rename -> ${currentId} to ${newObjectId}`);
     await refreshStatus();
   } catch (error) {
@@ -847,13 +1149,15 @@ async function managerRenameObject() {
 
 async function managerSetType() {
   try {
-    const objectId = state.selectedObjectId;
-    if (!objectId) {
-      throw new Error("No object selected");
+    const objectIds = selectedObjectTargets();
+    if (!objectIds.length) {
+      throw new Error("No objects selected");
     }
     const type = String(els.managerTypeInput.value || DEFAULT_OBJECT_TYPE).trim() || DEFAULT_OBJECT_TYPE;
-    await api(`/api/object/${encodeURIComponent(objectId)}`, "POST", { type });
-    addLog(`object type set -> ${objectId} = ${type}`);
+    await Promise.all(
+      objectIds.map((objectId) => api(`/api/object/${encodeURIComponent(objectId)}`, "POST", { type }))
+    );
+    addLog(`object type set -> ${objectIds.join(", ")} = ${type}`);
     await refreshStatus();
   } catch (error) {
     addLog(`set type failed: ${error.message}`);
@@ -862,13 +1166,15 @@ async function managerSetType() {
 
 async function managerSetColor() {
   try {
-    const objectId = state.selectedObjectId;
-    if (!objectId) {
-      throw new Error("No object selected");
+    const objectIds = selectedObjectTargets();
+    if (!objectIds.length) {
+      throw new Error("No objects selected");
     }
     const color = normalizeHexColor(els.managerColorInput.value, DEFAULT_OBJECT_COLOR);
-    await api(`/api/object/${encodeURIComponent(objectId)}`, "POST", { color });
-    addLog(`object color set -> ${objectId} = ${color}`);
+    await Promise.all(
+      objectIds.map((objectId) => api(`/api/object/${encodeURIComponent(objectId)}`, "POST", { color }))
+    );
+    addLog(`object color set -> ${objectIds.join(", ")} = ${color}`);
     await refreshStatus();
   } catch (error) {
     addLog(`set color failed: ${error.message}`);
@@ -877,12 +1183,15 @@ async function managerSetColor() {
 
 async function managerRemoveSelected() {
   try {
-    const objectId = state.selectedObjectId;
-    if (!objectId) {
-      throw new Error("No object selected");
+    const objectIds = selectedObjectTargets();
+    if (!objectIds.length) {
+      throw new Error("No objects selected");
     }
-    await api(`/api/object/${encodeURIComponent(objectId)}/remove`, "POST", {});
-    addLog(`object remove -> ${objectId}`);
+    await Promise.all(
+      objectIds.map((objectId) => api(`/api/object/${encodeURIComponent(objectId)}/remove`, "POST", {}))
+    );
+    setSelection([]);
+    addLog(`object remove -> ${objectIds.join(", ")}`);
     await refreshStatus();
   } catch (error) {
     addLog(`remove failed: ${error.message}`);
@@ -895,11 +1204,81 @@ async function managerClearAll() {
   }
   try {
     await api("/api/object/clear", "POST", {});
-    state.selectedObjectId = null;
+    setSelection([]);
     addLog("object clear -> all");
     await refreshStatus();
   } catch (error) {
     addLog(`clear failed: ${error.message}`);
+  }
+}
+
+async function managerCreateGroup() {
+  try {
+    const selectedObjectIds = selectedObjectTargets();
+    if (!selectedObjectIds.length) {
+      throw new Error("Select one or more objects before creating a group");
+    }
+    const rawGroupId = els.managerGroupId.value;
+    const groupId = sanitizeGroupId(rawGroupId, { allowAuto: true });
+    const name = String(els.managerGroupName.value || groupId).trim() || groupId;
+    const linkParams = selectedLinkParamsFromInputs();
+    await api("/api/groups/create", "POST", {
+      groupId,
+      name,
+      objectIds: selectedObjectIds,
+      linkParams
+    });
+    if (String(rawGroupId || "").trim() !== groupId) {
+      addLog(`group id normalized -> ${groupId}`);
+    }
+    state.selectedGroupId = groupId;
+    addLog(`group create -> ${groupId} (${selectedObjectIds.length} members)`);
+    await refreshStatus();
+  } catch (error) {
+    addLog(`group create failed: ${error.message}`);
+  }
+}
+
+async function managerUpdateGroup() {
+  try {
+    const groupId = state.selectedGroupId || sanitizeGroupId(els.managerGroupId.value);
+    if (!groupId) {
+      throw new Error("No group selected");
+    }
+    const selectedObjectIds = selectedObjectTargets();
+    if (!selectedObjectIds.length) {
+      throw new Error("Select one or more objects before updating the group");
+    }
+    const name = String(els.managerGroupName.value || groupId).trim() || groupId;
+    const linkParams = selectedLinkParamsFromInputs();
+    await api(`/api/groups/${encodeURIComponent(groupId)}/update`, "POST", {
+      name,
+      objectIds: selectedObjectIds,
+      linkParams
+    });
+    state.selectedGroupId = groupId;
+    addLog(`group update -> ${groupId} (${selectedObjectIds.length} members)`);
+    await refreshStatus();
+  } catch (error) {
+    addLog(`group update failed: ${error.message}`);
+  }
+}
+
+async function managerDeleteGroup() {
+  try {
+    const groupId = state.selectedGroupId || sanitizeGroupId(els.managerGroupId.value);
+    if (!groupId) {
+      throw new Error("No group selected");
+    }
+    if (!confirm(`Delete group "${groupId}"?`)) {
+      return;
+    }
+    await api(`/api/groups/${encodeURIComponent(groupId)}/delete`, "POST", {});
+    state.selectedGroupId = null;
+    addLog(`group delete -> ${groupId}`);
+    await refreshStatus();
+  } catch (error) {
+    addLog(`group delete failed: ${error.message}`);
   }
 }
 
@@ -924,19 +1303,21 @@ function setupHandlers() {
   });
 
   els.objectSelect.addEventListener("change", () => {
-    state.selectedObjectId = els.objectSelect.value;
+    setSingleSelection(els.objectSelect.value);
     renderAll();
   });
 
   els.applyObjectBtn.addEventListener("click", async () => {
-    const id = state.selectedObjectId;
-    if (!id) return;
-    await pushObjectPatch(id, selectedObjectPatchFromInputs());
+    const objectIds = selectedObjectTargets();
+    if (!objectIds.length) return;
+    const patch = selectedObjectPatchFromInputs();
+    await Promise.all(objectIds.map((id) => pushObjectPatch(id, patch)));
+    addLog(`object patch -> ${objectIds.join(", ")}`);
     await refreshStatus();
   });
 
   els.managerObjectSelect.addEventListener("change", () => {
-    state.selectedObjectId = els.managerObjectSelect.value;
+    setSingleSelection(els.managerObjectSelect.value);
     renderAll();
   });
 
@@ -962,6 +1343,23 @@ function setupHandlers() {
 
   els.managerClearBtn.addEventListener("click", () => {
     void managerClearAll();
+  });
+
+  els.managerGroupSelect.addEventListener("change", () => {
+    state.selectedGroupId = els.managerGroupSelect.value || null;
+    renderManager();
+  });
+
+  els.managerGroupCreateBtn.addEventListener("click", () => {
+    void managerCreateGroup();
+  });
+
+  els.managerGroupUpdateBtn.addEventListener("click", () => {
+    void managerUpdateGroup();
+  });
+
+  els.managerGroupDeleteBtn.addEventListener("click", () => {
+    void managerDeleteGroup();
   });
 
   const cameraInputHandler = () => {
@@ -997,38 +1395,26 @@ function setupHandlers() {
 
   els.canvas.addEventListener("pointerdown", (event) => {
     if (state.currentPage !== "panner") return;
+    if (event.button !== 0) return;
 
     const pt = toCanvasPoint(event);
     state.activePointerId = event.pointerId;
     state.lastPointer = pt;
+    state.pointerDownHitObjectId = pickObject(pt)?.obj.objectId || null;
 
-    const hit = pickObject(pt);
-    if (hit && event.button !== 2) {
-      state.draggingObjectId = hit.obj.objectId;
-      state.draggingMode = event.shiftKey ? "y" : "xz";
-      state.draggingPlaneY = Number(hit.obj.y);
-      state.draggingStartY = Number(hit.obj.y);
-      state.draggingStartPointerY = pt.y;
-      state.draggingOffsetXZ = { x: 0, z: 0 };
-      if (state.draggingMode === "xz") {
-        const camera = getCameraBasis();
-        const ray = screenRay(camera, pt.x, pt.y);
-        const planeHit = intersectRayPlaneY(ray, state.draggingPlaneY);
-        if (planeHit) {
-          state.draggingOffsetXZ = {
-            x: Number(hit.obj.x) - planeHit.x,
-            z: Number(hit.obj.z) - planeHit.z
-          };
-        }
-      }
-      state.orbiting = false;
-      state.selectedObjectId = hit.obj.objectId;
-      renderAll();
-    } else {
-      state.draggingObjectId = null;
-      state.draggingMode = null;
-      state.draggingOffsetXZ = { x: 0, z: 0 };
+    if (event.altKey) {
       state.orbiting = true;
+      state.selectionBox.active = false;
+    } else {
+      const additive = event.metaKey || event.ctrlKey;
+      state.orbiting = false;
+      state.selectionBox.active = true;
+      state.selectionBox.additive = additive;
+      state.selectionBox.startX = pt.x;
+      state.selectionBox.startY = pt.y;
+      state.selectionBox.currentX = pt.x;
+      state.selectionBox.currentY = pt.y;
+      state.selectionBox.baseSelection = additive ? [...selectedObjectTargets()] : [];
     }
 
     els.canvas.setPointerCapture(event.pointerId);
@@ -1043,76 +1429,49 @@ function setupHandlers() {
     const dx = pt.x - state.lastPointer.x;
     const dy = pt.y - state.lastPointer.y;
 
-    if (state.draggingObjectId) {
-      const obj = getObjectById(state.draggingObjectId);
-      if (!obj) return;
-
-      const wantedMode = event.shiftKey ? "y" : "xz";
-      if (state.draggingMode !== wantedMode) {
-        state.draggingMode = wantedMode;
-        if (wantedMode === "y") {
-          state.draggingStartY = Number(obj.y);
-          state.draggingStartPointerY = pt.y;
-        } else {
-          state.draggingPlaneY = Number(obj.y);
-          const camera = getCameraBasis();
-          const ray = screenRay(camera, pt.x, pt.y);
-          const planeHit = intersectRayPlaneY(ray, state.draggingPlaneY);
-          if (planeHit) {
-            state.draggingOffsetXZ = {
-              x: Number(obj.x) - planeHit.x,
-              z: Number(obj.z) - planeHit.z
-            };
-          } else {
-            state.draggingOffsetXZ = { x: 0, z: 0 };
-          }
-        }
-        state.lastPointer = pt;
-        return;
-      }
-
-      if (state.draggingMode === "y") {
-        const nextY = clampValue(state.draggingStartY - (pt.y - state.draggingStartPointerY) * 0.6, LIMITS.y);
-        obj.y = nextY;
-        renderInspector();
-        renderManager();
-        renderPanner();
-        maybeSendDragPatch(state.draggingObjectId, { y: nextY });
-      } else {
-        const camera = getCameraBasis();
-        const ray = screenRay(camera, pt.x, pt.y);
-        const hit = intersectRayPlaneY(ray, state.draggingPlaneY);
-        if (hit) {
-          const nextX = clampValue(hit.x + state.draggingOffsetXZ.x, LIMITS.x);
-          const nextZ = clampValue(hit.z + state.draggingOffsetXZ.z, LIMITS.z);
-          obj.x = nextX;
-          obj.z = nextZ;
-          renderInspector();
-          renderManager();
-          renderPanner();
-          maybeSendDragPatch(state.draggingObjectId, { x: nextX, z: nextZ });
-        }
-      }
-    } else if (state.orbiting) {
+    if (state.orbiting) {
       state.camera.yawDeg = normalizeYaw(state.camera.yawDeg + dx * 0.25);
       state.camera.pitchDeg = clampValue(state.camera.pitchDeg - dy * 0.2, [8, 80]);
       syncCameraInputs();
+      renderPanner();
+    } else if (state.selectionBox.active) {
+      state.selectionBox.currentX = pt.x;
+      state.selectionBox.currentY = pt.y;
+      if (Math.hypot(state.selectionBox.currentX - state.selectionBox.startX, state.selectionBox.currentY - state.selectionBox.startY) > 3) {
+        applySelectionBox(state.selectionBox.additive);
+      }
       renderPanner();
     }
 
     state.lastPointer = pt;
   });
 
-  els.canvas.addEventListener("pointerup", async (event) => {
+  els.canvas.addEventListener("pointerup", (event) => {
     if (state.currentPage !== "panner") return;
     if (state.activePointerId !== event.pointerId) return;
-    await finalizePointerInteraction();
+    if (state.selectionBox.active) {
+      finishSelectionInteraction(event);
+    } else {
+      try {
+        els.canvas.releasePointerCapture(event.pointerId);
+      } catch {
+        // Ignore release errors when pointer capture is already gone.
+      }
+      resetPointerInteraction();
+    }
+    renderAll();
   });
 
-  els.canvas.addEventListener("pointercancel", async (event) => {
+  els.canvas.addEventListener("pointercancel", (event) => {
     if (state.currentPage !== "panner") return;
     if (state.activePointerId !== event.pointerId) return;
-    await finalizePointerInteraction();
+    try {
+      els.canvas.releasePointerCapture(event.pointerId);
+    } catch {
+      // Ignore release errors when pointer capture is already gone.
+    }
+    resetPointerInteraction();
+    renderAll();
   });
 
   window.addEventListener("resize", () => {
@@ -1122,7 +1481,7 @@ function setupHandlers() {
 
 function setupEventStream() {
   const events = new EventSource("/api/events");
-  const types = ["status", "show", "scene", "object", "object_manager", "action", "osc_in", "osc_out", "osc_error", "system"];
+  const types = ["status", "show", "scene", "object", "object_manager", "object_group", "action", "osc_in", "osc_out", "osc_error", "system"];
 
   for (const type of types) {
     events.addEventListener(type, (ev) => {
@@ -1148,7 +1507,7 @@ async function start() {
   await refreshStatus();
 
   setInterval(() => {
-    if (!state.draggingObjectId && !state.orbiting) {
+    if (state.activePointerId === null) {
       void refreshStatus();
     }
   }, 1000);

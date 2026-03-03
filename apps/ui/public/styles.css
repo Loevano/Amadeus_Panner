@@ -211,7 +211,7 @@ button:hover {
 
 .manager-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 12px;
 }
 
@@ -232,6 +232,21 @@ button:hover {
   overflow: auto;
   border: 1px solid var(--border);
   border-radius: 10px;
+}
+
+.manager-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.manager-links label {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+  font-size: 0.88rem;
 }
 
 .manager-table {
@@ -257,6 +272,11 @@ button:hover {
 
 .manager-table tbody tr.is-selected {
   background: #d8f0ef;
+}
+
+.manager-table tbody tr.is-primary {
+  outline: 2px solid #0b6b66;
+  outline-offset: -2px;
 }
 
 .color-chip {

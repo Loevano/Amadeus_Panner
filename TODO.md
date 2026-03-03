@@ -9,7 +9,7 @@
 - [x] Initialize git repo for `Amadeus_Panner` and commit baseline.
 - [x] Add runnable local dev runtime (`python3 apps/control-server/server.py`) and launcher script.
 - [ ] Decide long-term runtime stack (keep Python or migrate to TypeScript workspace).
-- [ ] Implement JSON Schema validation gate before show/action load.
+- [x] Implement JSON Schema validation gate before show/action load.
 - [ ] Add persistent event log and crash-safe state snapshots.
 
 ## Runtime Features
@@ -27,7 +27,8 @@
 - [ ] Elevate 3D panner to production-grade (Three.js or equivalent) with improved depth cues and controls.
 - [x] Build baseline scene manager and action trigger panels.
 - [x] Add object manager page with add, rename, type, remove, clear, and color controls.
-- [ ] Add multi-object selection and simultaneous parameter editing.
+- [x] Add multi-object selection and simultaneous parameter editing.
+- [x] Add object groups with linkable shared parameters.
 - [ ] Increase opacity of non-selected objects.
 - [ ] Add action recorder/editor UI (timeline editing).
 - [ ] Add iPad interaction QA (touch hit targets, orientation, kiosk mode).

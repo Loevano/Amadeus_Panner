@@ -92,3 +92,28 @@ Release-facing summary for operators and production notes.
 ### Known Issues
 - Object manager edits are runtime-only and are not yet persisted back to showfile scene files.
 - Clear/remove operations currently update controller state only (no explicit OSC object-delete semantics yet).
+
+## v0.1.4 - 2026-03-03 - Multi-Select And Object Groups
+
+### Added
+- Multi-object selection in the 3D panner using drag marquee selection.
+- Cmd/Ctrl + click object toggles additive selection.
+- Batch object updates from inspector and object manager (type, color, remove, and inspector parameter apply).
+- Object groups with linkable parameters (`x`, `y`, `z`, `size`, `gain`, `mute`, `algorithm`, `type`, `color`).
+- Group lifecycle API endpoints:
+  - `POST /api/groups/create`
+  - `POST /api/groups/{id}/update`
+  - `POST /api/groups/{id}/delete`
+
+### Changed
+- Interaction model in panner:
+  - `Option` + drag now controls camera orbit.
+  - Normal drag now performs selection box instead of direct object movement.
+- Object manager now supports multi-selection context and group management controls.
+
+### Fixed
+- Eliminated object teleport risk tied to drag-mode switching by removing mixed move gestures in the panner and switching to explicit batch edit workflow.
+
+### Known Issues
+- Group updates currently use current object selection as full membership replacement.
+- Group state remains runtime-only and is not yet persisted into showfile data.

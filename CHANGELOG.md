@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-03-03 12:14 CET
+- Implemented showfile validation gate in Python runtime load path (`Runtime.load_show`), enforcing schema + file-reference checks before scenes/actions are accepted.
+- Added `apps/control-server/showfile_validator.py` with reusable validation logic for showfile, scene, and action schema enforcement.
+- Implemented `scripts/validate-showfiles.sh` to run validation for explicit show paths or all discovered `show.json` files.
+- Marked TODO item complete: JSON Schema validation gate before show/action load.
+
 ## 2026-03-03 01:03 CET
 - Created `art-control/` scaffold for Amadeus ART web controller.
 - Added architecture and design docs for reliability, OSC IO, showfiles, scenes, and actions.
@@ -48,3 +54,8 @@
 
 ## 2026-03-03 11:54 CET
 - Fixed Shift release teleport: mode switch between Y and XZ drag now preserves cursor/object offset and suppresses snap frame
+
+## 2026-03-03 12:14 CET
+- Implemented multi-object selection and simultaneous editing with marquee select, Cmd+click additive selection, and batch inspector/object-manager updates
+- Changed 3D panner interaction model: Option+drag now controls camera orbit, normal drag now performs multi-selection box
+- Added object groups with linkable parameters, including group create/update/delete UI and runtime propagation of linked parameter updates
