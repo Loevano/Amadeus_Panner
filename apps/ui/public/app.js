@@ -20,6 +20,7 @@ const state = {
   selectedObjectId: null,
   currentPage: "panner",
   draggingObjectId: null,
+  draggingMode: null,
   draggingPlaneY: 0,
   draggingStartY: 0,
   draggingStartPointerY: 0,
@@ -798,6 +799,7 @@ async function finalizePointerInteraction() {
   }
 
   state.draggingObjectId = null;
+  state.draggingMode = null;
   state.orbiting = false;
   state.activePointerId = null;
 }
@@ -1001,6 +1003,7 @@ function setupHandlers() {
     const hit = pickObject(pt);
     if (hit && event.button !== 2) {
       state.draggingObjectId = hit.obj.objectId;
+      state.draggingMode = event.shiftKey ? "y" : "xz";
       state.draggingPlaneY = Number(hit.obj.y);
       state.draggingStartY = Number(hit.obj.y);
       state.draggingStartPointerY = pt.y;
@@ -1009,6 +1012,7 @@ function setupHandlers() {
       renderAll();
     } else {
       state.draggingObjectId = null;
+      state.draggingMode = null;
       state.orbiting = true;
     }
 
@@ -1028,7 +1032,15 @@ function setupHandlers() {
       const obj = getObjectById(state.draggingObjectId);
       if (!obj) return;
 
-      if (event.shiftKey) {
+      const wantedMode = event.shiftKey ? "y" : "xz";
+      if (state.draggingMode !== wantedMode) {
+        state.draggingMode = wantedMode;
+        state.draggingStartY = Number(obj.y);
+        state.draggingStartPointerY = pt.y;
+        state.draggingPlaneY = Number(obj.y);
+      }
+
+      if (state.draggingMode === "y") {
         const nextY = clampValue(state.draggingStartY - (pt.y - state.draggingStartPointerY) * 0.6, LIMITS.y);
         obj.y = nextY;
         renderInspector();

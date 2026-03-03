@@ -42,3 +42,6 @@
 
 ## 2026-03-03 02:34 CET
 - Fixed Object Manager ID handling: add now auto-normalizes input and auto-generates unique IDs when empty/invalid
+
+## 2026-03-03 11:51 CET
+- Fixed 3D drag mode switching: Shift height adjustments now re-anchor to current pointer/object and no longer teleport after X/Z movement
