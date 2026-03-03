@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-03-03 22:37 CET
+- Added `Create Group` button directly in Group Manager editor toolbar.
+- Wired Group Manager create flow to:
+  - use editor member selection when editing a group
+  - fall back to currently selected objects when no editor members are available
+  - prompt for a new group ID with auto-normalization
+- Group Manager creation now applies current editor name/color/link settings when available.
+
 ## 2026-03-03 22:35 CET
 - Added per-action LFO identity and enable state in runtime/action serialization (`lfoId` / `lfo_id`, `enabled`) with backward-compatible auto-ID generation for existing actions.
 - Added Action Group entry support for per-action-LFO toggling (`actionLfoEnabled` / `action_lfo_enabled`) so groups can enable/disable a specific LFO ID.

@@ -2,6 +2,17 @@
 
 Release-facing summary for operators and production notes.
 
+## v0.1.9 - 2026-03-03 - Group Manager Create Shortcut
+
+### Added
+- `Create Group` button in the Group Manager edit toolbar.
+
+### Changed
+- Group creation from Group Manager now supports:
+  - member IDs from the editor member checklist (when editing a group)
+  - fallback to current object selection when no editor members are available
+  - prompted group ID entry with existing ID normalization/uniqueness logic.
+
 ## v0.1.8 - 2026-03-03 - Per-LFO Group Control And Group-State Show Persistence
 
 ### Added

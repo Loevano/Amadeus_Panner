@@ -215,6 +215,7 @@ const els = {
   groupManagerEditMembers: document.getElementById("groupManagerEditMembers"),
   groupManagerMembersSummary: document.getElementById("groupManagerMembersSummary"),
   groupManagerEditSummary: document.getElementById("groupManagerEditSummary"),
+  groupManagerCreateBtn: document.getElementById("groupManagerCreateBtn"),
   groupManagerEditSaveBtn: document.getElementById("groupManagerEditSaveBtn"),
   groupManagerEditDeleteBtn: document.getElementById("groupManagerEditDeleteBtn"),
   toggleDebugEventsBtn: document.getElementById("toggleDebugEventsBtn"),
@@ -3912,6 +3913,53 @@ async function groupManagerDeleteById(groupId) {
   }
 }
 
+async function groupManagerCreate() {
+  try {
+    const selectedGroup = getSelectedGroup();
+    const memberIdsFromEditor = selectedGroup ? selectedGroupManagerMemberIds() : [];
+    const fallbackSelection = selectedObjectTargets();
+    const objectIds = memberIdsFromEditor.length ? memberIdsFromEditor : fallbackSelection;
+    if (!objectIds.length) {
+      throw new Error("Select one or more objects before creating a group");
+    }
+
+    const baseId = selectedGroup
+      ? `${String(selectedGroup.groupId || "group")}-copy`
+      : suggestGroupBaseFromSelection(objectIds);
+    const suggestedGroupId = uniqueGroupId(baseId);
+    const rawGroupId = prompt("New group ID", suggestedGroupId);
+    if (rawGroupId === null) {
+      addLog("group create cancelled");
+      return;
+    }
+    const groupId = sanitizeGroupId(rawGroupId, { allowAuto: true });
+
+    const inputName = String(els.groupManagerEditName.value || "").trim();
+    const name = inputName || humanizeId(groupId) || groupId;
+    const color = normalizeHexColor(
+      els.groupManagerEditColor.value,
+      suggestGroupColorFromSelection(objectIds)
+    );
+    const linkParams = selectedGroup ? selectedGroupManagerLinkParams() : ["x", "y", "z"];
+
+    await api("/api/groups/create", "POST", {
+      groupId,
+      name,
+      color,
+      objectIds,
+      linkParams
+    });
+    if (String(rawGroupId || "").trim() !== groupId) {
+      addLog(`group id normalized -> ${groupId}`);
+    }
+    state.selectedGroupId = groupId;
+    addLog(`group created -> ${groupId} (${objectIds.length} members)`);
+    await refreshStatus();
+  } catch (error) {
+    addLog(`group create failed: ${error.message}`);
+  }
+}
+
 async function groupManagerSaveEditor() {
   const selectedGroup = getSelectedGroup();
   if (!selectedGroup) {
@@ -4273,6 +4321,10 @@ function setupHandlers() {
 
   els.groupManagerEditSaveBtn.addEventListener("click", () => {
     void groupManagerSaveEditor();
+  });
+
+  els.groupManagerCreateBtn.addEventListener("click", () => {
+    void groupManagerCreate();
   });
 
   els.groupManagerEditDeleteBtn.addEventListener("click", () => {
