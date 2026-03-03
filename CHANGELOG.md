@@ -82,3 +82,7 @@
 
 ## 2026-03-03 13:25 CET
 - Added table-based object selection toggles in Object Manager (`Sel` checkbox column) for direct multi-selection from the object list
+
+## 2026-03-03 13:30 CET
+- Updated selection logic to expand by enabled group membership, so selecting any member selects/highlights/modifies the full enabled group
+- Cmd/Ctrl additive selection now adds/removes whole enabled group units (supports combining multiple groups in one selection)

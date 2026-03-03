@@ -317,13 +317,51 @@ function getObjectGroups() {
   return Array.isArray(state.status?.objectGroups) ? state.status.objectGroups : [];
 }
 
+function expandSelectionByEnabledGroups(objectIds) {
+  const queue = [];
+  const seen = new Set();
+  const expanded = [];
+  const enabledGroups = getObjectGroups().filter((group) => isGroupEnabled(group));
+
+  for (const objectId of objectIds) {
+    const normalized = String(objectId || "").trim();
+    if (!normalized || seen.has(normalized)) continue;
+    queue.push(normalized);
+    seen.add(normalized);
+  }
+
+  let cursor = 0;
+  while (cursor < queue.length) {
+    const objectId = queue[cursor];
+    cursor += 1;
+    expanded.push(objectId);
+
+    for (const group of enabledGroups) {
+      const members = Array.isArray(group.objectIds) ? group.objectIds : [];
+      if (!members.includes(objectId)) continue;
+      for (const memberId of members) {
+        const normalized = String(memberId || "").trim();
+        if (!normalized || seen.has(normalized)) continue;
+        queue.push(normalized);
+        seen.add(normalized);
+      }
+    }
+  }
+
+  return expanded;
+}
+
 function syncSelectedIdsWithObjects() {
   const objects = getObjects();
   const objectIdSet = new Set(objects.map((obj) => obj.objectId));
   state.selectedObjectIds = state.selectedObjectIds.filter((objectId) => objectIdSet.has(objectId));
 
+  if (state.selectedObjectIds.length) {
+    state.selectedObjectIds = expandSelectionByEnabledGroups(state.selectedObjectIds).filter((objectId) => objectIdSet.has(objectId));
+  }
+
   if (!state.selectedObjectIds.length && state.selectedObjectId && objectIdSet.has(state.selectedObjectId)) {
-    state.selectedObjectIds = [state.selectedObjectId];
+    state.selectedObjectIds = expandSelectionByEnabledGroups([state.selectedObjectId]).filter((objectId) => objectIdSet.has(objectId));
   }
 
   if (state.selectedObjectIds.length) {
@@ -336,14 +374,15 @@ function syncSelectedIdsWithObjects() {
 }
 
 function setSelection(objectIds) {
-  const unique = [];
+  const uniqueSeeds = [];
   const seen = new Set();
   for (const objectId of objectIds) {
     const normalized = String(objectId || "").trim();
     if (!normalized || seen.has(normalized)) continue;
-    unique.push(normalized);
+    uniqueSeeds.push(normalized);
     seen.add(normalized);
   }
+  const unique = expandSelectionByEnabledGroups(uniqueSeeds);
   state.selectedObjectIds = unique;
   state.selectedObjectId = unique.length ? unique[0] : null;
 }
@@ -358,12 +397,13 @@ function setSingleSelection(objectId) {
 
 function toggleSelection(objectId) {
   if (!objectId) return;
-  const hasObject = state.selectedObjectIds.includes(objectId);
-  if (hasObject) {
-    const next = state.selectedObjectIds.filter((selectedId) => selectedId !== objectId);
+  const objectUnit = new Set(expandSelectionByEnabledGroups([objectId]));
+  const hasAnySelected = state.selectedObjectIds.some((selectedId) => objectUnit.has(selectedId));
+  if (hasAnySelected) {
+    const next = state.selectedObjectIds.filter((selectedId) => !objectUnit.has(selectedId));
     setSelection(next);
   } else {
-    setSelection([objectId, ...state.selectedObjectIds]);
+    setSelection([...objectUnit, ...state.selectedObjectIds]);
   }
 }
 
