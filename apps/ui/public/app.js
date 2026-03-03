@@ -1067,18 +1067,31 @@ function renderManager() {
   els.managerObjectRows.innerHTML = "";
   for (const obj of objects) {
     const row = document.createElement("tr");
-    if (isObjectSelected(obj.objectId)) row.classList.add("is-selected");
+    const rowIsSelected = isObjectSelected(obj.objectId);
+    if (rowIsSelected) row.classList.add("is-selected");
     if (obj.objectId === state.selectedObjectId) row.classList.add("is-primary");
 
     const positionText = `${Number(obj.x).toFixed(1)}, ${Number(obj.y).toFixed(1)}, ${Number(obj.z).toFixed(1)}`;
     const color = normalizeHexColor(obj.color, DEFAULT_OBJECT_COLOR);
 
     row.innerHTML = `
+      <td class="sel-cell"><input class="row-select-toggle" type="checkbox" ${rowIsSelected ? "checked" : ""} aria-label="Select ${escapeHtml(obj.objectId)}" /></td>
       <td>${escapeHtml(obj.objectId)}</td>
       <td>${escapeHtml(String(obj.type || DEFAULT_OBJECT_TYPE))}</td>
       <td><span class="color-chip" style="background:${escapeHtml(color)}"></span>${escapeHtml(color)}</td>
       <td>${escapeHtml(positionText)}</td>
     `;
+
+    const checkbox = row.querySelector(".row-select-toggle");
+    if (checkbox) {
+      checkbox.addEventListener("click", (event) => {
+        event.stopPropagation();
+      });
+      checkbox.addEventListener("change", () => {
+        toggleSelection(obj.objectId);
+        renderAll();
+      });
+    }
 
     row.addEventListener("click", (event) => {
       if (event.metaKey || event.ctrlKey) {

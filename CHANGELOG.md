@@ -79,3 +79,6 @@
 
 ## 2026-03-03 13:24 CET
 - Added live panner preview for group-linked drag updates so grouped objects visually follow immediately during drag (matching selection-link responsiveness)
+
+## 2026-03-03 13:25 CET
+- Added table-based object selection toggles in Object Manager (`Sel` checkbox column) for direct multi-selection from the object list

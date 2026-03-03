@@ -264,6 +264,15 @@ button:hover {
   border-bottom: 1px solid #e3e8ee;
 }
 
+.manager-table .sel-col {
+  width: 56px;
+  text-align: center;
+}
+
+.manager-table td.sel-cell {
+  text-align: center;
+}
+
 .manager-table tbody tr {
   cursor: pointer;
 }
