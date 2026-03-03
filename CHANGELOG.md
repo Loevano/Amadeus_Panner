@@ -76,3 +76,6 @@
 
 ## 2026-03-03 13:20 CET
 - Changed group link propagation for `x/y/z` from absolute copy to relative delta application, so grouped objects preserve their spacing when one object moves
+
+## 2026-03-03 13:24 CET
+- Added live panner preview for group-linked drag updates so grouped objects visually follow immediately during drag (matching selection-link responsiveness)

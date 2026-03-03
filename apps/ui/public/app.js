@@ -7,6 +7,7 @@ const LIMITS = {
 const OBJECT_ID_RE = /^[A-Za-z0-9._-]{1,64}$/;
 const DEFAULT_OBJECT_TYPE = "point";
 const DEFAULT_OBJECT_COLOR = "#1c4f89";
+const RELATIVE_GROUP_PARAMS = new Set(["x", "y", "z"]);
 
 const CAMERA_DEFAULT = {
   yawDeg: 35,
@@ -390,6 +391,44 @@ function getSelectedGroup() {
 
 function isGroupEnabled(group) {
   return group?.enabled !== false;
+}
+
+function livePropagateGroupLinks(previousByObjectId, patchByObjectId) {
+  const groups = getObjectGroups().filter((group) => isGroupEnabled(group));
+  if (!groups.length) return;
+
+  const objectMap = new Map(getObjects().map((obj) => [obj.objectId, obj]));
+
+  for (const [sourceId, patch] of Object.entries(patchByObjectId)) {
+    const sourcePrev = previousByObjectId[sourceId] || {};
+    for (const group of groups) {
+      const members = Array.isArray(group.objectIds) ? group.objectIds : [];
+      if (!members.includes(sourceId)) continue;
+      const linkParams = new Set(Array.isArray(group.linkParams) ? group.linkParams : []);
+
+      for (const targetId of members) {
+        if (targetId === sourceId) continue;
+        const target = objectMap.get(targetId);
+        if (!target) continue;
+
+        for (const [param, nextValue] of Object.entries(patch)) {
+          if (!linkParams.has(param)) continue;
+
+          if (RELATIVE_GROUP_PARAMS.has(param)) {
+            const previousValue = Number(sourcePrev[param]);
+            const afterValue = Number(nextValue);
+            if (!Number.isFinite(previousValue) || !Number.isFinite(afterValue)) continue;
+            const delta = afterValue - previousValue;
+            const targetCurrent = Number(target[param]);
+            if (!Number.isFinite(targetCurrent)) continue;
+            target[param] = clampValue(targetCurrent + delta, LIMITS[param] || [-Infinity, Infinity]);
+          } else {
+            target[param] = nextValue;
+          }
+        }
+      }
+    }
+  }
 }
 
 function selectedLinkParamsFromInputs() {
@@ -1637,14 +1676,17 @@ function setupHandlers() {
       if (state.draggingMode === "y") {
         const nextAnchorY = clampValue(state.draggingStartY - (pt.y - state.draggingStartPointerY) * 0.6, LIMITS.y);
         const patchByObjectId = {};
+        const previousByObjectId = {};
         for (const objectId of state.draggingObjectIds) {
           const obj = getObjectById(objectId);
           if (!obj) continue;
+          previousByObjectId[objectId] = { y: Number(obj.y) };
           const relY = Number(state.draggingRelativeY[objectId] || 0);
           const nextY = clampValue(nextAnchorY + relY, LIMITS.y);
           obj.y = nextY;
           patchByObjectId[objectId] = { y: nextY };
         }
+        livePropagateGroupLinks(previousByObjectId, patchByObjectId);
         renderInspector();
         renderManager();
         renderPanner();
@@ -1657,9 +1699,11 @@ function setupHandlers() {
           const nextAnchorX = clampValue(hitPoint.x + state.draggingOffsetXZ.x, LIMITS.x);
           const nextAnchorZ = clampValue(hitPoint.z + state.draggingOffsetXZ.z, LIMITS.z);
           const patchByObjectId = {};
+          const previousByObjectId = {};
           for (const objectId of state.draggingObjectIds) {
             const obj = getObjectById(objectId);
             if (!obj) continue;
+            previousByObjectId[objectId] = { x: Number(obj.x), z: Number(obj.z) };
             const relXZ = state.draggingRelativeXZ[objectId] || { x: 0, z: 0 };
             const nextX = clampValue(nextAnchorX + Number(relXZ.x || 0), LIMITS.x);
             const nextZ = clampValue(nextAnchorZ + Number(relXZ.z || 0), LIMITS.z);
@@ -1667,6 +1711,7 @@ function setupHandlers() {
             obj.z = nextZ;
             patchByObjectId[objectId] = { x: nextX, z: nextZ };
           }
+          livePropagateGroupLinks(previousByObjectId, patchByObjectId);
           renderInspector();
           renderManager();
           renderPanner();
