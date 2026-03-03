@@ -17,6 +17,7 @@
       "file": "actions/action-fly-in.json"
     }
   ],
+  "action_groups": [],
   "metadata": {
     "author": "operator",
     "notes": "Starter template"

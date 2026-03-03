@@ -51,6 +51,7 @@ RELATIVE_GROUP_PARAMS = {"x", "y", "z"}
 LFO_PARAMS = {"x", "y", "z", "size", "gain"}
 LFO_WAVES = {"sine", "triangle", "square", "saw"}
 ACTION_TICK_SEC = 1.0 / 60.0
+ACTION_GROUP_ACTION_COMMANDS = {"start", "stop", "abort"}
 
 
 def clamp(value: float, min_max: Tuple[float, float]) -> float:
@@ -91,6 +92,13 @@ def normalize_action_id(value: Any) -> str:
     if not OBJECT_ID_PATTERN.fullmatch(action_id):
         raise ValueError("actionId must use only letters, numbers, dot, underscore, dash (max 64 chars)")
     return action_id
+
+
+def normalize_action_group_id(value: Any) -> str:
+    group_id = str(value or "").strip()
+    if not OBJECT_ID_PATTERN.fullmatch(group_id):
+        raise ValueError("actionGroupId must use only letters, numbers, dot, underscore, dash (max 64 chars)")
+    return group_id
 
 
 def normalize_color(value: Any, default: str = DEFAULT_OBJECT_COLOR) -> str:
@@ -267,6 +275,87 @@ def action_to_raw(action: Dict[str, Any]) -> Dict[str, Any]:
             "start": str(action.get("oscTriggers", {}).get("start", "")),
             "stop": str(action.get("oscTriggers", {}).get("stop", "")),
             "abort": str(action.get("oscTriggers", {}).get("abort", "")),
+        },
+    }
+
+
+def normalize_action_group_entry(raw_entry: Dict[str, Any]) -> Dict[str, Any]:
+    entry_type = str(raw_entry.get("entry_type") if "entry_type" in raw_entry else raw_entry.get("entryType") or "").strip().lower()
+    if entry_type in {"lfos_enabled", "lfosenabled"}:
+        return {
+            "entryType": "lfosEnabled",
+            "enabled": bool(raw_entry.get("enabled", True)),
+        }
+
+    if entry_type in {"action_start", "action_stop", "action_abort"}:
+        command = entry_type.split("_", 1)[1]
+    else:
+        command = str(raw_entry.get("command") or "start").strip().lower()
+
+    if command not in ACTION_GROUP_ACTION_COMMANDS:
+        raise ValueError(f"action group entry command must be one of: {', '.join(sorted(ACTION_GROUP_ACTION_COMMANDS))}")
+
+    action_id = normalize_action_id(raw_entry.get("action_id") if "action_id" in raw_entry else raw_entry.get("actionId"))
+    return {
+        "entryType": "action",
+        "actionId": action_id,
+        "command": command,
+    }
+
+
+def normalize_action_group(raw_group: Dict[str, Any], fallback_id: str) -> Dict[str, Any]:
+    group_id = normalize_action_group_id(raw_group.get("group_id") or raw_group.get("groupId") or fallback_id)
+    osc_triggers_raw = raw_group.get("osc_triggers") if "osc_triggers" in raw_group else raw_group.get("oscTriggers")
+    if not isinstance(osc_triggers_raw, dict):
+        osc_triggers_raw = {}
+
+    entries_raw = raw_group.get("entries", [])
+    if not isinstance(entries_raw, list):
+        entries_raw = []
+
+    entries: List[Dict[str, Any]] = []
+    for raw_entry in entries_raw:
+        if not isinstance(raw_entry, dict):
+            continue
+        entries.append(normalize_action_group_entry(raw_entry))
+
+    return {
+        "groupId": group_id,
+        "name": str(raw_group.get("name") or group_id),
+        "enabled": bool(raw_group.get("enabled", True)),
+        "entries": entries,
+        "oscTriggers": {
+            "trigger": str(osc_triggers_raw.get("trigger", "")),
+        },
+    }
+
+
+def action_group_entry_to_raw(entry: Dict[str, Any]) -> Dict[str, Any]:
+    entry_type = str(entry.get("entryType") or "").strip()
+    if entry_type == "lfosEnabled":
+        return {
+            "entry_type": "lfos_enabled",
+            "enabled": bool(entry.get("enabled", True)),
+        }
+    return {
+        "entry_type": "action",
+        "action_id": normalize_action_id(entry.get("actionId")),
+        "command": str(entry.get("command") or "start"),
+    }
+
+
+def action_group_to_raw(group: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "group_id": normalize_action_group_id(group.get("groupId")),
+        "name": str(group.get("name") or group.get("groupId") or "group"),
+        "enabled": bool(group.get("enabled", True)),
+        "entries": [
+            action_group_entry_to_raw(entry)
+            for entry in (group.get("entries") if isinstance(group.get("entries"), list) else [])
+            if isinstance(entry, dict)
+        ],
+        "osc_triggers": {
+            "trigger": str(group.get("oscTriggers", {}).get("trigger", "")),
         },
     }
 
@@ -455,6 +544,8 @@ class Runtime:
                     "sceneIds": sorted(self.show["scenesById"].keys()),
                     "actionIds": sorted(self.show["actionsById"].keys()),
                     "actionsById": json.loads(json.dumps(self.show["actionsById"])),
+                    "actionGroupIds": sorted(self.show["actionGroupsById"].keys()),
+                    "actionGroupsById": json.loads(json.dumps(self.show["actionGroupsById"])),
                 }
 
             running_action_details = {
@@ -548,6 +639,49 @@ class Runtime:
             if on_end_action_id == action_id or on_end_action_id not in known_ids:
                 action["onEndActionId"] = ""
 
+    def _sanitize_action_group_links(
+        self,
+        action_groups_by_id: Dict[str, Dict[str, Any]],
+        actions_by_id: Dict[str, Dict[str, Any]],
+    ) -> None:
+        known_action_ids = set(actions_by_id.keys())
+        for group in action_groups_by_id.values():
+            entries = group.get("entries")
+            if not isinstance(entries, list):
+                group["entries"] = []
+                continue
+
+            sanitized_entries: List[Dict[str, Any]] = []
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                entry_type = str(entry.get("entryType") or "").strip()
+                if entry_type == "lfosEnabled":
+                    sanitized_entries.append(
+                        {
+                            "entryType": "lfosEnabled",
+                            "enabled": bool(entry.get("enabled", True)),
+                        }
+                    )
+                    continue
+                if entry_type != "action":
+                    continue
+                action_id = str(entry.get("actionId") or "").strip()
+                command = str(entry.get("command") or "start").strip().lower()
+                if action_id not in known_action_ids:
+                    continue
+                if command not in ACTION_GROUP_ACTION_COMMANDS:
+                    continue
+                sanitized_entries.append(
+                    {
+                        "entryType": "action",
+                        "actionId": action_id,
+                        "command": command,
+                    }
+                )
+
+            group["entries"] = sanitized_entries
+
     def _derive_show_id_from_path(self, show_path: Path) -> str:
         if show_path.name.lower() == "show.json":
             return normalize_show_id(show_path.parent.name or "new-show")
@@ -593,6 +727,7 @@ class Runtime:
             "default_scene_id": scene_id,
             "scenes": [{"scene_id": scene_id, "file": scene_file}],
             "actions": [],
+            "action_groups": [],
             "metadata": {"created_by": "amadeus-panner-ui"},
         }
 
@@ -650,6 +785,9 @@ class Runtime:
         input_actions = show_snapshot.get("actionsById")
         if not isinstance(input_actions, dict):
             input_actions = {}
+        input_action_groups = show_snapshot.get("actionGroupsById")
+        if not isinstance(input_action_groups, dict):
+            input_action_groups = {}
         scene_files = show_snapshot.get("sceneFiles")
         if not isinstance(scene_files, dict):
             scene_files = {}
@@ -685,6 +823,16 @@ class Runtime:
             normalized_actions[normalized["actionId"]] = normalized
 
         self._sanitize_action_links(normalized_actions)
+
+        normalized_action_groups: Dict[str, Dict[str, Any]] = {}
+        for group_key, raw_group in input_action_groups.items():
+            raw_group_input = raw_group if isinstance(raw_group, dict) else {}
+            group_id = str(raw_group_input.get("groupId") or raw_group_input.get("group_id") or group_key).strip()
+            if not group_id:
+                continue
+            normalized_group = normalize_action_group(raw_group_input, group_id)
+            normalized_action_groups[normalized_group["groupId"]] = normalized_group
+        self._sanitize_action_group_links(normalized_action_groups, normalized_actions)
 
         default_scene_id = str(show_snapshot.get("defaultSceneId") or "").strip()
         if not default_scene_id:
@@ -769,6 +917,10 @@ class Runtime:
             "default_scene_id": default_scene_id,
             "scenes": scene_refs,
             "actions": action_refs,
+            "action_groups": [
+                action_group_to_raw(normalized_action_groups[group_id])
+                for group_id in sorted(normalized_action_groups.keys())
+            ],
             "metadata": metadata,
         }
         self._write_json_atomic(absolute_show_path, show_payload)
@@ -785,6 +937,7 @@ class Runtime:
             self.show["defaultSceneId"] = default_scene_id
             self.show["scenesById"] = normalized_scenes
             self.show["actionsById"] = normalized_actions
+            self.show["actionGroupsById"] = normalized_action_groups
             self.show["sceneFiles"] = updated_scene_files
             self.show["actionFiles"] = updated_action_files
             self.show["metadata"] = metadata
@@ -799,6 +952,7 @@ class Runtime:
                 "setAsCurrent": bool(set_as_current),
                 "scenes": len(scene_refs),
                 "actions": len(action_refs),
+                "actionGroups": len(normalized_action_groups),
             },
         )
         return {"path": relative_show_path, "showId": show_id}
@@ -837,6 +991,17 @@ class Runtime:
             actions_by_id[action_id] = normalize_action(raw_action, action_id)
         self._sanitize_action_links(actions_by_id)
 
+        action_groups_by_id: Dict[str, Dict[str, Any]] = {}
+        for raw_group in raw_show.get("action_groups", []):
+            if not isinstance(raw_group, dict):
+                continue
+            group_id = str(raw_group.get("group_id") or raw_group.get("groupId") or "").strip()
+            if not group_id:
+                continue
+            normalized_group = normalize_action_group(raw_group, group_id)
+            action_groups_by_id[normalized_group["groupId"]] = normalized_group
+        self._sanitize_action_group_links(action_groups_by_id, actions_by_id)
+
         with self.lock:
             running_action_ids = list(self.running_actions.keys())
         for action_id in running_action_ids:
@@ -856,6 +1021,7 @@ class Runtime:
                 "defaultSceneId": str(raw_show.get("default_scene_id", "")),
                 "scenesById": scenes_by_id,
                 "actionsById": actions_by_id,
+                "actionGroupsById": action_groups_by_id,
                 "sceneFiles": scene_files,
                 "actionFiles": action_files,
                 "metadata": raw_show.get("metadata", {}) if isinstance(raw_show.get("metadata"), dict) else {},
@@ -873,6 +1039,7 @@ class Runtime:
                 "path": self.show["path"],
                 "scenes": len(scenes_by_id),
                 "actions": len(actions_by_id),
+                "actionGroups": len(action_groups_by_id),
             },
         )
 
@@ -1443,6 +1610,11 @@ class Runtime:
             actions_by_id[normalized_action_id] = created
             self._sanitize_action_links(actions_by_id)
             self.show["actionsById"] = actions_by_id
+            action_groups_by_id = self.show.get("actionGroupsById")
+            if isinstance(action_groups_by_id, dict):
+                next_groups_by_id = dict(action_groups_by_id)
+                self._sanitize_action_group_links(next_groups_by_id, actions_by_id)
+                self.show["actionGroupsById"] = next_groups_by_id
 
             action_files = self.show.get("actionFiles")
             if not isinstance(action_files, dict):
@@ -1450,7 +1622,6 @@ class Runtime:
             action_files[normalized_action_id] = str(action_files.get(normalized_action_id) or f"actions/{normalized_action_id}.json")
             self.show["actionFiles"] = action_files
 
-        self.save_show(capture_runtime_scene=False)
         self.emit_event(
             "action",
             {"actionId": normalized_action_id, "state": "created", "source": source, "action": created},
@@ -1481,6 +1652,11 @@ class Runtime:
             actions_by_id[normalized_action_id] = updated
             self._sanitize_action_links(actions_by_id)
             self.show["actionsById"] = actions_by_id
+            action_groups_by_id = self.show.get("actionGroupsById")
+            if isinstance(action_groups_by_id, dict):
+                next_groups_by_id = dict(action_groups_by_id)
+                self._sanitize_action_group_links(next_groups_by_id, actions_by_id)
+                self.show["actionGroupsById"] = next_groups_by_id
 
             if current.get("enabled", True) and not updated.get("enabled", True):
                 should_stop = normalized_action_id in self.running_actions
@@ -1488,7 +1664,6 @@ class Runtime:
         if should_stop:
             self.stop_action(normalized_action_id, "disabled")
 
-        self.save_show(capture_runtime_scene=False)
         self.emit_event(
             "action",
             {"actionId": normalized_action_id, "state": "updated", "source": source, "action": updated},
@@ -1528,6 +1703,11 @@ class Runtime:
             actions_by_id[normalized_new_action_id] = copied
             self._sanitize_action_links(actions_by_id)
             self.show["actionsById"] = actions_by_id
+            action_groups_by_id = self.show.get("actionGroupsById")
+            if isinstance(action_groups_by_id, dict):
+                next_groups_by_id = dict(action_groups_by_id)
+                self._sanitize_action_group_links(next_groups_by_id, actions_by_id)
+                self.show["actionGroupsById"] = next_groups_by_id
 
             action_files = self.show.get("actionFiles")
             if not isinstance(action_files, dict):
@@ -1535,7 +1715,6 @@ class Runtime:
             action_files[normalized_new_action_id] = f"actions/{normalized_new_action_id}.json"
             self.show["actionFiles"] = action_files
 
-        self.save_show(capture_runtime_scene=False)
         self.emit_event(
             "action",
             {
@@ -1569,6 +1748,11 @@ class Runtime:
                 actions_by_id[existing_id] = action_copy
             self._sanitize_action_links(actions_by_id)
             self.show["actionsById"] = actions_by_id
+            action_groups_by_id = self.show.get("actionGroupsById")
+            if isinstance(action_groups_by_id, dict):
+                next_groups_by_id = dict(action_groups_by_id)
+                self._sanitize_action_group_links(next_groups_by_id, actions_by_id)
+                self.show["actionGroupsById"] = next_groups_by_id
 
             action_files = self.show.get("actionFiles")
             if not isinstance(action_files, dict):
@@ -1582,12 +1766,161 @@ class Runtime:
         if was_running:
             self.stop_action(normalized_action_id, "deleted")
 
-        self.save_show(capture_runtime_scene=False)
         self.emit_event(
             "action",
             {"actionId": normalized_action_id, "state": "deleted", "source": source},
         )
         return deleted
+
+    def create_action_group(self, group_id: str, patch: Dict[str, Any], source: str = "api") -> Dict[str, Any]:
+        normalized_group_id = normalize_action_group_id(group_id)
+        patch_input = patch if isinstance(patch, dict) else {}
+        with self.lock:
+            if not self.show:
+                raise ValueError("No show loaded")
+            action_groups_by_id = self.show.get("actionGroupsById")
+            if not isinstance(action_groups_by_id, dict):
+                action_groups_by_id = {}
+            if normalized_group_id in action_groups_by_id:
+                raise ValueError(f"Action group already exists: {normalized_group_id}")
+
+            created = normalize_action_group({**patch_input, "groupId": normalized_group_id}, normalized_group_id)
+            next_groups_by_id = dict(action_groups_by_id)
+            next_groups_by_id[normalized_group_id] = created
+            self._sanitize_action_group_links(next_groups_by_id, self.show["actionsById"])
+            self.show["actionGroupsById"] = next_groups_by_id
+
+        self.emit_event(
+            "action_group",
+            {"groupId": normalized_group_id, "state": "created", "source": source, "group": created},
+        )
+        return created
+
+    def update_action_group(self, group_id: str, patch: Dict[str, Any], source: str = "api") -> Dict[str, Any]:
+        normalized_group_id = normalize_action_group_id(group_id)
+        patch_input = patch if isinstance(patch, dict) else {}
+        with self.lock:
+            if not self.show:
+                raise ValueError("No show loaded")
+            action_groups_by_id = self.show.get("actionGroupsById")
+            if not isinstance(action_groups_by_id, dict):
+                action_groups_by_id = {}
+            current = action_groups_by_id.get(normalized_group_id)
+            if not current:
+                raise ValueError(f"Action group not found: {normalized_group_id}")
+
+            merged = {**current, **patch_input, "groupId": normalized_group_id}
+            if "osc_triggers" in patch_input and "oscTriggers" not in patch_input:
+                merged["oscTriggers"] = patch_input.get("osc_triggers")
+
+            updated = normalize_action_group(merged, normalized_group_id)
+            next_groups_by_id = dict(action_groups_by_id)
+            next_groups_by_id[normalized_group_id] = updated
+            self._sanitize_action_group_links(next_groups_by_id, self.show["actionsById"])
+            self.show["actionGroupsById"] = next_groups_by_id
+
+        self.emit_event(
+            "action_group",
+            {"groupId": normalized_group_id, "state": "updated", "source": source, "group": updated},
+        )
+        return updated
+
+    def delete_action_group(self, group_id: str, source: str = "api") -> Dict[str, Any]:
+        normalized_group_id = normalize_action_group_id(group_id)
+        with self.lock:
+            if not self.show:
+                raise ValueError("No show loaded")
+            action_groups_by_id = self.show.get("actionGroupsById")
+            if not isinstance(action_groups_by_id, dict):
+                action_groups_by_id = {}
+            current = action_groups_by_id.get(normalized_group_id)
+            if not current:
+                raise ValueError(f"Action group not found: {normalized_group_id}")
+
+            next_groups_by_id = dict(action_groups_by_id)
+            next_groups_by_id.pop(normalized_group_id, None)
+            self.show["actionGroupsById"] = next_groups_by_id
+            deleted = dict(current)
+
+        self.emit_event(
+            "action_group",
+            {"groupId": normalized_group_id, "state": "deleted", "source": source},
+        )
+        return deleted
+
+    def trigger_action_group(self, group_id: str, source: str = "api") -> Dict[str, Any]:
+        normalized_group_id = normalize_action_group_id(group_id)
+        with self.lock:
+            if not self.show:
+                raise ValueError("No show loaded")
+            action_groups_by_id = self.show.get("actionGroupsById")
+            if not isinstance(action_groups_by_id, dict):
+                action_groups_by_id = {}
+            group = action_groups_by_id.get(normalized_group_id)
+            if not group:
+                raise ValueError(f"Action group not found: {normalized_group_id}")
+            if not bool(group.get("enabled", True)):
+                raise ValueError(f"Action group is disabled: {normalized_group_id}")
+            group_snapshot = json.loads(json.dumps(group))
+
+        results: List[Dict[str, Any]] = []
+        entries = group_snapshot.get("entries")
+        if not isinstance(entries, list):
+            entries = []
+
+        for index, entry in enumerate(entries):
+            if not isinstance(entry, dict):
+                continue
+            entry_type = str(entry.get("entryType") or "").strip()
+            if entry_type == "lfosEnabled":
+                enabled = bool(entry.get("enabled", True))
+                self.set_lfos_enabled(enabled, source=f"{source}:group:{normalized_group_id}")
+                results.append({"index": index, "entryType": entry_type, "status": "ok"})
+                continue
+
+            command = str(entry.get("command") or "start").strip().lower()
+            action_id = str(entry.get("actionId") or "").strip()
+            if command not in ACTION_GROUP_ACTION_COMMANDS or not action_id:
+                results.append({"index": index, "entryType": entry_type or "action", "status": "skipped", "error": "invalid_entry"})
+                continue
+            try:
+                if command == "start":
+                    self.start_action(action_id, source=f"{source}:group:{normalized_group_id}")
+                elif command == "stop":
+                    self.stop_action(action_id, reason=f"group:{normalized_group_id}")
+                else:
+                    self.abort_action(action_id, source=f"{source}:group:{normalized_group_id}")
+                results.append({"index": index, "entryType": "action", "actionId": action_id, "command": command, "status": "ok"})
+            except Exception as exc:  # noqa: BLE001
+                results.append(
+                    {
+                        "index": index,
+                        "entryType": "action",
+                        "actionId": action_id,
+                        "command": command,
+                        "status": "error",
+                        "error": str(exc),
+                    }
+                )
+
+        failed = sum(1 for item in results if str(item.get("status")) == "error")
+        self.emit_event(
+            "action_group",
+            {
+                "groupId": normalized_group_id,
+                "state": "triggered",
+                "source": source,
+                "entryCount": len(entries),
+                "failed": failed,
+                "results": results,
+            },
+        )
+        return {
+            "groupId": normalized_group_id,
+            "entryCount": len(entries),
+            "failed": failed,
+            "results": results,
+        }
 
     def _interpolate_numeric(self, keyframes: List[Dict[str, Any]], elapsed_ms: int) -> Optional[float]:
         if not keyframes:
@@ -2003,6 +2336,16 @@ class Runtime:
                     self.abort_action(action["actionId"], "osc")
                     return
 
+            action_groups_by_id = show_snapshot.get("actionGroupsById")
+            if isinstance(action_groups_by_id, dict):
+                for action_group in action_groups_by_id.values():
+                    trigger_path = str(action_group.get("oscTriggers", {}).get("trigger", "")).strip()
+                    if not trigger_path:
+                        continue
+                    if address == trigger_path:
+                        self.trigger_action_group(str(action_group.get("groupId") or ""), source="osc")
+                        return
+
             scene_prefix = "/art/scene/"
             scene_suffix = "/recall"
             if address.startswith(scene_prefix) and address.endswith(scene_suffix):
@@ -2326,6 +2669,38 @@ class Handler(BaseHTTPRequestHandler):
                 action_id = normalize_action_id(body.get("actionId") or body.get("action_id"))
                 action = RUNTIME.create_action(action_id, body, source="api")
                 self._send_json(HTTPStatus.OK, {"ok": True, "action": action, "status": RUNTIME.status()})
+                return
+
+            if path_name == "/api/action-group/create":
+                body = self._read_json_body()
+                group_id = normalize_action_group_id(body.get("groupId") or body.get("group_id"))
+                group = RUNTIME.create_action_group(group_id, body, source="api")
+                self._send_json(HTTPStatus.OK, {"ok": True, "group": group, "status": RUNTIME.status()})
+                return
+
+            if path_name.startswith("/api/action-group/"):
+                parts = path_name.split("/")
+                if len(parts) < 5:
+                    self._send_json(HTTPStatus.NOT_FOUND, {"ok": False, "error": "Unknown action-group endpoint"})
+                    return
+                group_id = unquote(parts[3])
+                command = parts[4]
+                body = self._read_json_body()
+
+                if command == "update":
+                    group = RUNTIME.update_action_group(group_id, body, source="api")
+                    self._send_json(HTTPStatus.OK, {"ok": True, "group": group, "groupId": group["groupId"], "command": command, "status": RUNTIME.status()})
+                    return
+                if command == "delete":
+                    deleted = RUNTIME.delete_action_group(group_id, source="api")
+                    self._send_json(HTTPStatus.OK, {"ok": True, "groupId": deleted["groupId"], "command": command, "status": RUNTIME.status()})
+                    return
+                if command == "trigger":
+                    result = RUNTIME.trigger_action_group(group_id, source="api")
+                    self._send_json(HTTPStatus.OK, {"ok": True, **result, "command": command, "status": RUNTIME.status()})
+                    return
+
+                self._send_json(HTTPStatus.NOT_FOUND, {"ok": False, "error": f"Unknown action-group command: {command}"})
                 return
 
             if path_name.startswith("/api/action/"):

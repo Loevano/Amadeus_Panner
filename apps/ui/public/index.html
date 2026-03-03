@@ -17,6 +17,7 @@
     <div class="view-switch" role="tablist" aria-label="Main Views">
       <button id="viewPannerBtn" class="view-btn is-active" type="button" role="tab" aria-selected="true">Panner</button>
       <button id="viewActionManagerBtn" class="view-btn" type="button" role="tab" aria-selected="false">Action Manager</button>
+      <button id="viewModulationManagerBtn" class="view-btn" type="button" role="tab" aria-selected="false">Modulation Manager</button>
       <button id="viewObjectManagerBtn" class="view-btn" type="button" role="tab" aria-selected="false">Object Manager</button>
       <button id="viewGroupManagerBtn" class="view-btn" type="button" role="tab" aria-selected="false">Group Manager</button>
     </div>
@@ -262,7 +263,6 @@
             <button id="actionManagerStartBtn" type="button">Start</button>
             <button id="actionManagerStopBtn" type="button">Stop</button>
             <button id="actionManagerAbortBtn" class="danger" type="button">Abort</button>
-            <button id="actionManagerLfosToggleBtn" type="button">Disable LFOs</button>
           </div>
           <div class="manager-table-wrap">
             <table class="manager-table action-manager-table">
@@ -305,7 +305,79 @@
           </div>
         </div>
 
-        <div class="manager-block action-manager-lfo-block">
+        <div class="manager-block action-manager-groups-block">
+          <h3>Action Groups</h3>
+          <label for="actionGroupManagerSelect">Group</label>
+          <select id="actionGroupManagerSelect"></select>
+
+          <div class="field-grid manager-field-grid">
+            <label for="actionGroupManagerIdInput">Group ID</label><input id="actionGroupManagerIdInput" type="text" placeholder="group-1" />
+            <label for="actionGroupManagerNameInput">Name</label><input id="actionGroupManagerNameInput" type="text" placeholder="Group 1" />
+            <label for="actionGroupManagerOscTriggerInput">OSC Trigger</label><input id="actionGroupManagerOscTriggerInput" type="text" placeholder="/art/action-group/group-1/trigger" />
+          </div>
+          <label class="checkbox-row" for="actionGroupManagerEnabledInput">
+            <input id="actionGroupManagerEnabledInput" type="checkbox" checked /> Enabled
+          </label>
+          <div class="row">
+            <button id="actionGroupManagerCreateBtn" type="button">Create Group</button>
+            <button id="actionGroupManagerSaveBtn" type="button">Save Group</button>
+            <button id="actionGroupManagerDeleteBtn" class="danger" type="button">Delete Group</button>
+            <button id="actionGroupManagerTriggerBtn" type="button">Trigger Group</button>
+          </div>
+
+          <h3>Group Entries</h3>
+          <div class="field-grid manager-field-grid">
+            <label for="actionGroupEntryTypeInput">Type</label>
+            <select id="actionGroupEntryTypeInput">
+              <option value="action-start">Start Action</option>
+              <option value="action-stop">Stop Action</option>
+              <option value="action-abort">Abort Action</option>
+              <option value="lfos-enable">Enable LFOs</option>
+              <option value="lfos-disable">Disable LFOs</option>
+            </select>
+            <label for="actionGroupEntryActionSelect">Action</label><select id="actionGroupEntryActionSelect"></select>
+            <label for="actionGroupEntryLfosEnabledInput">LFO State</label>
+            <select id="actionGroupEntryLfosEnabledInput">
+              <option value="true">Enable LFOs</option>
+              <option value="false">Disable LFOs</option>
+            </select>
+          </div>
+          <div class="row">
+            <button id="actionGroupEntryAddBtn" type="button">Add Entry</button>
+            <button id="actionGroupEntryClearBtn" class="danger" type="button">Clear Entries</button>
+          </div>
+          <div class="manager-table-wrap">
+            <table class="manager-table">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>Type</th>
+                  <th>Target</th>
+                  <th>Remove</th>
+                </tr>
+              </thead>
+              <tbody id="actionGroupEntryRows"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel modulation-manager-panel">
+      <h2>Modulation Manager</h2>
+      <p id="modulationManagerSummary" class="muted">No actions</p>
+
+      <div class="manager-grid modulation-manager-grid">
+        <div class="manager-block modulation-manager-select-block">
+          <h3>Target Action</h3>
+          <label for="modulationManagerActionSelect">Action</label>
+          <select id="modulationManagerActionSelect"></select>
+          <div class="row">
+            <button id="actionManagerLfosToggleBtn" type="button">Disable LFOs</button>
+          </div>
+        </div>
+
+        <div class="manager-block modulation-manager-lfo-block">
           <h3>LFOs</h3>
           <div class="field-grid manager-field-grid">
             <label for="actionManagerLfoObjectInput">Object</label><select id="actionManagerLfoObjectInput"></select>

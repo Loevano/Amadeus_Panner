@@ -35,6 +35,7 @@ const state = {
   selectedGroupId: null,
   selectedSceneId: null,
   selectedActionId: null,
+  selectedActionGroupId: null,
   selectedActionLfoIndex: null,
   selectedActionLfoActionId: null,
   currentPage: "panner",
@@ -95,6 +96,7 @@ const els = {
   mainLayout: document.getElementById("mainLayout"),
   viewPannerBtn: document.getElementById("viewPannerBtn"),
   viewActionManagerBtn: document.getElementById("viewActionManagerBtn"),
+  viewModulationManagerBtn: document.getElementById("viewModulationManagerBtn"),
   viewObjectManagerBtn: document.getElementById("viewObjectManagerBtn"),
   viewGroupManagerBtn: document.getElementById("viewGroupManagerBtn"),
   showPathInput: document.getElementById("showPathInput"),
@@ -152,6 +154,8 @@ const els = {
   managerGroupDeleteBtn: document.getElementById("managerGroupDeleteBtn"),
   managerGroupLinkInputs: Array.from(document.querySelectorAll(".manager-group-link")),
   actionManagerSummary: document.getElementById("actionManagerSummary"),
+  modulationManagerSummary: document.getElementById("modulationManagerSummary"),
+  modulationManagerActionSelect: document.getElementById("modulationManagerActionSelect"),
   actionManagerSelect: document.getElementById("actionManagerSelect"),
   actionManagerStartBtn: document.getElementById("actionManagerStartBtn"),
   actionManagerStopBtn: document.getElementById("actionManagerStopBtn"),
@@ -170,6 +174,21 @@ const els = {
   actionManagerSaveBtn: document.getElementById("actionManagerSaveBtn"),
   actionManagerSaveAsBtn: document.getElementById("actionManagerSaveAsBtn"),
   actionManagerDeleteBtn: document.getElementById("actionManagerDeleteBtn"),
+  actionGroupManagerSelect: document.getElementById("actionGroupManagerSelect"),
+  actionGroupManagerIdInput: document.getElementById("actionGroupManagerIdInput"),
+  actionGroupManagerNameInput: document.getElementById("actionGroupManagerNameInput"),
+  actionGroupManagerOscTriggerInput: document.getElementById("actionGroupManagerOscTriggerInput"),
+  actionGroupManagerEnabledInput: document.getElementById("actionGroupManagerEnabledInput"),
+  actionGroupManagerCreateBtn: document.getElementById("actionGroupManagerCreateBtn"),
+  actionGroupManagerSaveBtn: document.getElementById("actionGroupManagerSaveBtn"),
+  actionGroupManagerDeleteBtn: document.getElementById("actionGroupManagerDeleteBtn"),
+  actionGroupManagerTriggerBtn: document.getElementById("actionGroupManagerTriggerBtn"),
+  actionGroupEntryTypeInput: document.getElementById("actionGroupEntryTypeInput"),
+  actionGroupEntryActionSelect: document.getElementById("actionGroupEntryActionSelect"),
+  actionGroupEntryLfosEnabledInput: document.getElementById("actionGroupEntryLfosEnabledInput"),
+  actionGroupEntryAddBtn: document.getElementById("actionGroupEntryAddBtn"),
+  actionGroupEntryClearBtn: document.getElementById("actionGroupEntryClearBtn"),
+  actionGroupEntryRows: document.getElementById("actionGroupEntryRows"),
   actionManagerLfoObjectInput: document.getElementById("actionManagerLfoObjectInput"),
   actionManagerLfoParamInput: document.getElementById("actionManagerLfoParamInput"),
   actionManagerLfoWaveInput: document.getElementById("actionManagerLfoWaveInput"),
@@ -683,6 +702,17 @@ function getActionById(actionId) {
   return getActionsById()[normalized] || null;
 }
 
+function getActionGroupsById() {
+  const actionGroupsById = state.status?.show?.actionGroupsById;
+  return actionGroupsById && typeof actionGroupsById === "object" ? actionGroupsById : {};
+}
+
+function getActionGroupById(groupId) {
+  const normalized = String(groupId || "").trim();
+  if (!normalized) return null;
+  return getActionGroupsById()[normalized] || null;
+}
+
 function closePannerContextMenu() {
   if (!els.pannerContextMenu) return;
   if (els.pannerContextMenu.hidden) return;
@@ -1060,7 +1090,7 @@ function applyObjectRuntimeUpdate(payload) {
   scheduleRuntimeFrame({
     inspector: state.selectedObjectId === objectId,
     manager: state.currentPage === "object-manager",
-    actionDebug: state.currentPage === "action-manager"
+    actionDebug: state.currentPage === "modulation-manager"
   });
 }
 
@@ -1299,10 +1329,12 @@ function setPage(nextPage) {
   els.mainLayout.dataset.page = nextPage;
   els.viewPannerBtn.classList.toggle("is-active", nextPage === "panner");
   els.viewActionManagerBtn.classList.toggle("is-active", nextPage === "action-manager");
+  els.viewModulationManagerBtn.classList.toggle("is-active", nextPage === "modulation-manager");
   els.viewObjectManagerBtn.classList.toggle("is-active", nextPage === "object-manager");
   els.viewGroupManagerBtn.classList.toggle("is-active", nextPage === "group-manager");
   els.viewPannerBtn.setAttribute("aria-selected", nextPage === "panner" ? "true" : "false");
   els.viewActionManagerBtn.setAttribute("aria-selected", nextPage === "action-manager" ? "true" : "false");
+  els.viewModulationManagerBtn.setAttribute("aria-selected", nextPage === "modulation-manager" ? "true" : "false");
   els.viewObjectManagerBtn.setAttribute("aria-selected", nextPage === "object-manager" ? "true" : "false");
   els.viewGroupManagerBtn.setAttribute("aria-selected", nextPage === "group-manager" ? "true" : "false");
   if (nextPage === "panner") {
@@ -1715,6 +1747,39 @@ function renderShowControls() {
 
     els.actionButtons.appendChild(row);
   }
+
+  const actionGroupsById = getActionGroupsById();
+  const actionGroupIds = Array.isArray(status.show.actionGroupIds)
+    ? [...status.show.actionGroupIds]
+    : Object.keys(actionGroupsById).sort((a, b) => a.localeCompare(b));
+  for (const groupId of actionGroupIds) {
+    const group = actionGroupsById[groupId] || null;
+    const enabled = group?.enabled !== false;
+    const row = document.createElement("div");
+    row.className = "action-chip";
+
+    const title = document.createElement("strong");
+    title.textContent = enabled ? `Group: ${groupId}` : `Group: ${groupId} [off]`;
+    row.appendChild(title);
+
+    const trigger = document.createElement("button");
+    trigger.type = "button";
+    trigger.textContent = "Trigger";
+    trigger.disabled = !enabled;
+    trigger.addEventListener("click", async () => {
+      try {
+        await api(`/api/action-group/${encodeURIComponent(groupId)}/trigger`, "POST", {});
+        addLog(`action group trigger -> ${groupId}`);
+        await refreshStatus();
+      } catch (error) {
+        addLog(`action group trigger failed: ${error.message}`);
+        await refreshStatus();
+      }
+    });
+    row.appendChild(trigger);
+
+    els.actionButtons.appendChild(row);
+  }
 }
 
 function selectedSceneIdOrThrow() {
@@ -1847,7 +1912,12 @@ function applyLfoDebugSamples(payload) {
 }
 
 function selectedActionIdOrThrow() {
-  const actionId = String(state.selectedActionId || els.actionManagerSelect.value || "").trim();
+  const actionId = String(
+    state.selectedActionId
+    || els.modulationManagerActionSelect?.value
+    || els.actionManagerSelect.value
+    || ""
+  ).trim();
   if (!actionId) {
     throw new Error("No action selected");
   }
@@ -1862,6 +1932,75 @@ function selectedActionOrNull() {
 
 function defaultActionOscPath(actionId, verb) {
   return `/art/action/${actionId}/${verb}`;
+}
+
+function defaultActionGroupOscPath(groupId) {
+  return `/art/action-group/${groupId}/trigger`;
+}
+
+function selectedActionGroupIdOrThrow() {
+  const groupId = String(state.selectedActionGroupId || els.actionGroupManagerSelect?.value || "").trim();
+  if (!groupId) {
+    throw new Error("No action group selected");
+  }
+  return groupId;
+}
+
+function selectedActionGroupOrNull() {
+  const groupId = String(state.selectedActionGroupId || "").trim();
+  if (!groupId) return null;
+  return getActionGroupById(groupId);
+}
+
+function actionGroupPayloadFromInputs(baseGroup = null, options = {}) {
+  const base = baseGroup && typeof baseGroup === "object" ? baseGroup : {};
+  const fallbackGroupId = String(options.fallbackGroupId || state.selectedActionGroupId || "group").trim() || "group";
+  const groupId = sanitizeActionId(els.actionGroupManagerIdInput.value || fallbackGroupId, { allowAuto: true });
+  const name = String(els.actionGroupManagerNameInput.value || humanizeId(groupId) || groupId).trim() || groupId;
+  const triggerPath = String(
+    els.actionGroupManagerOscTriggerInput.value
+    || defaultActionGroupOscPath(groupId)
+  ).trim();
+  return {
+    groupId,
+    name,
+    enabled: Boolean(els.actionGroupManagerEnabledInput.checked),
+    entries: Array.isArray(base.entries) ? base.entries : [],
+    oscTriggers: {
+      trigger: triggerPath
+    }
+  };
+}
+
+function actionGroupEntryPayloadFromInputs() {
+  const entryType = String(els.actionGroupEntryTypeInput.value || "action-start").trim();
+  if (entryType === "lfos-enable") {
+    return { entryType: "lfosEnabled", enabled: true };
+  }
+  if (entryType === "lfos-disable") {
+    return { entryType: "lfosEnabled", enabled: false };
+  }
+
+  const actionId = String(els.actionGroupEntryActionSelect.value || "").trim();
+  if (!actionId) {
+    throw new Error("Select an action for the entry");
+  }
+  const command = entryType === "action-stop" ? "stop" : (entryType === "action-abort" ? "abort" : "start");
+  return {
+    entryType: "action",
+    actionId,
+    command
+  };
+}
+
+function updateActionGroupEntryInputsState() {
+  const entryType = String(els.actionGroupEntryTypeInput.value || "action-start").trim();
+  const isLfoEntry = entryType === "lfos-enable" || entryType === "lfos-disable";
+  els.actionGroupEntryActionSelect.disabled = isLfoEntry;
+  els.actionGroupEntryLfosEnabledInput.disabled = !isLfoEntry;
+  if (isLfoEntry && document.activeElement !== els.actionGroupEntryLfosEnabledInput) {
+    els.actionGroupEntryLfosEnabledInput.value = entryType === "lfos-disable" ? "false" : "true";
+  }
 }
 
 function actionPayloadFromInputs(baseAction = null, options = {}) {
@@ -2010,6 +2149,122 @@ async function actionManagerDelete() {
     await refreshStatus();
   } catch (error) {
     addLog(`action delete failed: ${error.message}`);
+  }
+}
+
+async function actionGroupManagerCreate() {
+  try {
+    const payload = actionGroupPayloadFromInputs(null, { fallbackGroupId: "group" });
+    await api("/api/action-group/create", "POST", payload);
+    if (String(els.actionGroupManagerIdInput.value || "").trim() !== payload.groupId) {
+      addLog(`action group id normalized -> ${payload.groupId}`);
+    }
+    state.selectedActionGroupId = payload.groupId;
+    addLog(`action group create -> ${payload.groupId}`);
+    await refreshStatus();
+  } catch (error) {
+    addLog(`action group create failed: ${error.message}`);
+  }
+}
+
+async function actionGroupManagerSave() {
+  try {
+    const groupId = selectedActionGroupIdOrThrow();
+    const currentGroup = selectedActionGroupOrNull();
+    if (!currentGroup) {
+      throw new Error(`Action group not found: ${groupId}`);
+    }
+    const payload = actionGroupPayloadFromInputs(currentGroup, { fallbackGroupId: groupId });
+    await api(`/api/action-group/${encodeURIComponent(groupId)}/update`, "POST", payload);
+    addLog(`action group save -> ${groupId}`);
+    await refreshStatus();
+  } catch (error) {
+    addLog(`action group save failed: ${error.message}`);
+  }
+}
+
+async function actionGroupManagerDelete() {
+  try {
+    const groupId = selectedActionGroupIdOrThrow();
+    if (!confirm(`Delete action group "${groupId}"?`)) {
+      return;
+    }
+    await api(`/api/action-group/${encodeURIComponent(groupId)}/delete`, "POST", {});
+    if (state.selectedActionGroupId === groupId) {
+      state.selectedActionGroupId = null;
+    }
+    addLog(`action group delete -> ${groupId}`);
+    await refreshStatus();
+  } catch (error) {
+    addLog(`action group delete failed: ${error.message}`);
+  }
+}
+
+async function actionGroupManagerTrigger() {
+  try {
+    const groupId = selectedActionGroupIdOrThrow();
+    await api(`/api/action-group/${encodeURIComponent(groupId)}/trigger`, "POST", {});
+    addLog(`action group trigger -> ${groupId}`);
+    await refreshStatus();
+  } catch (error) {
+    addLog(`action group trigger failed: ${error.message}`);
+  }
+}
+
+async function actionGroupEntryAdd() {
+  try {
+    const groupId = selectedActionGroupIdOrThrow();
+    const group = selectedActionGroupOrNull();
+    if (!group) {
+      throw new Error(`Action group not found: ${groupId}`);
+    }
+    const entry = actionGroupEntryPayloadFromInputs();
+    const entries = Array.isArray(group.entries) ? [...group.entries, entry] : [entry];
+    await api(`/api/action-group/${encodeURIComponent(groupId)}/update`, "POST", { entries });
+    addLog(`action group entry add -> ${groupId}`);
+    await refreshStatus();
+  } catch (error) {
+    addLog(`action group entry add failed: ${error.message}`);
+  }
+}
+
+async function actionGroupEntryRemove(index) {
+  try {
+    const groupId = selectedActionGroupIdOrThrow();
+    const group = selectedActionGroupOrNull();
+    if (!group) {
+      throw new Error(`Action group not found: ${groupId}`);
+    }
+    const entries = Array.isArray(group.entries) ? group.entries : [];
+    if (index < 0 || index >= entries.length) return;
+    const nextEntries = entries.filter((_, entryIndex) => entryIndex !== index);
+    await api(`/api/action-group/${encodeURIComponent(groupId)}/update`, "POST", { entries: nextEntries });
+    addLog(`action group entry remove -> ${groupId} #${index + 1}`);
+    await refreshStatus();
+  } catch (error) {
+    addLog(`action group entry remove failed: ${error.message}`);
+  }
+}
+
+async function actionGroupEntryClear() {
+  try {
+    const groupId = selectedActionGroupIdOrThrow();
+    const group = selectedActionGroupOrNull();
+    if (!group) {
+      throw new Error(`Action group not found: ${groupId}`);
+    }
+    const entries = Array.isArray(group.entries) ? group.entries : [];
+    if (!entries.length) {
+      return;
+    }
+    if (!confirm(`Clear all entries from "${groupId}"?`)) {
+      return;
+    }
+    await api(`/api/action-group/${encodeURIComponent(groupId)}/update`, "POST", { entries: [] });
+    addLog(`action group entries cleared -> ${groupId}`);
+    await refreshStatus();
+  } catch (error) {
+    addLog(`action group entry clear failed: ${error.message}`);
   }
 }
 
@@ -2195,6 +2450,8 @@ function renderSelectedActionLfoDebug() {
 function renderActionManager() {
   const actionsById = getActionsById();
   const actionIds = Object.keys(actionsById).sort((a, b) => a.localeCompare(b));
+  const actionGroupsById = getActionGroupsById();
+  const actionGroupIds = Object.keys(actionGroupsById).sort((a, b) => a.localeCompare(b));
   const runningActions = new Set(Array.isArray(state.status?.runningActions) ? state.status.runningActions : []);
 
   if (state.selectedActionId && !actionIds.includes(state.selectedActionId)) {
@@ -2202,6 +2459,12 @@ function renderActionManager() {
   }
   if (!state.selectedActionId && actionIds.length) {
     state.selectedActionId = actionIds[0];
+  }
+  if (state.selectedActionGroupId && !actionGroupIds.includes(state.selectedActionGroupId)) {
+    state.selectedActionGroupId = null;
+  }
+  if (!state.selectedActionGroupId && actionGroupIds.length) {
+    state.selectedActionGroupId = actionGroupIds[0];
   }
 
   els.actionManagerSelect.innerHTML = "";
@@ -2226,13 +2489,85 @@ function renderActionManager() {
   }
   els.actionManagerSelect.disabled = !actionIds.length;
 
+  els.modulationManagerActionSelect.innerHTML = "";
+  if (!actionIds.length) {
+    const emptyOption = document.createElement("option");
+    emptyOption.value = "";
+    emptyOption.textContent = "No actions";
+    emptyOption.disabled = true;
+    emptyOption.selected = true;
+    els.modulationManagerActionSelect.appendChild(emptyOption);
+  } else {
+    for (const actionId of actionIds) {
+      const action = actionsById[actionId] || {};
+      const option = document.createElement("option");
+      option.value = actionId;
+      option.textContent = action.enabled === false ? `${actionId} [off]` : actionId;
+      if (actionId === state.selectedActionId) {
+        option.selected = true;
+      }
+      els.modulationManagerActionSelect.appendChild(option);
+    }
+  }
+  els.modulationManagerActionSelect.disabled = !actionIds.length;
+
+  els.actionGroupManagerSelect.innerHTML = "";
+  if (!actionGroupIds.length) {
+    const emptyOption = document.createElement("option");
+    emptyOption.value = "";
+    emptyOption.textContent = "No groups";
+    emptyOption.disabled = true;
+    emptyOption.selected = true;
+    els.actionGroupManagerSelect.appendChild(emptyOption);
+  } else {
+    for (const groupId of actionGroupIds) {
+      const group = actionGroupsById[groupId] || {};
+      const option = document.createElement("option");
+      option.value = groupId;
+      option.textContent = group.enabled === false ? `${groupId} [off]` : groupId;
+      if (groupId === state.selectedActionGroupId) {
+        option.selected = true;
+      }
+      els.actionGroupManagerSelect.appendChild(option);
+    }
+  }
+  els.actionGroupManagerSelect.disabled = !actionGroupIds.length;
+
+  const currentEntryActionId = String(els.actionGroupEntryActionSelect.value || "").trim();
+  els.actionGroupEntryActionSelect.innerHTML = "";
+  if (!actionIds.length) {
+    const emptyOption = document.createElement("option");
+    emptyOption.value = "";
+    emptyOption.textContent = "No actions";
+    emptyOption.disabled = true;
+    emptyOption.selected = true;
+    els.actionGroupEntryActionSelect.appendChild(emptyOption);
+  } else {
+    for (const actionId of actionIds) {
+      const option = document.createElement("option");
+      option.value = actionId;
+      option.textContent = actionId;
+      if (actionId === currentEntryActionId) {
+        option.selected = true;
+      }
+      els.actionGroupEntryActionSelect.appendChild(option);
+    }
+    if (!currentEntryActionId || !actionIds.includes(currentEntryActionId)) {
+      els.actionGroupEntryActionSelect.value = actionIds[0];
+    }
+  }
+  els.actionGroupEntryActionSelect.disabled = !actionIds.length;
+
   const selectedActionId = String(state.selectedActionId || "").trim();
   const selectedAction = selectedActionId ? actionsById[selectedActionId] : null;
   const selectedActionRuntimeId = String(selectedAction?.actionId || selectedActionId).trim();
   const isRunning = selectedActionRuntimeId ? runningActions.has(selectedActionRuntimeId) : false;
   const lfosEnabled = areLfosEnabled();
   const runningList = [...runningActions].sort((a, b) => a.localeCompare(b));
-  els.actionManagerSummary.textContent = `${actionIds.length} action${actionIds.length === 1 ? "" : "s"} | running: ${runningList.length ? runningList.join(", ") : "-"}`;
+  els.actionManagerSummary.textContent = `${actionIds.length} action${actionIds.length === 1 ? "" : "s"} | groups: ${actionGroupIds.length} | running: ${runningList.length ? runningList.join(", ") : "-"}`;
+  const selectedLfoCount = Array.isArray(selectedAction?.lfos) ? selectedAction.lfos.length : 0;
+  const selectedActionLabel = selectedActionId || "-";
+  els.modulationManagerSummary.textContent = `Action: ${selectedActionLabel} | LFOs: ${selectedLfoCount} | running: ${isRunning ? "yes" : "no"}`;
   els.actionManagerLfosToggleBtn.textContent = lfosEnabled ? "Disable LFOs" : "Enable LFOs";
   els.actionManagerLfosToggleBtn.disabled = !state.status;
 
@@ -2352,6 +2687,70 @@ function renderActionManager() {
     }
   }
 
+  const selectedActionGroupId = String(state.selectedActionGroupId || "").trim();
+  const selectedActionGroup = selectedActionGroupId ? actionGroupsById[selectedActionGroupId] : null;
+  if (selectedActionGroup) {
+    const groupId = String(selectedActionGroup.groupId || selectedActionGroupId || "group");
+    setInputValueIfIdle(els.actionGroupManagerIdInput, groupId);
+    setInputValueIfIdle(els.actionGroupManagerNameInput, String(selectedActionGroup.name || groupId));
+    setInputValueIfIdle(
+      els.actionGroupManagerOscTriggerInput,
+      String(selectedActionGroup.oscTriggers?.trigger || defaultActionGroupOscPath(groupId))
+    );
+    els.actionGroupManagerEnabledInput.checked = selectedActionGroup.enabled !== false;
+  } else {
+    const suggestedGroupId = sanitizeActionId(String(els.actionGroupManagerIdInput.value || "group"), { allowAuto: true });
+    if (!String(els.actionGroupManagerIdInput.value || "").trim()) {
+      setInputValueIfIdle(els.actionGroupManagerIdInput, suggestedGroupId);
+    }
+    if (!String(els.actionGroupManagerNameInput.value || "").trim()) {
+      setInputValueIfIdle(els.actionGroupManagerNameInput, humanizeId(suggestedGroupId) || suggestedGroupId);
+    }
+    if (!String(els.actionGroupManagerOscTriggerInput.value || "").trim()) {
+      setInputValueIfIdle(els.actionGroupManagerOscTriggerInput, defaultActionGroupOscPath(suggestedGroupId));
+    }
+    if (!document.activeElement || document.activeElement !== els.actionGroupManagerEnabledInput) {
+      els.actionGroupManagerEnabledInput.checked = true;
+    }
+  }
+
+  const selectedGroupEntries = Array.isArray(selectedActionGroup?.entries) ? selectedActionGroup.entries : [];
+  els.actionGroupEntryRows.innerHTML = "";
+  if (!selectedActionGroup || !selectedGroupEntries.length) {
+    const row = document.createElement("tr");
+    row.innerHTML = '<td class="muted" colspan="4">No entries configured.</td>';
+    els.actionGroupEntryRows.appendChild(row);
+  } else {
+    selectedGroupEntries.forEach((entry, index) => {
+      const entryType = String(entry?.entryType || "");
+      let typeLabel = "Action";
+      let targetLabel = "-";
+      if (entryType === "lfosEnabled") {
+        typeLabel = "LFOs";
+        targetLabel = entry?.enabled === false ? "Disable" : "Enable";
+      } else {
+        const command = String(entry?.command || "start");
+        typeLabel = `Action ${command}`;
+        targetLabel = String(entry?.actionId || "-");
+      }
+      const row = document.createElement("tr");
+      row.innerHTML = `
+        <td>${index + 1}</td>
+        <td>${escapeHtml(typeLabel)}</td>
+        <td>${escapeHtml(targetLabel)}</td>
+        <td><button class="danger action-group-entry-remove-btn" data-index="${index}" type="button">Remove</button></td>
+      `;
+      const removeBtn = row.querySelector(".action-group-entry-remove-btn");
+      if (removeBtn) {
+        removeBtn.addEventListener("click", () => {
+          void actionGroupEntryRemove(index);
+        });
+      }
+      els.actionGroupEntryRows.appendChild(row);
+    });
+  }
+  updateActionGroupEntryInputsState();
+
   if (!selectedAction) {
     state.selectedActionLfoActionId = null;
     state.selectedActionLfoIndex = null;
@@ -2366,6 +2765,11 @@ function renderActionManager() {
   els.actionManagerSaveBtn.disabled = !selectedAction;
   els.actionManagerSaveAsBtn.disabled = !selectedAction;
   els.actionManagerDeleteBtn.disabled = !selectedAction;
+  els.actionGroupManagerSaveBtn.disabled = !selectedActionGroup;
+  els.actionGroupManagerDeleteBtn.disabled = !selectedActionGroup;
+  els.actionGroupManagerTriggerBtn.disabled = !selectedActionGroup || selectedActionGroup.enabled === false;
+  els.actionGroupEntryAddBtn.disabled = !selectedActionGroup;
+  els.actionGroupEntryClearBtn.disabled = !selectedActionGroup || !selectedGroupEntries.length;
   els.actionManagerLfoAddBtn.disabled = !selectedAction || !objects.length;
   const selectedLfos = Array.isArray(selectedAction?.lfos) ? selectedAction.lfos : [];
   if (Number.isInteger(state.selectedActionLfoIndex) && (state.selectedActionLfoIndex < 0 || state.selectedActionLfoIndex >= selectedLfos.length)) {
@@ -2964,6 +3368,13 @@ async function refreshStatus() {
     if (!state.selectedActionId && actionIds.length) {
       state.selectedActionId = actionIds[0];
     }
+    const actionGroupIds = Object.keys(getActionGroupsById()).sort((a, b) => a.localeCompare(b));
+    if (state.selectedActionGroupId && !actionGroupIds.includes(state.selectedActionGroupId)) {
+      state.selectedActionGroupId = null;
+    }
+    if (!state.selectedActionGroupId && actionGroupIds.length) {
+      state.selectedActionGroupId = actionGroupIds[0];
+    }
     const groups = getObjectGroups();
     if (state.selectedGroupId && !groups.find((group) => group.groupId === state.selectedGroupId)) {
       state.selectedGroupId = null;
@@ -3502,6 +3913,10 @@ function setupHandlers() {
     setPage("action-manager");
   });
 
+  els.viewModulationManagerBtn.addEventListener("click", () => {
+    setPage("modulation-manager");
+  });
+
   els.viewObjectManagerBtn.addEventListener("click", () => {
     setPage("object-manager");
   });
@@ -3546,6 +3961,20 @@ function setupHandlers() {
   els.actionManagerSelect.addEventListener("change", () => {
     state.selectedActionId = String(els.actionManagerSelect.value || "").trim() || null;
     renderActionManager();
+  });
+
+  els.modulationManagerActionSelect.addEventListener("change", () => {
+    state.selectedActionId = String(els.modulationManagerActionSelect.value || "").trim() || null;
+    renderActionManager();
+  });
+
+  els.actionGroupManagerSelect.addEventListener("change", () => {
+    state.selectedActionGroupId = String(els.actionGroupManagerSelect.value || "").trim() || null;
+    renderActionManager();
+  });
+
+  els.actionGroupEntryTypeInput.addEventListener("change", () => {
+    updateActionGroupEntryInputsState();
   });
 
   els.actionManagerRows.addEventListener("click", (event) => {
@@ -3608,6 +4037,40 @@ function setupHandlers() {
 
   els.actionManagerDeleteBtn.addEventListener("click", () => {
     void actionManagerDelete();
+  });
+
+  els.actionGroupManagerCreateBtn.addEventListener("click", () => {
+    void actionGroupManagerCreate();
+  });
+
+  els.actionGroupManagerSaveBtn.addEventListener("click", () => {
+    void actionGroupManagerSave();
+  });
+
+  els.actionGroupManagerDeleteBtn.addEventListener("click", () => {
+    void actionGroupManagerDelete();
+  });
+
+  els.actionGroupManagerTriggerBtn.addEventListener("click", () => {
+    void actionGroupManagerTrigger();
+  });
+
+  els.actionGroupEntryAddBtn.addEventListener("click", () => {
+    void actionGroupEntryAdd();
+  });
+
+  els.actionGroupEntryClearBtn.addEventListener("click", () => {
+    void actionGroupEntryClear();
+  });
+
+  els.actionGroupManagerIdInput.addEventListener("input", () => {
+    const proposedGroupId = sanitizeActionId(els.actionGroupManagerIdInput.value || "group", { allowAuto: true });
+    if (!String(els.actionGroupManagerNameInput.value || "").trim()) {
+      setInputValueIfIdle(els.actionGroupManagerNameInput, humanizeId(proposedGroupId) || proposedGroupId);
+    }
+    if (!String(els.actionGroupManagerOscTriggerInput.value || "").trim()) {
+      setInputValueIfIdle(els.actionGroupManagerOscTriggerInput, defaultActionGroupOscPath(proposedGroupId));
+    }
   });
 
   els.actionManagerLfoAddBtn.addEventListener("click", () => {
@@ -4029,7 +4492,7 @@ function setupEventStream() {
           if (actionId) {
             state.lastLfoDebugEventByAction[actionId] = payload;
           }
-          if (state.currentPage === "action-manager") {
+          if (state.currentPage === "modulation-manager") {
             renderSelectedActionLfoDebug();
           }
         }

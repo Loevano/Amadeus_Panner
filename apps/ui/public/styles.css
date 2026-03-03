@@ -128,6 +128,12 @@ body {
   display: none;
 }
 
+.modulation-manager-panel {
+  grid-column: 2 / 4;
+  grid-row: 1 / 3;
+  display: none;
+}
+
 .layout[data-page="object-manager"] .panner-panel,
 .layout[data-page="object-manager"] .inspector-panel,
 .layout[data-page="object-manager"] .groups-panel {
@@ -153,11 +159,25 @@ body {
 .layout[data-page="action-manager"] .inspector-panel,
 .layout[data-page="action-manager"] .groups-panel,
 .layout[data-page="action-manager"] .object-manager-panel,
-.layout[data-page="action-manager"] .group-manager-panel {
+.layout[data-page="action-manager"] .group-manager-panel,
+.layout[data-page="action-manager"] .modulation-manager-panel {
   display: none;
 }
 
 .layout[data-page="action-manager"] .action-manager-panel {
+  display: block;
+}
+
+.layout[data-page="modulation-manager"] .panner-panel,
+.layout[data-page="modulation-manager"] .inspector-panel,
+.layout[data-page="modulation-manager"] .groups-panel,
+.layout[data-page="modulation-manager"] .object-manager-panel,
+.layout[data-page="modulation-manager"] .group-manager-panel,
+.layout[data-page="modulation-manager"] .action-manager-panel {
+  display: none;
+}
+
+.layout[data-page="modulation-manager"] .modulation-manager-panel {
   display: block;
 }
 
@@ -316,16 +336,26 @@ button:hover {
 }
 
 .action-manager-grid {
-  grid-template-columns: minmax(360px, 1fr) minmax(420px, 1.2fr);
+  grid-template-columns: 1fr;
   grid-template-areas:
-    "setup setup"
-    "select lfo";
+    "setup"
+    "select"
+    "groups";
   align-items: start;
 }
 
 .action-manager-select-block { grid-area: select; }
 .action-manager-setup-block { grid-area: setup; }
-.action-manager-lfo-block { grid-area: lfo; }
+.action-manager-groups-block { grid-area: groups; }
+
+.modulation-manager-grid {
+  grid-template-columns: minmax(260px, 0.9fr) minmax(420px, 1.3fr);
+  grid-template-areas: "select lfo";
+  align-items: start;
+}
+
+.modulation-manager-select-block { grid-area: select; }
+.modulation-manager-lfo-block { grid-area: lfo; }
 
 .manager-block {
   border: 1px solid var(--border);
@@ -334,58 +364,73 @@ button:hover {
   background: #f9fbfd;
 }
 
-.action-manager-panel .manager-block {
+.action-manager-panel .manager-block,
+.modulation-manager-panel .manager-block {
   padding: 8px 9px;
 }
 
-.action-manager-panel .manager-block h3 {
+.action-manager-panel .manager-block h3,
+.modulation-manager-panel .manager-block h3 {
   margin: 0 0 6px;
 }
 
-.action-manager-panel .manager-field-grid {
+.action-manager-panel .manager-field-grid,
+.modulation-manager-panel .manager-field-grid {
   margin-bottom: 8px;
   grid-template-columns: max-content minmax(120px, 1fr) max-content minmax(120px, 1fr);
   align-items: center;
 }
 
-.action-manager-panel .field-grid {
+.action-manager-panel .field-grid,
+.modulation-manager-panel .field-grid {
   gap: 6px 8px;
 }
 
-.action-manager-panel label {
+.action-manager-panel label,
+.modulation-manager-panel label {
   font-size: 0.84rem;
   white-space: nowrap;
 }
 
 .action-manager-panel input,
 .action-manager-panel select,
-.action-manager-panel button {
+.action-manager-panel button,
+.modulation-manager-panel input,
+.modulation-manager-panel select,
+.modulation-manager-panel button {
   padding: 6px 8px;
 }
 
 .action-manager-panel .manager-field-grid input,
-.action-manager-panel .manager-field-grid select {
+.action-manager-panel .manager-field-grid select,
+.modulation-manager-panel .manager-field-grid input,
+.modulation-manager-panel .manager-field-grid select {
   width: 100%;
   min-width: 0;
 }
 
-.action-manager-panel .row {
+.action-manager-panel .row,
+.modulation-manager-panel .row {
   gap: 6px;
   flex-wrap: wrap;
 }
 
-.action-manager-panel .manager-table-wrap {
+.action-manager-panel .manager-table-wrap,
+.modulation-manager-panel .manager-table-wrap {
   margin-top: 8px;
   max-height: 260px;
 }
 
 .action-manager-panel .manager-table th,
-.action-manager-panel .manager-table td {
+.action-manager-panel .manager-table td,
+.modulation-manager-panel .manager-table th,
+.modulation-manager-panel .manager-table td {
   padding: 6px 7px;
   font-size: 0.88rem;
 }
 
-.action-manager-panel .checkbox-row {
+.action-manager-panel .checkbox-row,
+.modulation-manager-panel .checkbox-row {
   margin: 4px 0 6px;
 }
 
@@ -736,7 +781,8 @@ button:hover {
   }
 
   .group-manager-panel,
-  .action-manager-panel {
+  .action-manager-panel,
+  .modulation-manager-panel {
     grid-column: auto;
     grid-row: auto;
   }
@@ -759,10 +805,18 @@ button:hover {
     grid-template-areas:
       "setup"
       "select"
+      "groups";
+  }
+
+  .modulation-manager-grid {
+    grid-template-columns: 1fr;
+    grid-template-areas:
+      "select"
       "lfo";
   }
 
-  .action-manager-panel .manager-field-grid {
+  .action-manager-panel .manager-field-grid,
+  .modulation-manager-panel .manager-field-grid {
     grid-template-columns: 1fr 1fr;
   }
 

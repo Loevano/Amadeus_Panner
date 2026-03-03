@@ -2,6 +2,33 @@
 
 Release-facing summary for operators and production notes.
 
+## v0.1.7 - 2026-03-03 - Action Groups And Working-State Action Editing
+
+### Added
+- Action Group runtime model and trigger execution flow (one group can fire multiple entries in one call).
+- Action Group management APIs:
+  - `POST /api/action-group/create`
+  - `POST /api/action-group/{id}/update`
+  - `POST /api/action-group/{id}/delete`
+  - `POST /api/action-group/{id}/trigger`
+- Action Group OSC trigger integration through `osc_triggers.trigger` in showfile data.
+- Action Group editor in Action Manager:
+  - group list and metadata editor (id, name, enabled, OSC trigger)
+  - group entry list with action command entries (`start`, `stop`, `abort`)
+  - LFO toggle entries (`enable` / `disable`)
+- Show Control quick-trigger chips for Action Groups.
+
+### Changed
+- Showfile schema now supports top-level `action_groups`.
+- Show load/save path now reads/writes `action_groups` and validates group-entry links against existing actions.
+- Action create/update/save-as/delete now mutate in-memory working state immediately and do not force immediate showfile writes.
+
+### Fixed
+- Action Group LFO entry creation now deterministically sets enabled state from the selected entry type (`lfos-enable` or `lfos-disable`), preventing stale UI-state mismatches.
+
+### Known Issues
+- Group entries can toggle global LFO processing, but per-modulator enable/disable by LFO ID is not yet implemented.
+
 ## v0.1.0 - 2026-03-03 - Initial Scaffold
 
 ### Added

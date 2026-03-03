@@ -61,6 +61,41 @@
         "additionalProperties": false
       }
     },
+    "action_groups": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["group_id", "name", "enabled", "entries", "osc_triggers"],
+        "properties": {
+          "group_id": { "type": "string" },
+          "name": { "type": "string" },
+          "enabled": { "type": "boolean" },
+          "entries": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["entry_type"],
+              "properties": {
+                "entry_type": { "type": "string", "enum": ["action", "action_start", "action_stop", "action_abort", "lfos_enabled"] },
+                "action_id": { "type": "string" },
+                "command": { "type": "string", "enum": ["start", "stop", "abort"] },
+                "enabled": { "type": "boolean" }
+              },
+              "additionalProperties": false
+            }
+          },
+          "osc_triggers": {
+            "type": "object",
+            "required": ["trigger"],
+            "properties": {
+              "trigger": { "type": "string" }
+            },
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false
+      }
+    },
     "metadata": {
       "type": "object",
       "additionalProperties": true

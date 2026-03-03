@@ -1,5 +1,22 @@
 # Changelog
 
+## 2026-03-03 22:10 CET
+- Added Action Group support in runtime show model and status payload (`show.actionGroupIds`, `show.actionGroupsById`) with full create/update/delete/trigger lifecycle.
+- Added Action Group HTTP API endpoints:
+  - `POST /api/action-group/create`
+  - `POST /api/action-group/:id/update`
+  - `POST /api/action-group/:id/delete`
+  - `POST /api/action-group/:id/trigger`
+- Added Action Group OSC trigger routing (`osc_triggers.trigger`) so groups can be fired from external controllers like QLab.
+- Extended showfile schema/templates with top-level `action_groups` and normalized entry support (`action` commands plus `lfos_enabled` toggles).
+- Added Action Manager UI block for Action Groups:
+  - group create/save/delete/trigger controls
+  - ordered group-entry list editor
+  - entry types for action start/stop/abort and LFO enable/disable
+- Added Show Control trigger chips for Action Groups alongside single-action controls.
+- Changed action mutation behavior (`create/update/save-as/delete`) to update runtime working state without immediate disk save; persistence still happens on explicit `Save Show`.
+- Fixed Action Group LFO entry authoring so `lfos-enable` and `lfos-disable` always serialize to deterministic enabled states.
+
 ## 2026-03-03 21:49 CET
 - Increased action runtime update frequency to 60 Hz (`ACTION_TICK_SEC`) for smoother motion.
 - Reworked LFO modulation logic to keep per-target center state, apply external/manual deltas without snapping, and sum multiple modulators targeting the same object parameter.

@@ -21,6 +21,27 @@
       "file": "actions/action-fly-in-2.json"
     }
   ],
+  "action_groups": [
+    {
+      "group_id": "group-fly-in",
+      "name": "Fly In Group",
+      "enabled": true,
+      "entries": [
+        {
+          "entry_type": "action",
+          "action_id": "action-fly-in",
+          "command": "start"
+        },
+        {
+          "entry_type": "lfos_enabled",
+          "enabled": true
+        }
+      ],
+      "osc_triggers": {
+        "trigger": "/art/action-group/group-fly-in/trigger"
+      }
+    }
+  ],
   "metadata": {
     "author": "operator",
     "notes": "Starter template"
