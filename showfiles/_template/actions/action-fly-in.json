@@ -24,6 +24,8 @@
   ],
   "lfos": [
     {
+      "lfo_id": "lfo-1",
+      "enabled": true,
       "object_id": "obj",
       "parameter": "y",
       "wave": "sine",

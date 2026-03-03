@@ -41,6 +41,8 @@
         "type": "object",
         "required": ["object_id", "parameter", "wave", "rate_hz", "depth", "offset", "phase_deg"],
         "properties": {
+          "lfo_id": { "type": "string" },
+          "enabled": { "type": "boolean", "default": true },
           "object_id": { "type": "string" },
           "parameter": { "type": "string", "enum": ["x", "y", "z", "size", "gain"] },
           "wave": { "type": "string", "enum": ["sine", "triangle", "square", "saw"] },

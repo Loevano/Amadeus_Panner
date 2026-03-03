@@ -185,6 +185,7 @@ const els = {
   actionGroupManagerTriggerBtn: document.getElementById("actionGroupManagerTriggerBtn"),
   actionGroupEntryTypeInput: document.getElementById("actionGroupEntryTypeInput"),
   actionGroupEntryActionSelect: document.getElementById("actionGroupEntryActionSelect"),
+  actionGroupEntryLfoSelect: document.getElementById("actionGroupEntryLfoSelect"),
   actionGroupEntryLfosEnabledInput: document.getElementById("actionGroupEntryLfosEnabledInput"),
   actionGroupEntryAddBtn: document.getElementById("actionGroupEntryAddBtn"),
   actionGroupEntryClearBtn: document.getElementById("actionGroupEntryClearBtn"),
@@ -197,6 +198,7 @@ const els = {
   actionManagerLfoOffsetInput: document.getElementById("actionManagerLfoOffsetInput"),
   actionManagerLfoPhaseInput: document.getElementById("actionManagerLfoPhaseInput"),
   actionManagerLfoMappingPhaseInput: document.getElementById("actionManagerLfoMappingPhaseInput"),
+  actionManagerLfoEnabledInput: document.getElementById("actionManagerLfoEnabledInput"),
   actionManagerLfoAddBtn: document.getElementById("actionManagerLfoAddBtn"),
   actionManagerLfoUpdateBtn: document.getElementById("actionManagerLfoUpdateBtn"),
   actionManagerLfoClearBtn: document.getElementById("actionManagerLfoClearBtn"),
@@ -786,6 +788,18 @@ function lfoSignature(lfo) {
   return [wave, rateHz, depth, offset, phaseDeg].join("|");
 }
 
+function lfoDisplayId(lfo, fallback = "") {
+  const source = lfo && typeof lfo === "object" ? lfo : {};
+  const rawId = String(source.lfoId || source.lfo_id || fallback || "").trim();
+  return rawId;
+}
+
+function lfoSelectorKey(lfo, fallback = "") {
+  const lfoId = lfoDisplayId(lfo, fallback);
+  if (lfoId) return `id:${lfoId}`;
+  return `sig:${lfoSignature(lfo)}`;
+}
+
 function promptMappingPhaseForTarget(actionId, objectId, parameter, defaultValue = 0) {
   const fallback = parseFiniteNumber(defaultValue, 0);
   const message = `Mapping phase offset (deg) for ${actionId} -> ${objectId}.${parameter}\nUse 180 for mirrored motion.`;
@@ -794,13 +808,13 @@ function promptMappingPhaseForTarget(actionId, objectId, parameter, defaultValue
   return parseFiniteNumber(raw, fallback);
 }
 
-async function linkActionLfoTargetFromPanner(actionId, signature, objectId, parameter) {
+async function linkActionLfoTargetFromPanner(actionId, selectorKey, objectId, parameter) {
   try {
     const normalizedActionId = String(actionId || "").trim();
-    const normalizedSignature = String(signature || "").trim();
+    const normalizedSelectorKey = String(selectorKey || "").trim();
     const normalizedObjectId = String(objectId || "").trim();
     const normalizedParam = String(parameter || "").trim();
-    if (!normalizedActionId || !normalizedSignature || !normalizedObjectId || !LFO_PARAM_OPTIONS.includes(normalizedParam)) {
+    if (!normalizedActionId || !normalizedSelectorKey || !normalizedObjectId || !LFO_PARAM_OPTIONS.includes(normalizedParam)) {
       throw new Error("Invalid LFO mapping request");
     }
 
@@ -809,14 +823,18 @@ async function linkActionLfoTargetFromPanner(actionId, signature, objectId, para
       throw new Error(`Action not found: ${normalizedActionId}`);
     }
     const lfos = Array.isArray(action.lfos) ? action.lfos : [];
-    const sourceIndex = lfos.findIndex((candidate) => lfoSignature(candidate) === normalizedSignature);
+    const sourceIndex = lfos.findIndex((candidate, candidateIndex) => {
+      const fallbackId = `lfo-${candidateIndex + 1}`;
+      return lfoSelectorKey(candidate, fallbackId) === normalizedSelectorKey;
+    });
     if (sourceIndex < 0) {
       throw new Error(`LFO not found: ${normalizedActionId}`);
     }
     const sourceLfo = lfos[sourceIndex];
 
-    const existingIndex = lfos.findIndex((candidate) => {
-      if (lfoSignature(candidate) !== normalizedSignature) return false;
+    const existingIndex = lfos.findIndex((candidate, candidateIndex) => {
+      const fallbackId = `lfo-${candidateIndex + 1}`;
+      if (lfoSelectorKey(candidate, fallbackId) !== normalizedSelectorKey) return false;
       const candidateObjectId = String(candidate?.objectId || "").trim();
       const candidateParam = String(candidate?.parameter || "").trim();
       return candidateObjectId === normalizedObjectId && candidateParam === normalizedParam;
@@ -920,8 +938,9 @@ function collectActionLfoEntries() {
     const lfos = Array.isArray(action.lfos) ? action.lfos : [];
     for (let index = 0; index < lfos.length; index += 1) {
       const lfo = lfos[index];
-      const signature = lfoSignature(lfo);
-      const key = `${actionId}::${signature}`;
+      const lfoId = lfoDisplayId(lfo, `lfo-${index + 1}`);
+      const selector = lfoSelectorKey(lfo, `lfo-${index + 1}`);
+      const key = `${actionId}::${selector}`;
       const targetObjectId = String(lfo?.objectId || "-").trim() || "-";
       const targetParam = String(lfo?.parameter || "-").trim() || "-";
       const targetLabel = `${targetObjectId}.${targetParam}`;
@@ -931,7 +950,8 @@ function collectActionLfoEntries() {
           actionId,
           index,
           lfo,
-          signature,
+          selector,
+          lfoId,
           targetCount: 1,
           targets: [targetLabel],
           action
@@ -955,10 +975,10 @@ function buildLfoParamSubmenu(objectId, entry) {
   const action = getActionById(entry?.actionId);
   const lfos = Array.isArray(action?.lfos) ? action.lfos : [];
   const targetObjectId = String(objectId || "").trim();
-  const signature = String(entry?.signature || "").trim();
+  const selector = String(entry?.selector || "").trim();
   for (const param of LFO_PARAM_OPTIONS) {
-    const isLinked = lfos.some((candidate) => {
-      if (lfoSignature(candidate) !== signature) return false;
+    const isLinked = lfos.some((candidate, candidateIndex) => {
+      if (lfoSelectorKey(candidate, `lfo-${candidateIndex + 1}`) !== selector) return false;
       const candidateObjectId = String(candidate?.objectId || "").trim();
       const candidateParam = String(candidate?.parameter || "").trim();
       return candidateObjectId === targetObjectId && candidateParam === param;
@@ -966,7 +986,7 @@ function buildLfoParamSubmenu(objectId, entry) {
     const label = `${isLinked ? "✓ " : ""}${param}`;
     submenu.appendChild(createPannerMenuItem(label, {
       onClick: () => {
-        void linkActionLfoTargetFromPanner(entry.actionId, signature, targetObjectId, param);
+        void linkActionLfoTargetFromPanner(entry.actionId, selector, targetObjectId, param);
       }
     }));
   }
@@ -990,7 +1010,8 @@ function buildLfoContextSubmenu(objectId) {
     const rateHz = parseFiniteNumber(lfo.rateHz, 0).toFixed(3);
     const targetLabel = entry.targets.slice(0, 2).join(", ");
     const moreSuffix = entry.targetCount > 2 ? ` +${entry.targetCount - 2}` : "";
-    const label = `${entry.actionId} #${entry.index + 1} (${wave} ${rateHz}Hz) [${targetLabel}${moreSuffix}]`;
+    const lfoId = String(entry.lfoId || `lfo-${entry.index + 1}`);
+    const label = `${entry.actionId} ${lfoId} (${wave} ${rateHz}Hz) [${targetLabel}${moreSuffix}]`;
     submenu.appendChild(createPannerMenuItem(label, {
       submenu: buildLfoParamSubmenu(objectId, entry)
     }));
@@ -1974,6 +1995,24 @@ function actionGroupPayloadFromInputs(baseGroup = null, options = {}) {
 
 function actionGroupEntryPayloadFromInputs() {
   const entryType = String(els.actionGroupEntryTypeInput.value || "action-start").trim();
+  const actionId = String(els.actionGroupEntryActionSelect.value || "").trim();
+
+  if (entryType === "action-lfo-enable" || entryType === "action-lfo-disable") {
+    if (!actionId) {
+      throw new Error("Select an action for the LFO entry");
+    }
+    const lfoId = String(els.actionGroupEntryLfoSelect.value || "").trim();
+    if (!lfoId) {
+      throw new Error("Select an LFO for the entry");
+    }
+    return {
+      entryType: "actionLfoEnabled",
+      actionId,
+      lfoId,
+      enabled: entryType === "action-lfo-enable"
+    };
+  }
+
   if (entryType === "lfos-enable") {
     return { entryType: "lfosEnabled", enabled: true };
   }
@@ -1981,7 +2020,6 @@ function actionGroupEntryPayloadFromInputs() {
     return { entryType: "lfosEnabled", enabled: false };
   }
 
-  const actionId = String(els.actionGroupEntryActionSelect.value || "").trim();
   if (!actionId) {
     throw new Error("Select an action for the entry");
   }
@@ -1995,10 +2033,12 @@ function actionGroupEntryPayloadFromInputs() {
 
 function updateActionGroupEntryInputsState() {
   const entryType = String(els.actionGroupEntryTypeInput.value || "action-start").trim();
-  const isLfoEntry = entryType === "lfos-enable" || entryType === "lfos-disable";
-  els.actionGroupEntryActionSelect.disabled = isLfoEntry;
-  els.actionGroupEntryLfosEnabledInput.disabled = !isLfoEntry;
-  if (isLfoEntry && document.activeElement !== els.actionGroupEntryLfosEnabledInput) {
+  const isGlobalLfoEntry = entryType === "lfos-enable" || entryType === "lfos-disable";
+  const isActionLfoEntry = entryType === "action-lfo-enable" || entryType === "action-lfo-disable";
+  els.actionGroupEntryActionSelect.disabled = isGlobalLfoEntry;
+  els.actionGroupEntryLfoSelect.disabled = !isActionLfoEntry;
+  els.actionGroupEntryLfosEnabledInput.disabled = !isGlobalLfoEntry;
+  if (isGlobalLfoEntry && document.activeElement !== els.actionGroupEntryLfosEnabledInput) {
     els.actionGroupEntryLfosEnabledInput.value = entryType === "lfos-disable" ? "false" : "true";
   }
 }
@@ -2030,7 +2070,8 @@ function actionPayloadFromInputs(baseAction = null, options = {}) {
   };
 }
 
-function lfoPayloadFromInputs() {
+function lfoPayloadFromInputs(baseLfo = null) {
+  const base = baseLfo && typeof baseLfo === "object" ? baseLfo : {};
   const objectId = sanitizeObjectId(els.actionManagerLfoObjectInput.value || "");
   if (!objectId) {
     throw new Error("Select an object for the LFO");
@@ -2046,8 +2087,11 @@ function lfoPayloadFromInputs() {
   const offset = parseFiniteNumber(els.actionManagerLfoOffsetInput.value, 0);
   const phaseDeg = parseFiniteNumber(els.actionManagerLfoPhaseInput.value, 0);
   const mappingPhaseDeg = parseFiniteNumber(els.actionManagerLfoMappingPhaseInput.value, 0);
+  const enabledValue = String(els.actionManagerLfoEnabledInput.value || "true").trim().toLowerCase() !== "false";
+  const currentLfoId = sanitizeActionId(base.lfoId || base.lfo_id || "", { allowEmpty: true });
 
   return {
+    ...(currentLfoId ? { lfoId: currentLfoId } : {}),
     objectId,
     parameter,
     wave,
@@ -2055,7 +2099,8 @@ function lfoPayloadFromInputs() {
     depth,
     offset,
     phaseDeg,
-    mappingPhaseDeg
+    mappingPhaseDeg,
+    enabled: enabledValue
   };
 }
 
@@ -2069,6 +2114,7 @@ function setLfoInputsFromModel(lfo) {
   setInputValueIfIdle(els.actionManagerLfoOffsetInput, String(parseFiniteNumber(lfo.offset, 0)));
   setInputValueIfIdle(els.actionManagerLfoPhaseInput, String(parseFiniteNumber(lfo.phaseDeg, 0)));
   setInputValueIfIdle(els.actionManagerLfoMappingPhaseInput, String(parseFiniteNumber(lfo.mappingPhaseDeg, 0)));
+  setInputValueIfIdle(els.actionManagerLfoEnabledInput, lfo.enabled === false ? "false" : "true");
 }
 
 async function actionManagerCreate() {
@@ -2301,7 +2347,7 @@ async function actionManagerUpdateLfo() {
     if (selectedIndex < 0 || selectedIndex >= currentLfos.length) {
       throw new Error("Select an LFO row to update");
     }
-    const updatedLfo = lfoPayloadFromInputs();
+    const updatedLfo = lfoPayloadFromInputs(currentLfos[selectedIndex]);
     const nextLfos = [...currentLfos];
     nextLfos[selectedIndex] = updatedLfo;
     await api(`/api/action/${encodeURIComponent(actionId)}/update`, "POST", {
@@ -2534,6 +2580,7 @@ function renderActionManager() {
   els.actionGroupManagerSelect.disabled = !actionGroupIds.length;
 
   const currentEntryActionId = String(els.actionGroupEntryActionSelect.value || "").trim();
+  const currentEntryLfoId = String(els.actionGroupEntryLfoSelect.value || "").trim();
   els.actionGroupEntryActionSelect.innerHTML = "";
   if (!actionIds.length) {
     const emptyOption = document.createElement("option");
@@ -2557,6 +2604,54 @@ function renderActionManager() {
     }
   }
   els.actionGroupEntryActionSelect.disabled = !actionIds.length;
+
+  const entryActionId = String(els.actionGroupEntryActionSelect.value || "").trim();
+  const entryAction = entryActionId ? actionsById[entryActionId] : null;
+  const entryActionLfos = Array.isArray(entryAction?.lfos) ? entryAction.lfos : [];
+  const entryLfoSummariesById = new Map();
+  for (let index = 0; index < entryActionLfos.length; index += 1) {
+    const lfo = entryActionLfos[index];
+    const lfoId = lfoDisplayId(lfo, `lfo-${index + 1}`);
+    if (!lfoId) continue;
+    const summary = entryLfoSummariesById.get(lfoId) || {
+      count: 0,
+      targetLabels: []
+    };
+    summary.count += 1;
+    const targetLabel = `${String(lfo?.objectId || "-")}.${String(lfo?.parameter || "-")}`;
+    if (!summary.targetLabels.includes(targetLabel) && summary.targetLabels.length < 2) {
+      summary.targetLabels.push(targetLabel);
+    }
+    entryLfoSummariesById.set(lfoId, summary);
+  }
+
+  els.actionGroupEntryLfoSelect.innerHTML = "";
+  if (!entryLfoSummariesById.size) {
+    const emptyOption = document.createElement("option");
+    emptyOption.value = "";
+    emptyOption.textContent = "No LFOs";
+    emptyOption.disabled = true;
+    emptyOption.selected = true;
+    els.actionGroupEntryLfoSelect.appendChild(emptyOption);
+  } else {
+    const sortedLfoIds = Array.from(entryLfoSummariesById.keys()).sort((a, b) => a.localeCompare(b));
+    for (const lfoId of sortedLfoIds) {
+      const summary = entryLfoSummariesById.get(lfoId) || { count: 0, targetLabels: [] };
+      const option = document.createElement("option");
+      option.value = lfoId;
+      const targetsText = summary.targetLabels.join(", ");
+      const plusSuffix = summary.count > summary.targetLabels.length ? ` +${summary.count - summary.targetLabels.length}` : "";
+      option.textContent = targetsText ? `${lfoId} (${targetsText}${plusSuffix})` : lfoId;
+      if (lfoId === currentEntryLfoId) {
+        option.selected = true;
+      }
+      els.actionGroupEntryLfoSelect.appendChild(option);
+    }
+    if (!currentEntryLfoId || !sortedLfoIds.includes(currentEntryLfoId)) {
+      els.actionGroupEntryLfoSelect.value = sortedLfoIds[0];
+    }
+  }
+  els.actionGroupEntryLfoSelect.disabled = !entryLfoSummariesById.size;
 
   const selectedActionId = String(state.selectedActionId || "").trim();
   const selectedAction = selectedActionId ? actionsById[selectedActionId] : null;
@@ -2728,6 +2823,9 @@ function renderActionManager() {
       if (entryType === "lfosEnabled") {
         typeLabel = "LFOs";
         targetLabel = entry?.enabled === false ? "Disable" : "Enable";
+      } else if (entryType === "actionLfoEnabled") {
+        typeLabel = entry?.enabled === false ? "Action LFO Disable" : "Action LFO Enable";
+        targetLabel = `${String(entry?.actionId || "-")}.${String(entry?.lfoId || "-")}`;
       } else {
         const command = String(entry?.command || "start");
         typeLabel = `Action ${command}`;
@@ -2768,7 +2866,10 @@ function renderActionManager() {
   els.actionGroupManagerSaveBtn.disabled = !selectedActionGroup;
   els.actionGroupManagerDeleteBtn.disabled = !selectedActionGroup;
   els.actionGroupManagerTriggerBtn.disabled = !selectedActionGroup || selectedActionGroup.enabled === false;
-  els.actionGroupEntryAddBtn.disabled = !selectedActionGroup;
+  const entryType = String(els.actionGroupEntryTypeInput.value || "action-start").trim();
+  const requiresActionLfo = entryType === "action-lfo-enable" || entryType === "action-lfo-disable";
+  const hasEntryLfo = String(els.actionGroupEntryLfoSelect.value || "").trim().length > 0;
+  els.actionGroupEntryAddBtn.disabled = !selectedActionGroup || (requiresActionLfo && !hasEntryLfo);
   els.actionGroupEntryClearBtn.disabled = !selectedActionGroup || !selectedGroupEntries.length;
   els.actionManagerLfoAddBtn.disabled = !selectedAction || !objects.length;
   const selectedLfos = Array.isArray(selectedAction?.lfos) ? selectedAction.lfos : [];
@@ -2784,11 +2885,13 @@ function renderActionManager() {
     const selectedLfo = selectedLfos[state.selectedActionLfoIndex];
     if (selectedLfo) {
       setLfoInputsFromModel(selectedLfo);
+      const lfoId = lfoDisplayId(selectedLfo, `lfo-${state.selectedActionLfoIndex + 1}`);
       const objectId = String(selectedLfo.objectId || "-");
       const parameter = String(selectedLfo.parameter || "-");
       const wave = String(selectedLfo.wave || "sine");
       const rateHz = parseFiniteNumber(selectedLfo.rateHz, 0);
-      els.actionManagerSelectedLfoSummary.textContent = `Selected LFO: #${state.selectedActionLfoIndex + 1} ${objectId}.${parameter} (${wave}, ${rateHz.toFixed(3)} Hz)`;
+      const enabledLabel = selectedLfo.enabled === false ? "off" : "on";
+      els.actionManagerSelectedLfoSummary.textContent = `Selected LFO: ${lfoId} ${objectId}.${parameter} (${wave}, ${rateHz.toFixed(3)} Hz, ${enabledLabel})`;
     } else {
       els.actionManagerSelectedLfoSummary.textContent = "Selected LFO: none";
     }
@@ -2797,7 +2900,7 @@ function renderActionManager() {
   els.actionManagerLfoRows.innerHTML = "";
   if (!selectedAction || !selectedLfos.length) {
     const row = document.createElement("tr");
-    row.innerHTML = '<td class="muted" colspan="9">No LFOs configured.</td>';
+    row.innerHTML = '<td class="muted" colspan="11">No LFOs configured.</td>';
     els.actionManagerLfoRows.appendChild(row);
   } else {
     selectedLfos.forEach((lfo, index) => {
@@ -2807,7 +2910,10 @@ function renderActionManager() {
       if (index === state.selectedActionLfoIndex) {
         row.classList.add("is-selected");
       }
+      const lfoId = lfoDisplayId(lfo, `lfo-${index + 1}`);
+      const enabledLabel = lfo.enabled === false ? "Off" : "On";
       row.innerHTML = `
+        <td>${escapeHtml(lfoId)}</td>
         <td>${escapeHtml(String(lfo.objectId || "-"))}</td>
         <td>${escapeHtml(String(lfo.parameter || "-"))}</td>
         <td>${escapeHtml(String(lfo.wave || "sine"))}</td>
@@ -2816,6 +2922,7 @@ function renderActionManager() {
         <td>${escapeHtml(String(parseFiniteNumber(lfo.offset, 0).toFixed(3)))}</td>
         <td>${escapeHtml(String(parseFiniteNumber(lfo.phaseDeg, 0).toFixed(2)))}</td>
         <td>${escapeHtml(String(parseFiniteNumber(lfo.mappingPhaseDeg, 0).toFixed(2)))}</td>
+        <td>${escapeHtml(enabledLabel)}</td>
         <td><button class="danger action-lfo-remove-btn" data-index="${index}" type="button">Remove</button></td>
       `;
       const removeBtn = row.querySelector(".action-lfo-remove-btn");
@@ -3977,6 +4084,10 @@ function setupHandlers() {
     updateActionGroupEntryInputsState();
   });
 
+  els.actionGroupEntryActionSelect.addEventListener("change", () => {
+    renderActionManager();
+  });
+
   els.actionManagerRows.addEventListener("click", (event) => {
     const target = event.target;
     if (!(target instanceof Element)) return;
@@ -4463,7 +4574,7 @@ function setupEventStream() {
 
   const events = new EventSource("/api/events");
   state.eventSource = events;
-  const types = ["status", "show", "scene", "object", "object_manager", "object_group", "action", "lfo_debug", "osc_in", "osc_out", "osc_error", "system"];
+  const types = ["status", "show", "scene", "object", "object_manager", "object_group", "action", "action_group", "action_lfo", "lfo_debug", "osc_in", "osc_out", "osc_error", "system"];
 
   for (const type of types) {
     events.addEventListener(type, (ev) => {
@@ -4496,7 +4607,7 @@ function setupEventStream() {
             renderSelectedActionLfoDebug();
           }
         }
-        if (type === "show" || type === "scene" || type === "object_manager" || type === "object_group") {
+        if (type === "show" || type === "scene" || type === "object_manager" || type === "object_group" || type === "action_group" || type === "action_lfo") {
           scheduleStatusRefresh(0);
         }
         if (shouldLogEventType(type)) {

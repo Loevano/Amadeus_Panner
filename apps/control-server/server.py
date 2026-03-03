@@ -94,6 +94,13 @@ def normalize_action_id(value: Any) -> str:
     return action_id
 
 
+def normalize_lfo_id(value: Any) -> str:
+    lfo_id = str(value or "").strip()
+    if not OBJECT_ID_PATTERN.fullmatch(lfo_id):
+        raise ValueError("lfoId must use only letters, numbers, dot, underscore, dash (max 64 chars)")
+    return lfo_id
+
+
 def normalize_action_group_id(value: Any) -> str:
     group_id = str(value or "").strip()
     if not OBJECT_ID_PATTERN.fullmatch(group_id):
@@ -159,6 +166,54 @@ def normalize_link_params(values: Any) -> List[str]:
     return normalized
 
 
+def normalize_object_group(raw_group: Dict[str, Any], fallback_id: str, known_object_ids: Optional[set[str]] = None) -> Dict[str, Any]:
+    group_id = normalize_object_id(raw_group.get("group_id") if "group_id" in raw_group else raw_group.get("groupId") or fallback_id)
+    raw_ids = raw_group.get("object_ids") if "object_ids" in raw_group else raw_group.get("objectIds")
+    if not isinstance(raw_ids, list):
+        raw_ids = []
+
+    normalized_ids: List[str] = []
+    seen_ids = set()
+    for raw_id in raw_ids:
+        candidate = str(raw_id or "").strip()
+        if not candidate:
+            continue
+        normalized_id = normalize_object_id(candidate)
+        if known_object_ids is not None and normalized_id not in known_object_ids:
+            continue
+        if normalized_id in seen_ids:
+            continue
+        normalized_ids.append(normalized_id)
+        seen_ids.add(normalized_id)
+    normalized_ids.sort()
+
+    raw_link_params = raw_group.get("link_params") if "link_params" in raw_group else raw_group.get("linkParams")
+    normalized_link_params = normalize_link_params(raw_link_params if isinstance(raw_link_params, list) else [])
+    return {
+        "groupId": group_id,
+        "name": str(raw_group.get("name") or group_id).strip() or group_id,
+        "objectIds": normalized_ids,
+        "linkParams": normalized_link_params,
+        "enabled": bool(raw_group.get("enabled", True)),
+        "color": normalize_color(raw_group.get("color"), DEFAULT_GROUP_COLOR),
+    }
+
+
+def object_group_to_raw(group: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "group_id": normalize_object_id(group.get("groupId")),
+        "name": str(group.get("name") or group.get("groupId") or "group"),
+        "object_ids": [
+            normalize_object_id(object_id)
+            for object_id in (group.get("objectIds") if isinstance(group.get("objectIds"), list) else [])
+            if str(object_id or "").strip()
+        ],
+        "link_params": normalize_link_params(group.get("linkParams") if isinstance(group.get("linkParams"), list) else []),
+        "enabled": bool(group.get("enabled", True)),
+        "color": normalize_color(group.get("color"), DEFAULT_GROUP_COLOR),
+    }
+
+
 def normalize_object(input_obj: Dict[str, Any], fallback_id: str) -> Dict[str, Any]:
     object_id = str(input_obj.get("object_id") or input_obj.get("objectId") or fallback_id)
     return {
@@ -176,7 +231,7 @@ def normalize_object(input_obj: Dict[str, Any], fallback_id: str) -> Dict[str, A
     }
 
 
-def normalize_action_lfo(raw_lfo: Dict[str, Any]) -> Dict[str, Any]:
+def normalize_action_lfo(raw_lfo: Dict[str, Any], fallback_lfo_id: str = "lfo") -> Dict[str, Any]:
     object_id = normalize_object_id(raw_lfo.get("object_id") if "object_id" in raw_lfo else raw_lfo.get("objectId"))
     parameter = str(raw_lfo.get("parameter") or "").strip()
     if parameter not in LFO_PARAMS:
@@ -194,8 +249,12 @@ def normalize_action_lfo(raw_lfo: Dict[str, Any]) -> Dict[str, Any]:
         raw_lfo.get("mapping_phase_deg") if "mapping_phase_deg" in raw_lfo else raw_lfo.get("mappingPhaseDeg"),
         0.0,
     )
+    raw_lfo_id = raw_lfo.get("lfo_id") if "lfo_id" in raw_lfo else raw_lfo.get("lfoId")
+    lfo_id = normalize_lfo_id(raw_lfo_id or fallback_lfo_id)
 
     return {
+        "lfoId": lfo_id,
+        "enabled": bool(raw_lfo.get("enabled", True)),
         "objectId": object_id,
         "parameter": parameter,
         "wave": wave,
@@ -228,10 +287,28 @@ def normalize_action(raw_action: Dict[str, Any], fallback_id: str) -> Dict[str, 
         lfos_raw = []
 
     normalized_lfos: List[Dict[str, Any]] = []
+    used_generated_lfo_ids: set[str] = set()
+    assigned_lfo_ids: set[str] = set()
+    generated_index = 1
     for raw_lfo in lfos_raw:
         if not isinstance(raw_lfo, dict):
             continue
-        normalized_lfos.append(normalize_action_lfo(raw_lfo))
+        raw_lfo_id = str(raw_lfo.get("lfo_id") if "lfo_id" in raw_lfo else raw_lfo.get("lfoId") or "").strip()
+        fallback_lfo_id = raw_lfo_id
+        if not fallback_lfo_id:
+            while True:
+                candidate = f"lfo-{generated_index}"
+                generated_index += 1
+                if candidate in used_generated_lfo_ids:
+                    continue
+                if candidate in assigned_lfo_ids:
+                    continue
+                fallback_lfo_id = candidate
+                used_generated_lfo_ids.add(candidate)
+                break
+        normalized_lfo = normalize_action_lfo(raw_lfo, fallback_lfo_id)
+        normalized_lfos.append(normalized_lfo)
+        assigned_lfo_ids.add(str(normalized_lfo.get("lfoId") or ""))
 
     return {
         "actionId": action_id,
@@ -251,6 +328,8 @@ def normalize_action(raw_action: Dict[str, Any], fallback_id: str) -> Dict[str, 
 
 def lfo_to_raw(lfo: Dict[str, Any]) -> Dict[str, Any]:
     return {
+        "lfo_id": normalize_lfo_id(lfo.get("lfoId") or "lfo-1"),
+        "enabled": bool(lfo.get("enabled", True)),
         "object_id": normalize_object_id(lfo.get("objectId")),
         "parameter": str(lfo.get("parameter") or ""),
         "wave": str(lfo.get("wave") or "sine"),
@@ -285,6 +364,16 @@ def normalize_action_group_entry(raw_entry: Dict[str, Any]) -> Dict[str, Any]:
         return {
             "entryType": "lfosEnabled",
             "enabled": bool(raw_entry.get("enabled", True)),
+        }
+    if entry_type in {"action_lfo_enable", "action_lfo_disable", "action_lfo_enabled", "actionlfoenabled"}:
+        default_enabled = entry_type not in {"action_lfo_disable"}
+        action_id = normalize_action_id(raw_entry.get("action_id") if "action_id" in raw_entry else raw_entry.get("actionId"))
+        lfo_id = normalize_lfo_id(raw_entry.get("lfo_id") if "lfo_id" in raw_entry else raw_entry.get("lfoId"))
+        return {
+            "entryType": "actionLfoEnabled",
+            "actionId": action_id,
+            "lfoId": lfo_id,
+            "enabled": bool(raw_entry.get("enabled", default_enabled)),
         }
 
     if entry_type in {"action_start", "action_stop", "action_abort"}:
@@ -335,6 +424,13 @@ def action_group_entry_to_raw(entry: Dict[str, Any]) -> Dict[str, Any]:
     if entry_type == "lfosEnabled":
         return {
             "entry_type": "lfos_enabled",
+            "enabled": bool(entry.get("enabled", True)),
+        }
+    if entry_type == "actionLfoEnabled":
+        return {
+            "entry_type": "action_lfo_enabled",
+            "action_id": normalize_action_id(entry.get("actionId")),
+            "lfo_id": normalize_lfo_id(entry.get("lfoId")),
             "enabled": bool(entry.get("enabled", True)),
         }
     return {
@@ -645,6 +741,16 @@ class Runtime:
         actions_by_id: Dict[str, Dict[str, Any]],
     ) -> None:
         known_action_ids = set(actions_by_id.keys())
+        known_lfo_ids_by_action: Dict[str, set[str]] = {}
+        for action_id, action in actions_by_id.items():
+            lfo_ids = set()
+            for lfo in (action.get("lfos") if isinstance(action.get("lfos"), list) else []):
+                if not isinstance(lfo, dict):
+                    continue
+                lfo_id = str(lfo.get("lfoId") or lfo.get("lfo_id") or "").strip()
+                if lfo_id:
+                    lfo_ids.add(lfo_id)
+            known_lfo_ids_by_action[action_id] = lfo_ids
         for group in action_groups_by_id.values():
             entries = group.get("entries")
             if not isinstance(entries, list):
@@ -660,6 +766,22 @@ class Runtime:
                     sanitized_entries.append(
                         {
                             "entryType": "lfosEnabled",
+                            "enabled": bool(entry.get("enabled", True)),
+                        }
+                    )
+                    continue
+                if entry_type == "actionLfoEnabled":
+                    action_id = str(entry.get("actionId") or "").strip()
+                    lfo_id = str(entry.get("lfoId") or "").strip()
+                    if action_id not in known_action_ids or not lfo_id:
+                        continue
+                    if lfo_id not in known_lfo_ids_by_action.get(action_id, set()):
+                        continue
+                    sanitized_entries.append(
+                        {
+                            "entryType": "actionLfoEnabled",
+                            "actionId": action_id,
+                            "lfoId": lfo_id,
                             "enabled": bool(entry.get("enabled", True)),
                         }
                     )
@@ -728,6 +850,8 @@ class Runtime:
             "scenes": [{"scene_id": scene_id, "file": scene_file}],
             "actions": [],
             "action_groups": [],
+            "groups_enabled": True,
+            "object_groups": [],
             "metadata": {"created_by": "amadeus-panner-ui"},
         }
 
@@ -758,6 +882,8 @@ class Runtime:
                 raise ValueError("No show loaded")
             show_snapshot = json.loads(json.dumps(self.show))
             objects_snapshot = json.loads(json.dumps(list(self.objects.values())))
+            object_groups_snapshot = json.loads(json.dumps(list(self.object_groups.values())))
+            groups_enabled_snapshot = bool(self.groups_enabled)
             active_scene_id = str(self.active_scene_id or "")
 
         source_path = str(show_snapshot.get("path") or "").strip()
@@ -788,6 +914,7 @@ class Runtime:
         input_action_groups = show_snapshot.get("actionGroupsById")
         if not isinstance(input_action_groups, dict):
             input_action_groups = {}
+        input_object_groups = object_groups_snapshot if isinstance(object_groups_snapshot, list) else []
         scene_files = show_snapshot.get("sceneFiles")
         if not isinstance(scene_files, dict):
             scene_files = {}
@@ -833,6 +960,27 @@ class Runtime:
             normalized_group = normalize_action_group(raw_group_input, group_id)
             normalized_action_groups[normalized_group["groupId"]] = normalized_group
         self._sanitize_action_group_links(normalized_action_groups, normalized_actions)
+
+        known_object_ids = {
+            str(obj.get("objectId") or "")
+            for obj in objects_snapshot
+            if isinstance(obj, dict) and str(obj.get("objectId") or "").strip()
+        }
+        normalized_object_groups: Dict[str, Dict[str, Any]] = {}
+        for raw_group in input_object_groups:
+            if not isinstance(raw_group, dict):
+                continue
+            group_id = str(raw_group.get("groupId") or raw_group.get("group_id") or "").strip()
+            if not group_id:
+                continue
+            if group_id.lower() == VIRTUAL_ALL_GROUP_ID:
+                continue
+            normalized_group = normalize_object_group(
+                raw_group,
+                group_id,
+                known_object_ids=known_object_ids if known_object_ids else None,
+            )
+            normalized_object_groups[normalized_group["groupId"]] = normalized_group
 
         default_scene_id = str(show_snapshot.get("defaultSceneId") or "").strip()
         if not default_scene_id:
@@ -921,6 +1069,11 @@ class Runtime:
                 action_group_to_raw(normalized_action_groups[group_id])
                 for group_id in sorted(normalized_action_groups.keys())
             ],
+            "groups_enabled": bool(groups_enabled_snapshot),
+            "object_groups": [
+                object_group_to_raw(normalized_object_groups[group_id])
+                for group_id in sorted(normalized_object_groups.keys())
+            ],
             "metadata": metadata,
         }
         self._write_json_atomic(absolute_show_path, show_payload)
@@ -941,6 +1094,8 @@ class Runtime:
             self.show["sceneFiles"] = updated_scene_files
             self.show["actionFiles"] = updated_action_files
             self.show["metadata"] = metadata
+            self.object_groups = {group_id: dict(group) for group_id, group in normalized_object_groups.items()}
+            self.groups_enabled = bool(groups_enabled_snapshot)
             if set_as_current:
                 self.show["path"] = relative_show_path
 
@@ -953,6 +1108,7 @@ class Runtime:
                 "scenes": len(scene_refs),
                 "actions": len(action_refs),
                 "actionGroups": len(normalized_action_groups),
+                "objectGroups": len(normalized_object_groups),
             },
         )
         return {"path": relative_show_path, "showId": show_id}
@@ -1002,13 +1158,39 @@ class Runtime:
             action_groups_by_id[normalized_group["groupId"]] = normalized_group
         self._sanitize_action_group_links(action_groups_by_id, actions_by_id)
 
+        initial_scene_id = str(raw_show.get("default_scene_id") or "").strip()
+        if initial_scene_id not in scenes_by_id and scenes_by_id:
+            initial_scene_id = sorted(scenes_by_id.keys())[0]
+        known_object_ids = {
+            str(obj.get("objectId") or "")
+            for obj in (scenes_by_id.get(initial_scene_id, {}).get("objects", []) if initial_scene_id else [])
+            if isinstance(obj, dict) and str(obj.get("objectId") or "").strip()
+        }
+        object_groups_by_id: Dict[str, Dict[str, Any]] = {}
+        for raw_group in raw_show.get("object_groups", []):
+            if not isinstance(raw_group, dict):
+                continue
+            group_id = str(raw_group.get("group_id") or raw_group.get("groupId") or "").strip()
+            if not group_id:
+                continue
+            if group_id.lower() == VIRTUAL_ALL_GROUP_ID:
+                continue
+            normalized_group = normalize_object_group(
+                raw_group,
+                group_id,
+                known_object_ids=known_object_ids if known_object_ids else None,
+            )
+            object_groups_by_id[normalized_group["groupId"]] = normalized_group
+        groups_enabled = bool(raw_show.get("groups_enabled", True))
+
         with self.lock:
             running_action_ids = list(self.running_actions.keys())
         for action_id in running_action_ids:
             self.stop_action(action_id, "show-load")
 
         with self.lock:
-            self.object_groups = {}
+            self.object_groups = {group_id: dict(group) for group_id, group in object_groups_by_id.items()}
+            self.groups_enabled = groups_enabled
             self.objects = {}
             self.active_scene_id = None
             self.show = {
@@ -1040,6 +1222,8 @@ class Runtime:
                 "scenes": len(scenes_by_id),
                 "actions": len(actions_by_id),
                 "actionGroups": len(action_groups_by_id),
+                "objectGroups": len(object_groups_by_id),
+                "groupsEnabled": groups_enabled,
             },
         )
 
@@ -1192,6 +1376,76 @@ class Runtime:
             },
         )
         return next_enabled
+
+    def set_action_lfo_enabled(self, action_id: str, lfo_id: str, enabled: bool, source: str = "api") -> Dict[str, Any]:
+        normalized_action_id = normalize_action_id(action_id)
+        normalized_lfo_id = normalize_lfo_id(lfo_id)
+        next_enabled = bool(enabled)
+        changed_count = 0
+
+        with self.lock:
+            if not self.show:
+                raise ValueError("No show loaded")
+            actions_by_id = self.show.get("actionsById")
+            if not isinstance(actions_by_id, dict):
+                actions_by_id = {}
+            action = actions_by_id.get(normalized_action_id)
+            if not isinstance(action, dict):
+                raise ValueError(f"Action not found: {normalized_action_id}")
+
+            lfos = action.get("lfos")
+            if not isinstance(lfos, list):
+                lfos = []
+
+            next_lfos: List[Dict[str, Any]] = []
+            for lfo in lfos:
+                if not isinstance(lfo, dict):
+                    continue
+                lfo_copy = dict(lfo)
+                current_lfo_id = str(lfo_copy.get("lfoId") or lfo_copy.get("lfo_id") or "").strip()
+                if current_lfo_id == normalized_lfo_id:
+                    lfo_copy["enabled"] = next_enabled
+                    changed_count += 1
+                next_lfos.append(lfo_copy)
+
+            if changed_count <= 0:
+                raise ValueError(f"LFO not found in action: {normalized_action_id}.{normalized_lfo_id}")
+
+            updated_action = dict(action)
+            updated_action["lfos"] = next_lfos
+            next_actions_by_id = dict(actions_by_id)
+            next_actions_by_id[normalized_action_id] = updated_action
+            self.show["actionsById"] = next_actions_by_id
+
+            running = self.running_actions.get(normalized_action_id)
+            if isinstance(running, dict):
+                running_action = running.get("action")
+                if isinstance(running_action, dict):
+                    running_lfos = running_action.get("lfos")
+                    if not isinstance(running_lfos, list):
+                        running_lfos = []
+                    next_running_lfos: List[Dict[str, Any]] = []
+                    for lfo in running_lfos:
+                        if not isinstance(lfo, dict):
+                            continue
+                        lfo_copy = dict(lfo)
+                        current_lfo_id = str(lfo_copy.get("lfoId") or lfo_copy.get("lfo_id") or "").strip()
+                        if current_lfo_id == normalized_lfo_id:
+                            lfo_copy["enabled"] = next_enabled
+                        next_running_lfos.append(lfo_copy)
+                    running_action["lfos"] = next_running_lfos
+                    running["action"] = running_action
+                    self.running_actions[normalized_action_id] = running
+
+        payload = {
+            "actionId": normalized_action_id,
+            "lfoId": normalized_lfo_id,
+            "enabled": next_enabled,
+            "changedMappings": changed_count,
+            "source": source,
+        }
+        self.emit_event("action_lfo", payload)
+        return payload
 
     def delete_object_group(self, group_id: str, source: str = "api") -> Dict[str, Any]:
         normalized_group_id = normalize_object_id(group_id)
@@ -1877,6 +2131,44 @@ class Runtime:
                 self.set_lfos_enabled(enabled, source=f"{source}:group:{normalized_group_id}")
                 results.append({"index": index, "entryType": entry_type, "status": "ok"})
                 continue
+            if entry_type == "actionLfoEnabled":
+                action_id = str(entry.get("actionId") or "").strip()
+                lfo_id = str(entry.get("lfoId") or "").strip()
+                enabled = bool(entry.get("enabled", True))
+                if not action_id or not lfo_id:
+                    results.append({"index": index, "entryType": entry_type, "status": "skipped", "error": "invalid_entry"})
+                    continue
+                try:
+                    result = self.set_action_lfo_enabled(
+                        action_id,
+                        lfo_id,
+                        enabled,
+                        source=f"{source}:group:{normalized_group_id}",
+                    )
+                    results.append(
+                        {
+                            "index": index,
+                            "entryType": entry_type,
+                            "actionId": action_id,
+                            "lfoId": lfo_id,
+                            "enabled": enabled,
+                            "status": "ok",
+                            "changedMappings": int(to_float(result.get("changedMappings"), 0.0)),
+                        }
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    results.append(
+                        {
+                            "index": index,
+                            "entryType": entry_type,
+                            "actionId": action_id,
+                            "lfoId": lfo_id,
+                            "enabled": enabled,
+                            "status": "error",
+                            "error": str(exc),
+                        }
+                    )
+                continue
 
             command = str(entry.get("command") or "start").strip().lower()
             action_id = str(entry.get("actionId") or "").strip()
@@ -1973,6 +2265,8 @@ class Runtime:
             lfo_parameter = str(lfo.get("parameter") or "").strip()
             if lfo_object_id != object_id or lfo_parameter != parameter:
                 continue
+            if lfo.get("enabled") is False:
+                continue
 
             wave = str(lfo.get("wave") or "sine").strip().lower()
             if wave not in LFO_WAVES:
@@ -2047,6 +2341,8 @@ class Runtime:
         if lfos_enabled:
             lfo_accumulators: Dict[str, Dict[str, Any]] = {}
             for index, lfo in enumerate(action.get("lfos", [])):
+                if lfo.get("enabled") is False:
+                    continue
                 object_id = str(lfo.get("objectId") or lfo.get("object_id") or "").strip()
                 parameter = str(lfo.get("parameter") or "").strip()
                 if not object_id or parameter not in LFO_PARAMS:
@@ -2201,6 +2497,8 @@ class Runtime:
             action_snapshot = json.loads(json.dumps(action))
             lfo_states: Dict[str, Dict[str, float]] = {}
             for lfo in action_snapshot.get("lfos", []):
+                if lfo.get("enabled") is False:
+                    continue
                 object_id = str(lfo.get("objectId") or "").strip()
                 parameter = str(lfo.get("parameter") or "").strip()
                 if not object_id or parameter not in LFO_PARAMS:

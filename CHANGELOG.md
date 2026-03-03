@@ -1,5 +1,24 @@
 # Changelog
 
+## 2026-03-03 22:35 CET
+- Added per-action LFO identity and enable state in runtime/action serialization (`lfoId` / `lfo_id`, `enabled`) with backward-compatible auto-ID generation for existing actions.
+- Added Action Group entry support for per-action-LFO toggling (`actionLfoEnabled` / `action_lfo_enabled`) so groups can enable/disable a specific LFO ID.
+- Added runtime method `set_action_lfo_enabled(...)` and wired it into Action Group trigger execution; updates are applied to both stored action data and currently running action snapshots.
+- Updated modulation engine to ignore disabled LFO mappings (including live action runtime and helper modulation queries).
+- Expanded Action Manager Action Group editor UI:
+  - new entry types `Enable Action LFO` / `Disable Action LFO`
+  - action-scoped LFO selector when authoring those entries
+- Expanded Modulation Manager LFO list UI with LFO ID and enabled state display, plus enabled editing in the LFO form.
+- Updated panner LFO context-menu grouping/linking logic to use LFO IDs when present, preserving shared-ID mapping workflows.
+- Added SSE handling for `action_group` and new `action_lfo` events for immediate UI refresh.
+- Added showfile persistence for object-group runtime state:
+  - `groups_enabled` and `object_groups` now load/save with shows
+  - group edits now follow the same working-state model and persist on explicit `Save Show`
+- Extended schemas/templates:
+  - `showfile.schema.json`: `object_groups`, `groups_enabled`, and `action_lfo_enabled` entries
+  - `action.schema.json`: optional `lfo_id` and `enabled` in `lfos`
+  - template show/actions updated with the new fields.
+
 ## 2026-03-03 22:10 CET
 - Added Action Group support in runtime show model and status payload (`show.actionGroupIds`, `show.actionGroupsById`) with full create/update/delete/trigger lifecycle.
 - Added Action Group HTTP API endpoints:

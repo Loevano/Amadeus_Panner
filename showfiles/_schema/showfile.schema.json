@@ -76,8 +76,9 @@
               "type": "object",
               "required": ["entry_type"],
               "properties": {
-                "entry_type": { "type": "string", "enum": ["action", "action_start", "action_stop", "action_abort", "lfos_enabled"] },
+                "entry_type": { "type": "string", "enum": ["action", "action_start", "action_stop", "action_abort", "lfos_enabled", "action_lfo_enabled"] },
                 "action_id": { "type": "string" },
+                "lfo_id": { "type": "string" },
                 "command": { "type": "string", "enum": ["start", "stop", "abort"] },
                 "enabled": { "type": "boolean" }
               },
@@ -91,6 +92,34 @@
               "trigger": { "type": "string" }
             },
             "additionalProperties": false
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "groups_enabled": {
+      "type": "boolean"
+    },
+    "object_groups": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["group_id", "name", "object_ids", "link_params", "enabled", "color"],
+        "properties": {
+          "group_id": { "type": "string" },
+          "name": { "type": "string" },
+          "object_ids": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "link_params": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "enabled": { "type": "boolean" },
+          "color": {
+            "type": "string",
+            "pattern": "^#[0-9a-fA-F]{6}$"
           }
         },
         "additionalProperties": false

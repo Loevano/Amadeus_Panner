@@ -332,11 +332,14 @@
               <option value="action-start">Start Action</option>
               <option value="action-stop">Stop Action</option>
               <option value="action-abort">Abort Action</option>
+              <option value="action-lfo-enable">Enable Action LFO</option>
+              <option value="action-lfo-disable">Disable Action LFO</option>
               <option value="lfos-enable">Enable LFOs</option>
               <option value="lfos-disable">Disable LFOs</option>
             </select>
             <label for="actionGroupEntryActionSelect">Action</label><select id="actionGroupEntryActionSelect"></select>
-            <label for="actionGroupEntryLfosEnabledInput">LFO State</label>
+            <label for="actionGroupEntryLfoSelect">LFO</label><select id="actionGroupEntryLfoSelect"></select>
+            <label for="actionGroupEntryLfosEnabledInput">Global LFO State</label>
             <select id="actionGroupEntryLfosEnabledInput">
               <option value="true">Enable LFOs</option>
               <option value="false">Disable LFOs</option>
@@ -401,6 +404,11 @@
             <label for="actionManagerLfoOffsetInput">Offset</label><input id="actionManagerLfoOffsetInput" type="number" step="0.1" value="0" />
             <label for="actionManagerLfoPhaseInput">Phase (deg)</label><input id="actionManagerLfoPhaseInput" type="number" step="1" value="0" />
             <label for="actionManagerLfoMappingPhaseInput">Map Phase (deg)</label><input id="actionManagerLfoMappingPhaseInput" type="number" step="1" value="0" />
+            <label for="actionManagerLfoEnabledInput">Enabled</label>
+            <select id="actionManagerLfoEnabledInput">
+              <option value="true">On</option>
+              <option value="false">Off</option>
+            </select>
           </div>
           <div class="row">
             <button id="actionManagerLfoAddBtn" type="button">Add LFO</button>
@@ -412,6 +420,7 @@
             <table class="manager-table">
               <thead>
                 <tr>
+                  <th>ID</th>
                   <th>Object</th>
                   <th>Param</th>
                   <th>Wave</th>
@@ -420,6 +429,7 @@
                   <th>Offset</th>
                   <th>Phase</th>
                   <th>Map Phase</th>
+                  <th>Enabled</th>
                   <th>Remove</th>
                 </tr>
               </thead>

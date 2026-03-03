@@ -18,6 +18,8 @@
     }
   ],
   "action_groups": [],
+  "groups_enabled": true,
+  "object_groups": [],
   "metadata": {
     "author": "operator",
     "notes": "Starter template"

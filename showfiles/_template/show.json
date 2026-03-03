@@ -33,6 +33,12 @@
           "command": "start"
         },
         {
+          "entry_type": "action_lfo_enabled",
+          "action_id": "action-fly-in",
+          "lfo_id": "lfo-1",
+          "enabled": true
+        },
+        {
           "entry_type": "lfos_enabled",
           "enabled": true
         }
@@ -42,6 +48,8 @@
       }
     }
   ],
+  "groups_enabled": true,
+  "object_groups": [],
   "metadata": {
     "author": "operator",
     "notes": "Starter template"

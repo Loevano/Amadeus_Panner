@@ -2,6 +2,36 @@
 
 Release-facing summary for operators and production notes.
 
+## v0.1.8 - 2026-03-03 - Per-LFO Group Control And Group-State Show Persistence
+
+### Added
+- Per-LFO identity on action LFO mappings (`lfo_id`) and mapping-level enable flag (`enabled`).
+- Action Group entry type to control a specific action LFO by ID:
+  - `action_lfo_enabled` (`action_id`, `lfo_id`, `enabled`)
+- Runtime action-LFO toggle flow (`set_action_lfo_enabled`) used by Action Group triggers and emitted as `action_lfo` events.
+- Action Group editor support in UI for:
+  - `Enable Action LFO`
+  - `Disable Action LFO`
+  - action-local LFO selection while creating entries.
+- Modulation Manager UI updates:
+  - LFO ID column
+  - LFO enabled state column
+  - enabled editor in the LFO form.
+
+### Changed
+- LFO modulation runtime now skips disabled mappings consistently.
+- Panner context LFO menu now groups/targets by LFO ID when available (preserves shared-modulator mapping intent).
+- Showfiles now persist object-group runtime state:
+  - `groups_enabled`
+  - `object_groups`
+- Group editing now follows the same working-state persistence model as actions/objects: immediate runtime effect, persisted on explicit `Save Show`.
+
+### Fixed
+- Prevented stale/no-op Action Group per-LFO triggers by validating entry LFO IDs against the selected action at load/save/update sanitization time.
+
+### Known Issues
+- LFO IDs are action-local; cross-action/global LFO library management is still not implemented.
+
 ## v0.1.7 - 2026-03-03 - Action Groups And Working-State Action Editing
 
 ### Added
