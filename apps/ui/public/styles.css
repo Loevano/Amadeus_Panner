@@ -175,6 +175,20 @@ body {
   min-width: 130px;
 }
 
+.scene-actions-row {
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.scene-actions-row select {
+  flex: 1 1 100%;
+}
+
+.scene-actions-row button {
+  flex: 1 1 calc(33.33% - 8px);
+  min-width: 110px;
+}
+
 input,
 select,
 button {

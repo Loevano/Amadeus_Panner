@@ -38,6 +38,7 @@ OBJECT_LIMITS = {
 }
 
 OBJECT_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+SCENE_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 SHOW_ID_PATTERN = re.compile(r"^[a-z0-9-]+$")
 VERSION_PATTERN = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
 COLOR_PATTERN = re.compile(r"^#[0-9a-fA-F]{6}$")
@@ -72,6 +73,13 @@ def normalize_object_id(value: Any) -> str:
     if not OBJECT_ID_PATTERN.fullmatch(object_id):
         raise ValueError("objectId must use only letters, numbers, dot, underscore, dash (max 64 chars)")
     return object_id
+
+
+def normalize_scene_id(value: Any) -> str:
+    scene_id = str(value or "").strip()
+    if not SCENE_ID_PATTERN.fullmatch(scene_id):
+        raise ValueError("sceneId must use only letters, numbers, dot, underscore, dash (max 64 chars)")
+    return scene_id
 
 
 def normalize_color(value: Any, default: str = DEFAULT_OBJECT_COLOR) -> str:
@@ -467,7 +475,12 @@ class Runtime:
         )
         return {"path": relative_path, "showId": show_id, "name": show_name}
 
-    def save_show(self, show_path: Optional[str] = None, set_as_current: bool = True) -> Dict[str, Any]:
+    def save_show(
+        self,
+        show_path: Optional[str] = None,
+        set_as_current: bool = True,
+        capture_runtime_scene: bool = True,
+    ) -> Dict[str, Any]:
         with self.lock:
             if not self.show:
                 raise ValueError("No show loaded")
@@ -557,21 +570,22 @@ class Runtime:
             else:
                 default_scene_id = "scene-main"
 
-        capture_scene_id = active_scene_id or default_scene_id
-        captured_objects: List[Dict[str, Any]] = []
-        for index, obj in enumerate(objects_snapshot):
-            fallback_id = str((obj or {}).get("objectId") or (obj or {}).get("object_id") or f"obj-{index + 1}")
-            captured_objects.append(normalize_object(obj or {}, fallback_id))
+        if capture_runtime_scene:
+            capture_scene_id = active_scene_id or default_scene_id
+            captured_objects: List[Dict[str, Any]] = []
+            for index, obj in enumerate(objects_snapshot):
+                fallback_id = str((obj or {}).get("objectId") or (obj or {}).get("object_id") or f"obj-{index + 1}")
+                captured_objects.append(normalize_object(obj or {}, fallback_id))
 
-        if capture_scene_id:
-            if capture_scene_id not in normalized_scenes:
-                normalized_scenes[capture_scene_id] = {
-                    "sceneId": capture_scene_id,
-                    "name": capture_scene_id,
-                    "transitionMs": 0,
-                    "objects": [],
-                }
-            normalized_scenes[capture_scene_id]["objects"] = captured_objects
+            if capture_scene_id:
+                if capture_scene_id not in normalized_scenes:
+                    normalized_scenes[capture_scene_id] = {
+                        "sceneId": capture_scene_id,
+                        "name": capture_scene_id,
+                        "transitionMs": 0,
+                        "objects": [],
+                    }
+                normalized_scenes[capture_scene_id]["objects"] = captured_objects
 
         if default_scene_id not in normalized_scenes:
             normalized_scenes[default_scene_id] = {
@@ -1168,6 +1182,90 @@ class Runtime:
             },
         )
 
+    def _snapshot_runtime_objects(self) -> List[Dict[str, Any]]:
+        with self.lock:
+            raw_objects = [dict(obj) for obj in self.objects.values()]
+
+        snapshot: List[Dict[str, Any]] = []
+        for index, obj in enumerate(raw_objects):
+            fallback_id = str(obj.get("objectId") or obj.get("object_id") or f"obj-{index + 1}")
+            snapshot.append(normalize_object(obj, fallback_id))
+        return snapshot
+
+    def save_scene(self, scene_id: str, source: str = "api") -> Dict[str, Any]:
+        normalized_scene_id = normalize_scene_id(scene_id)
+        runtime_objects = self._snapshot_runtime_objects()
+
+        with self.lock:
+            if not self.show:
+                raise ValueError("No show loaded")
+            scene = self.show["scenesById"].get(normalized_scene_id)
+            if not scene:
+                raise ValueError(f"Scene not found: {normalized_scene_id}")
+
+            updated_scene = {
+                "sceneId": normalized_scene_id,
+                "name": str(scene.get("name") or normalized_scene_id),
+                "transitionMs": int(to_float(scene.get("transitionMs"), 0.0)),
+                "objects": runtime_objects,
+            }
+            self.show["scenesById"][normalized_scene_id] = updated_scene
+
+        self.save_show(capture_runtime_scene=False)
+        self.emit_event(
+            "scene",
+            {
+                "source": source,
+                "sceneId": normalized_scene_id,
+                "status": "saved",
+                "objectCount": len(runtime_objects),
+            },
+        )
+        return updated_scene
+
+    def save_scene_as(self, source_scene_id: str, new_scene_id: str, source: str = "api") -> Dict[str, Any]:
+        normalized_source_scene_id = normalize_scene_id(source_scene_id)
+        normalized_new_scene_id = normalize_scene_id(new_scene_id)
+        runtime_objects = self._snapshot_runtime_objects()
+
+        with self.lock:
+            if not self.show:
+                raise ValueError("No show loaded")
+            source_scene = self.show["scenesById"].get(normalized_source_scene_id)
+            if not source_scene:
+                raise ValueError(f"Scene not found: {normalized_source_scene_id}")
+            if normalized_new_scene_id in self.show["scenesById"]:
+                raise ValueError(f"Scene already exists: {normalized_new_scene_id}")
+
+            new_scene = {
+                "sceneId": normalized_new_scene_id,
+                "name": str(source_scene.get("name") or normalized_new_scene_id),
+                "transitionMs": int(to_float(source_scene.get("transitionMs"), 0.0)),
+                "objects": runtime_objects,
+            }
+            self.show["scenesById"][normalized_new_scene_id] = new_scene
+
+            scene_files = self.show.get("sceneFiles")
+            if not isinstance(scene_files, dict):
+                scene_files = {}
+            scene_files[normalized_new_scene_id] = f"scenes/{normalized_new_scene_id}.json"
+            self.show["sceneFiles"] = scene_files
+
+            self.active_scene_id = normalized_new_scene_id
+
+        self.save_show(capture_runtime_scene=False)
+        self.emit_event(
+            "scene",
+            {
+                "source": source,
+                "sceneId": normalized_new_scene_id,
+                "status": "saved_as",
+                "fromSceneId": normalized_source_scene_id,
+                "objectCount": len(runtime_objects),
+            },
+        )
+        return new_scene
+
     def _interpolate_numeric(self, keyframes: List[Dict[str, Any]], elapsed_ms: int) -> Optional[float]:
         if not keyframes:
             return None
@@ -1468,11 +1566,40 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(HTTPStatus.OK, {"ok": True, **result, "status": RUNTIME.status()})
                 return
 
-            if path_name.startswith("/api/scene/") and path_name.endswith("/recall"):
+            if path_name.startswith("/api/scene/"):
                 parts = path_name.split("/")
+                if len(parts) < 5:
+                    self._send_json(HTTPStatus.NOT_FOUND, {"ok": False, "error": "Unknown scene endpoint"})
+                    return
                 scene_id = unquote(parts[3]) if len(parts) > 3 else ""
-                RUNTIME.recall_scene(scene_id, source="api", emit_osc=True)
-                self._send_json(HTTPStatus.OK, {"ok": True, "sceneId": scene_id, "status": RUNTIME.status()})
+                command = parts[4]
+                body = self._read_json_body()
+
+                if command == "recall":
+                    RUNTIME.recall_scene(scene_id, source="api", emit_osc=True)
+                    self._send_json(HTTPStatus.OK, {"ok": True, "sceneId": scene_id, "command": command, "status": RUNTIME.status()})
+                    return
+                if command == "save":
+                    scene = RUNTIME.save_scene(scene_id, source="api")
+                    self._send_json(HTTPStatus.OK, {"ok": True, "scene": scene, "sceneId": scene["sceneId"], "command": command, "status": RUNTIME.status()})
+                    return
+                if command == "save-as":
+                    new_scene_id = body.get("newSceneId") or body.get("new_scene_id")
+                    scene = RUNTIME.save_scene_as(scene_id, str(new_scene_id or ""), source="api")
+                    self._send_json(
+                        HTTPStatus.OK,
+                        {
+                            "ok": True,
+                            "scene": scene,
+                            "sceneId": scene["sceneId"],
+                            "fromSceneId": scene_id,
+                            "command": command,
+                            "status": RUNTIME.status(),
+                        },
+                    )
+                    return
+
+                self._send_json(HTTPStatus.NOT_FOUND, {"ok": False, "error": f"Unknown scene command: {command}"})
                 return
 
             if path_name == "/api/object/add":

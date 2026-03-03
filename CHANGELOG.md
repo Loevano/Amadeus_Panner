@@ -114,3 +114,8 @@
 - Added server endpoint `GET /api/show/list` to enumerate available `show.json` files under `showfiles/`
 - Improved object/group auto-naming to use natural numeric progression (for example `obj-3` now advances to `obj-4` instead of `obj-3-2`)
 - Added shared ID generation logic for stable incremental naming across both objects and groups
+
+## 2026-03-03 19:06 CET
+- Added Scene Manager controls in Show Control: scene dropdown with `Load Scene`, `Save Scene`, and `Save Scene As`
+- Added scene persistence endpoints (`POST /api/scene/:id/save`, `POST /api/scene/:id/save-as`) and runtime scene-save methods
+- Updated show-save internals to support scene persistence without always forcing active-scene capture (`capture_runtime_scene` option)

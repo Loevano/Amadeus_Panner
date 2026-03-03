@@ -23,6 +23,7 @@ const state = {
   selectedObjectId: null,
   selectedObjectIds: [],
   selectedGroupId: null,
+  selectedSceneId: null,
   currentPage: "panner",
   draggingObjectId: null,
   draggingObjectIds: [],
@@ -72,6 +73,10 @@ const els = {
   saveShowAsBtn: document.getElementById("saveShowAsBtn"),
   newShowBtn: document.getElementById("newShowBtn"),
   showInfo: document.getElementById("showInfo"),
+  sceneSelectInput: document.getElementById("sceneSelectInput"),
+  loadSceneBtn: document.getElementById("loadSceneBtn"),
+  saveSceneBtn: document.getElementById("saveSceneBtn"),
+  saveSceneAsBtn: document.getElementById("saveSceneAsBtn"),
   sceneButtons: document.getElementById("sceneButtons"),
   actionButtons: document.getElementById("actionButtons"),
   enableGroupsToggle: document.getElementById("enableGroupsToggle"),
@@ -235,6 +240,26 @@ function uniqueObjectId(baseId) {
   return nextNumericId(baseId, "obj", getObjects().map((obj) => obj.objectId));
 }
 
+function suggestObjectBaseFromType(typeValue) {
+  const normalizedType = normalizeObjectId(typeValue);
+  if (!normalizedType) return "obj";
+  const lower = normalizedType.toLowerCase();
+  if (lower === DEFAULT_OBJECT_TYPE || lower === "object" || lower === "source") {
+    return "obj";
+  }
+  return normalizedType;
+}
+
+function autoObjectId(rawObjectId, objectType) {
+  const normalizedRaw = normalizeObjectId(rawObjectId);
+  const base = normalizedRaw || suggestObjectBaseFromType(objectType);
+  const candidate = uniqueObjectId(base);
+  if (!OBJECT_ID_RE.test(candidate)) {
+    throw new Error("Object ID must use letters/numbers/dot/underscore/dash (max 64 chars)");
+  }
+  return candidate;
+}
+
 function sanitizeObjectId(raw, options = {}) {
   const { allowAuto = false } = options;
   const normalized = normalizeObjectId(raw);
@@ -250,6 +275,70 @@ function uniqueGroupId(baseId) {
   return nextNumericId(baseId, "group", getObjectGroups().map((group) => group.groupId));
 }
 
+function longestCommonPrefix(values) {
+  if (!values.length) return "";
+  let prefix = String(values[0] || "");
+  for (let index = 1; index < values.length && prefix; index += 1) {
+    const value = String(values[index] || "");
+    while (prefix && !value.startsWith(prefix)) {
+      prefix = prefix.slice(0, -1);
+    }
+  }
+  return prefix;
+}
+
+function suggestGroupBaseFromSelection(objectIds) {
+  const ids = (Array.isArray(objectIds) ? objectIds : [])
+    .map((objectId) => normalizeObjectId(objectId))
+    .filter(Boolean);
+  if (!ids.length) return "group";
+  if (ids.length === 1) return `${ids[0]}-group`;
+
+  const prefix = normalizeObjectId(longestCommonPrefix(ids).replace(/[-._]+$/, ""));
+  if (prefix && prefix.length >= 2 && prefix.toLowerCase() !== "obj") {
+    return `${prefix}-group`;
+  }
+
+  const selectedObjects = ids.map((objectId) => getObjectById(objectId)).filter(Boolean);
+  const typeBases = [...new Set(selectedObjects.map((obj) => suggestObjectBaseFromType(obj.type)))].filter(
+    (base) => base && base !== "obj"
+  );
+  if (typeBases.length === 1) {
+    return `${typeBases[0]}-group`;
+  }
+
+  return "group";
+}
+
+function humanizeId(idValue) {
+  const text = String(idValue || "")
+    .replace(/[-._]+/g, " ")
+    .trim();
+  if (!text) return "";
+  return text.replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+function autoGroupId(rawGroupId, selectedObjectIds) {
+  const normalizedRaw = normalizeObjectId(rawGroupId);
+  const base = normalizedRaw || suggestGroupBaseFromSelection(selectedObjectIds);
+  const candidate = uniqueGroupId(base);
+  if (!OBJECT_ID_RE.test(candidate)) {
+    throw new Error("Group ID must use letters/numbers/dot/underscore/dash (max 64 chars)");
+  }
+  if (candidate.toLowerCase() === VIRTUAL_ALL_GROUP_ID) {
+    throw new Error(`Group ID "${VIRTUAL_ALL_GROUP_NAME}" is reserved`);
+  }
+  return candidate;
+}
+
+function getSceneIds() {
+  return Array.isArray(state.status?.show?.sceneIds) ? state.status.show.sceneIds : [];
+}
+
+function uniqueSceneId(baseId) {
+  return nextNumericId(baseId, "scene", getSceneIds());
+}
+
 function sanitizeGroupId(raw, options = {}) {
   const { allowAuto = false } = options;
   const normalized = normalizeObjectId(raw);
@@ -259,6 +348,16 @@ function sanitizeGroupId(raw, options = {}) {
   }
   if (candidate.toLowerCase() === VIRTUAL_ALL_GROUP_ID) {
     throw new Error(`Group ID "${VIRTUAL_ALL_GROUP_NAME}" is reserved`);
+  }
+  return candidate;
+}
+
+function sanitizeSceneId(raw, options = {}) {
+  const { allowAuto = false } = options;
+  const normalized = normalizeObjectId(raw);
+  const candidate = allowAuto ? uniqueSceneId(normalized || "scene") : normalized;
+  if (!OBJECT_ID_RE.test(candidate)) {
+    throw new Error("Scene ID must use letters/numbers/dot/underscore/dash (max 64 chars)");
   }
   return candidate;
 }
@@ -943,6 +1042,11 @@ function renderShowControls() {
   const status = state.status;
   if (!status?.show) {
     els.showInfo.textContent = "No show loaded";
+    els.sceneSelectInput.innerHTML = "";
+    els.sceneSelectInput.disabled = true;
+    els.loadSceneBtn.disabled = true;
+    els.saveSceneBtn.disabled = true;
+    els.saveSceneAsBtn.disabled = true;
     els.sceneButtons.innerHTML = "";
     els.actionButtons.innerHTML = "";
     return;
@@ -952,8 +1056,29 @@ function renderShowControls() {
   setInputValueIfIdle(els.showPathInput, String(status.show.path || ""));
   els.showInfo.textContent = `${status.show.name} (${status.show.version}) - ${status.show.path}`;
 
+  const sceneIds = [...status.show.sceneIds];
+  if (state.selectedSceneId && !sceneIds.includes(state.selectedSceneId)) {
+    state.selectedSceneId = null;
+  }
+  if (!state.selectedSceneId) {
+    state.selectedSceneId = status.activeSceneId || sceneIds[0] || null;
+  }
+
+  els.sceneSelectInput.innerHTML = "";
+  for (const sceneId of sceneIds) {
+    const opt = document.createElement("option");
+    opt.value = sceneId;
+    opt.textContent = sceneId;
+    if (sceneId === state.selectedSceneId) opt.selected = true;
+    els.sceneSelectInput.appendChild(opt);
+  }
+  els.sceneSelectInput.disabled = !sceneIds.length;
+  els.loadSceneBtn.disabled = !sceneIds.length;
+  els.saveSceneBtn.disabled = !sceneIds.length;
+  els.saveSceneAsBtn.disabled = !sceneIds.length;
+
   els.sceneButtons.innerHTML = "";
-  for (const sceneId of status.show.sceneIds) {
+  for (const sceneId of sceneIds) {
     const btn = document.createElement("button");
     btn.type = "button";
     btn.textContent = sceneId;
@@ -964,13 +1089,8 @@ function renderShowControls() {
     }
 
     btn.addEventListener("click", async () => {
-      try {
-        await api(`/api/scene/${encodeURIComponent(sceneId)}/recall`, "POST", {});
-        addLog(`scene recall -> ${sceneId}`);
-        await refreshStatus();
-      } catch (error) {
-        addLog(`scene recall failed: ${error.message}`);
-      }
+      state.selectedSceneId = sceneId;
+      await runSceneLoad(sceneId);
     });
 
     els.sceneButtons.appendChild(btn);
@@ -1005,6 +1125,56 @@ function renderShowControls() {
     row.appendChild(abort);
 
     els.actionButtons.appendChild(row);
+  }
+}
+
+function selectedSceneIdOrThrow() {
+  const sceneId = String(state.selectedSceneId || els.sceneSelectInput.value || "").trim();
+  if (!sceneId) {
+    throw new Error("No scene selected");
+  }
+  return sceneId;
+}
+
+async function runSceneLoad(sceneId = null) {
+  try {
+    const targetSceneId = sceneId || selectedSceneIdOrThrow();
+    await api(`/api/scene/${encodeURIComponent(targetSceneId)}/recall`, "POST", {});
+    state.selectedSceneId = targetSceneId;
+    addLog(`scene load -> ${targetSceneId}`);
+    await refreshStatus();
+  } catch (error) {
+    addLog(`scene load failed: ${error.message}`);
+  }
+}
+
+async function runSceneSave() {
+  try {
+    const sceneId = selectedSceneIdOrThrow();
+    await api(`/api/scene/${encodeURIComponent(sceneId)}/save`, "POST", {});
+    addLog(`scene save -> ${sceneId}`);
+    await refreshStatus();
+  } catch (error) {
+    addLog(`scene save failed: ${error.message}`);
+  }
+}
+
+async function runSceneSaveAs() {
+  try {
+    const sourceSceneId = selectedSceneIdOrThrow();
+    const suggestedSceneId = uniqueSceneId(sourceSceneId);
+    const rawNewSceneId = prompt("New scene ID", suggestedSceneId);
+    if (rawNewSceneId === null) {
+      addLog("scene save-as cancelled");
+      return;
+    }
+    const newSceneId = sanitizeSceneId(rawNewSceneId, { allowAuto: true });
+    await api(`/api/scene/${encodeURIComponent(sourceSceneId)}/save-as`, "POST", { newSceneId });
+    state.selectedSceneId = newSceneId;
+    addLog(`scene save-as -> ${sourceSceneId} as ${newSceneId}`);
+    await refreshStatus();
+  } catch (error) {
+    addLog(`scene save-as failed: ${error.message}`);
   }
 }
 
@@ -1184,7 +1354,7 @@ function renderGroupsManager() {
     applyLinkParamsToInputs(selectedGroup.linkParams || []);
     els.managerGroupSummary.textContent = `Group members: ${selectedGroup.objectIds.length}. Update will replace members with current selection (${selectedObjectIds.length}).`;
   } else {
-    const suggestedId = uniqueGroupId("group");
+    const suggestedId = uniqueGroupId(suggestGroupBaseFromSelection(selectedObjectIds));
     if (!String(els.managerGroupId.value || "").trim()) {
       setInputValueIfIdle(els.managerGroupId, suggestedId);
     }
@@ -1192,7 +1362,8 @@ function renderGroupsManager() {
       applyLinkParamsToInputs(["x", "y", "z"]);
     }
     if (!String(els.managerGroupName.value || "").trim()) {
-      setInputValueIfIdle(els.managerGroupName, String(els.managerGroupId.value || suggestedId));
+      const groupName = humanizeId(String(els.managerGroupId.value || suggestedId));
+      setInputValueIfIdle(els.managerGroupName, groupName || String(els.managerGroupId.value || suggestedId));
     }
     els.managerGroupSummary.textContent = `${groups.length} group${groups.length === 1 ? "" : "s"} total. Create/Update uses current selection (${selectedObjectIds.length}).`;
   }
@@ -1208,6 +1379,10 @@ function renderManager() {
   const allGroup = getVirtualAllGroup();
   const allMembers = new Set(allGroup.objectIds);
   const selectedIds = selectedObjectTargets();
+  if (!String(els.managerAddId.value || "").trim()) {
+    const suggestedAddId = uniqueObjectId(suggestObjectBaseFromType(els.managerAddType.value || DEFAULT_OBJECT_TYPE));
+    setInputValueIfIdle(els.managerAddId, suggestedAddId);
+  }
   els.managerObjectCount.textContent = `${objects.length} object${objects.length === 1 ? "" : "s"}`;
 
   els.managerObjectSelect.innerHTML = "";
@@ -1546,8 +1721,8 @@ function finishSelectionInteraction(event) {
 async function managerAddObject() {
   try {
     const rawObjectId = els.managerAddId.value;
-    const objectId = sanitizeObjectId(rawObjectId, { allowAuto: true });
     const objectType = String(els.managerAddType.value || DEFAULT_OBJECT_TYPE).trim() || DEFAULT_OBJECT_TYPE;
+    const objectId = autoObjectId(rawObjectId, objectType);
     const objectColor = normalizeHexColor(els.managerAddColor.value, DEFAULT_OBJECT_COLOR);
     await api("/api/object/add", "POST", {
       objectId,
@@ -1557,7 +1732,7 @@ async function managerAddObject() {
     if (String(rawObjectId || "").trim() !== objectId) {
       addLog(`object id normalized -> ${objectId}`);
     }
-    els.managerAddId.value = objectId;
+    els.managerAddId.value = uniqueObjectId(suggestObjectBaseFromType(objectType));
     setSingleSelection(objectId);
     addLog(`object add -> ${objectId}`);
     await refreshStatus();
@@ -1658,8 +1833,9 @@ async function managerCreateGroup() {
       throw new Error("Select one or more objects before creating a group");
     }
     const rawGroupId = els.managerGroupId.value;
-    const groupId = sanitizeGroupId(rawGroupId, { allowAuto: true });
-    const name = String(els.managerGroupName.value || groupId).trim() || groupId;
+    const groupId = autoGroupId(rawGroupId, selectedObjectIds);
+    const suggestedName = humanizeId(groupId);
+    const name = String(els.managerGroupName.value || suggestedName || groupId).trim() || groupId;
     const linkParams = selectedLinkParamsFromInputs();
     await api("/api/groups/create", "POST", {
       groupId,
@@ -1669,6 +1845,9 @@ async function managerCreateGroup() {
     });
     if (String(rawGroupId || "").trim() !== groupId) {
       addLog(`group id normalized -> ${groupId}`);
+    }
+    if (!String(els.managerGroupName.value || "").trim() && suggestedName) {
+      els.managerGroupName.value = suggestedName;
     }
     state.selectedGroupId = groupId;
     addLog(`group create -> ${groupId} (${selectedObjectIds.length} members)`);
@@ -1729,6 +1908,7 @@ async function loadShowFromInput() {
   try {
     const showPath = requestedShowPath();
     await api("/api/show/load", "POST", { path: showPath });
+    state.selectedSceneId = null;
     addLog(`show loaded -> ${showPath}`);
     await refreshStatus();
   } catch (error) {
@@ -1764,6 +1944,7 @@ async function createNewShow() {
   const showPath = requestedShowPath();
   try {
     await api("/api/show/new", "POST", { path: showPath, overwrite: false });
+    state.selectedSceneId = null;
     addLog(`show created -> ${showPath}`);
     await refreshStatus();
   } catch (error) {
@@ -1775,6 +1956,7 @@ async function createNewShow() {
       }
       try {
         await api("/api/show/new", "POST", { path: showPath, overwrite: true });
+        state.selectedSceneId = null;
         addLog(`show overwritten -> ${showPath}`);
         await refreshStatus();
       } catch (overwriteError) {
@@ -1811,6 +1993,23 @@ function setupHandlers() {
     void createNewShow();
   });
 
+  els.sceneSelectInput.addEventListener("change", () => {
+    state.selectedSceneId = String(els.sceneSelectInput.value || "").trim() || null;
+    renderShowControls();
+  });
+
+  els.loadSceneBtn.addEventListener("click", () => {
+    void runSceneLoad();
+  });
+
+  els.saveSceneBtn.addEventListener("click", () => {
+    void runSceneSave();
+  });
+
+  els.saveSceneAsBtn.addEventListener("click", () => {
+    void runSceneSaveAs();
+  });
+
   els.enableGroupsToggle.addEventListener("change", () => {
     void setGroupsEnabled(els.enableGroupsToggle.checked);
   });
@@ -1836,6 +2035,12 @@ function setupHandlers() {
 
   els.managerAddBtn.addEventListener("click", () => {
     void managerAddObject();
+  });
+
+  els.managerAddType.addEventListener("input", () => {
+    if (String(els.managerAddId.value || "").trim()) return;
+    const suggestedAddId = uniqueObjectId(suggestObjectBaseFromType(els.managerAddType.value || DEFAULT_OBJECT_TYPE));
+    setInputValueIfIdle(els.managerAddId, suggestedAddId);
   });
 
   els.managerRenameBtn.addEventListener("click", () => {
