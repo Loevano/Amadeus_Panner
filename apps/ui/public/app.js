@@ -24,6 +24,7 @@ const state = {
   draggingPlaneY: 0,
   draggingStartY: 0,
   draggingStartPointerY: 0,
+  draggingOffsetXZ: { x: 0, z: 0 },
   orbiting: false,
   activePointerId: null,
   lastPointer: { x: 0, y: 0 },
@@ -800,6 +801,7 @@ async function finalizePointerInteraction() {
 
   state.draggingObjectId = null;
   state.draggingMode = null;
+  state.draggingOffsetXZ = { x: 0, z: 0 };
   state.orbiting = false;
   state.activePointerId = null;
 }
@@ -1007,12 +1009,25 @@ function setupHandlers() {
       state.draggingPlaneY = Number(hit.obj.y);
       state.draggingStartY = Number(hit.obj.y);
       state.draggingStartPointerY = pt.y;
+      state.draggingOffsetXZ = { x: 0, z: 0 };
+      if (state.draggingMode === "xz") {
+        const camera = getCameraBasis();
+        const ray = screenRay(camera, pt.x, pt.y);
+        const planeHit = intersectRayPlaneY(ray, state.draggingPlaneY);
+        if (planeHit) {
+          state.draggingOffsetXZ = {
+            x: Number(hit.obj.x) - planeHit.x,
+            z: Number(hit.obj.z) - planeHit.z
+          };
+        }
+      }
       state.orbiting = false;
       state.selectedObjectId = hit.obj.objectId;
       renderAll();
     } else {
       state.draggingObjectId = null;
       state.draggingMode = null;
+      state.draggingOffsetXZ = { x: 0, z: 0 };
       state.orbiting = true;
     }
 
@@ -1035,9 +1050,25 @@ function setupHandlers() {
       const wantedMode = event.shiftKey ? "y" : "xz";
       if (state.draggingMode !== wantedMode) {
         state.draggingMode = wantedMode;
-        state.draggingStartY = Number(obj.y);
-        state.draggingStartPointerY = pt.y;
-        state.draggingPlaneY = Number(obj.y);
+        if (wantedMode === "y") {
+          state.draggingStartY = Number(obj.y);
+          state.draggingStartPointerY = pt.y;
+        } else {
+          state.draggingPlaneY = Number(obj.y);
+          const camera = getCameraBasis();
+          const ray = screenRay(camera, pt.x, pt.y);
+          const planeHit = intersectRayPlaneY(ray, state.draggingPlaneY);
+          if (planeHit) {
+            state.draggingOffsetXZ = {
+              x: Number(obj.x) - planeHit.x,
+              z: Number(obj.z) - planeHit.z
+            };
+          } else {
+            state.draggingOffsetXZ = { x: 0, z: 0 };
+          }
+        }
+        state.lastPointer = pt;
+        return;
       }
 
       if (state.draggingMode === "y") {
@@ -1052,8 +1083,8 @@ function setupHandlers() {
         const ray = screenRay(camera, pt.x, pt.y);
         const hit = intersectRayPlaneY(ray, state.draggingPlaneY);
         if (hit) {
-          const nextX = clampValue(hit.x, LIMITS.x);
-          const nextZ = clampValue(hit.z, LIMITS.z);
+          const nextX = clampValue(hit.x + state.draggingOffsetXZ.x, LIMITS.x);
+          const nextZ = clampValue(hit.z + state.draggingOffsetXZ.z, LIMITS.z);
           obj.x = nextX;
           obj.z = nextZ;
           renderInspector();

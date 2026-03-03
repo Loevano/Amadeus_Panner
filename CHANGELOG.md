@@ -45,3 +45,6 @@
 
 ## 2026-03-03 11:51 CET
 - Fixed 3D drag mode switching: Shift height adjustments now re-anchor to current pointer/object and no longer teleport after X/Z movement
+
+## 2026-03-03 11:54 CET
+- Fixed Shift release teleport: mode switch between Y and XZ drag now preserves cursor/object offset and suppresses snap frame
