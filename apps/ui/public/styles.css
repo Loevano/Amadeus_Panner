@@ -301,6 +301,13 @@ button:hover {
   font-size: 0.9rem;
 }
 
+.log-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
 .event-log {
   height: 220px;
   overflow: auto;

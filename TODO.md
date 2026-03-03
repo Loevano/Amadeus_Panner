@@ -29,6 +29,8 @@
 - [x] Add object manager page with add, rename, type, remove, clear, and color controls.
 - [x] Add multi-object selection and simultaneous parameter editing.
 - [x] Add object groups with linkable shared parameters.
+- [ ] Tune drag edge behavior near clamp limits to improve perceived smoothness at room boundaries.
+- [ ] Review and smooth Shift mode transition during object drag under fast pointer movement.
 - [ ] Increase opacity of non-selected objects.
 - [ ] Add action recorder/editor UI (timeline editing).
 - [ ] Add iPad interaction QA (touch hit targets, orientation, kiosk mode).

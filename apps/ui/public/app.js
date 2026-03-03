@@ -44,6 +44,8 @@ const state = {
     currentY: 0,
     baseSelection: []
   },
+  debugEventsEnabled: true,
+  eventSource: null,
   logs: [],
   camera: {
     yawDeg: CAMERA_DEFAULT.yawDeg,
@@ -101,6 +103,8 @@ const els = {
   managerGroupUpdateBtn: document.getElementById("managerGroupUpdateBtn"),
   managerGroupDeleteBtn: document.getElementById("managerGroupDeleteBtn"),
   managerGroupLinkInputs: Array.from(document.querySelectorAll(".manager-group-link")),
+  toggleDebugEventsBtn: document.getElementById("toggleDebugEventsBtn"),
+  debugEventsState: document.getElementById("debugEventsState"),
   eventLog: document.getElementById("eventLog"),
   canvas: document.getElementById("pannerCanvas")
 };
@@ -275,6 +279,11 @@ function addLog(line) {
     .map((entry) => `<div class="log-line">${escapeHtml(entry)}</div>`)
     .join("");
   els.eventLog.scrollTop = els.eventLog.scrollHeight;
+}
+
+function renderDebugControls() {
+  els.toggleDebugEventsBtn.textContent = state.debugEventsEnabled ? "Disable Debug Events" : "Enable Debug Events";
+  els.debugEventsState.textContent = state.debugEventsEnabled ? "Live stream on" : "Live stream off";
 }
 
 function escapeHtml(value) {
@@ -989,6 +998,7 @@ function renderAll() {
   syncSelectedIdsWithObjects();
   renderStatusLine();
   renderShowControls();
+  renderDebugControls();
   renderObjectSelect();
   renderInspector();
   renderManager();
@@ -1456,6 +1466,22 @@ function setupHandlers() {
     void managerDeleteGroup();
   });
 
+  els.toggleDebugEventsBtn.addEventListener("click", () => {
+    if (state.debugEventsEnabled) {
+      if (state.eventSource) {
+        state.eventSource.close();
+        state.eventSource = null;
+      }
+      state.debugEventsEnabled = false;
+      addLog("debug events stream disabled");
+    } else {
+      state.debugEventsEnabled = true;
+      setupEventStream();
+      addLog("debug events stream enabled");
+    }
+    renderDebugControls();
+  });
+
   const cameraInputHandler = () => {
     state.camera.yawDeg = normalizeYaw(Number(els.cameraYaw.value));
     state.camera.pitchDeg = clampValue(Number(els.cameraPitch.value), [8, 80]);
@@ -1646,7 +1672,14 @@ function setupHandlers() {
 }
 
 function setupEventStream() {
+  if (state.eventSource) {
+    state.eventSource.close();
+    state.eventSource = null;
+  }
+  if (!state.debugEventsEnabled) return;
+
   const events = new EventSource("/api/events");
+  state.eventSource = events;
   const types = ["status", "show", "scene", "object", "object_manager", "object_group", "action", "osc_in", "osc_out", "osc_error", "system"];
 
   for (const type of types) {
@@ -1661,6 +1694,7 @@ function setupEventStream() {
   }
 
   events.onerror = () => {
+    if (!state.debugEventsEnabled) return;
     addLog("event stream disconnected, retrying...");
   };
 }

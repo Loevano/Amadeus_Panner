@@ -65,3 +65,7 @@
 
 ## 2026-03-03 12:26 CET
 - Updated multi-object drag behavior to be relative: dragging one selected object now applies movement deltas to all selected objects (including Shift Y-height), preserving their inter-object offsets
+
+## 2026-03-03 12:46 CET
+- Added UI toggle to enable/disable live debug event stream logging in the Debug Events panel
+- Added TODO follow-ups for boundary clamp smoothness tuning and Shift-drag mode-transition smoothing
