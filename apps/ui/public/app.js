@@ -5795,6 +5795,12 @@ function setupHandlers() {
     void managerRenameObject();
   });
 
+  els.managerRenameInput.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    void managerRenameObject();
+  });
+
   els.managerTypeBtn.addEventListener("click", () => {
     void managerSetType();
   });
