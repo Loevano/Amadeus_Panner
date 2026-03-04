@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-03-04 21:45 CET
+- Fixed Modulation Manager `New LFO` dead state:
+  - button now remains clickable even when action selection is stale
+  - action selection auto-recovers to the first available action when possible
+  - if no action exists, `New LFO` auto-creates an action and then adds the new LFO
+  - action ID list now falls back to `actionsById` keys when `show.actionIds` is absent/stale
+
 ## 2026-03-04 11:12 CET
 - Reworked Action Group editor flow:
   - kept group `Create`, `Save`, and `Delete` controls
@@ -335,3 +342,23 @@
 
 ## 2026-03-04 20:48 CET
 - Compacted Action Setup into Basics/Rule/Routing sections and hide non-applicable rule attributes instead of greying them out (with empty-state notes when no targets exist).
+
+## 2026-03-04 21:20 CET
+- Changed LFO phase progression to delta-time clocks that advance only while LFO modulation is active, so disabled LFOs no longer continue ticking in the background.
+- Applied the same freeze behavior to both always-on LFO modulation and running action LFO modulation paths.
+
+## 2026-03-04 21:22 CET
+- Fixed Modulation Manager LFO target editor persistence: changing selected target Object, Parameter, or Map Phase now writes back to the target mapping (instead of only updating UI inputs).
+- Added duplicate-target guard when editing a selected target so one LFO cannot save duplicate mappings for the same `object.parameter`.
+
+## 2026-03-04 21:25 CET
+- Changed panner context-menu `LFOs` structure from action-scoped entries to LFO-scoped entries (`LFO -> parameter`), so you select an LFO first and then link a target parameter.
+- Kept linking behavior by resolving the selected action first when that action contains the chosen LFO, otherwise falling back to the first action containing that LFO.
+
+## 2026-03-04 21:30 CET
+- Updated panner `LFOs` menu labels to show only LFO names for target assignment.
+- When adding a new LFO target from panner context menu, apply defaults: mapping phase `0°`, phase flip `off`, target enabled `on`, LFO enabled `on`, depth `100`, offset `0`.
+
+## 2026-03-04 21:32 CET
+- Fixed race-condition object resurrection: action/LFO runtime updates now skip writes for objects deleted mid-frame, and action-sourced updates no longer recreate missing objects.
+- This prevents deleted objects (such as `obj`) from being brought back and re-modulated by in-flight LFO/action ticks.
