@@ -9,6 +9,18 @@ const ACTION_ID_RE = OBJECT_ID_RE;
 const DEFAULT_OBJECT_TYPE = "point";
 const DEFAULT_OBJECT_COLOR = "#1c4f89";
 const DEFAULT_GROUP_COLOR = "#2f7f7a";
+const GROUP_COLOR_PALETTE = [
+  "#2f7f7a",
+  "#1c4f89",
+  "#8a5a14",
+  "#9b3e7f",
+  "#3f7f2f",
+  "#9a2f2f",
+  "#5d4db8",
+  "#5e4a3b",
+  "#1f7f99",
+  "#8f7a1a"
+];
 const RELATIVE_GROUP_PARAMS = new Set(["x", "y", "z"]);
 const VIRTUAL_ALL_GROUP_ID = "all";
 const VIRTUAL_ALL_GROUP_NAME = "All";
@@ -456,18 +468,81 @@ function humanizeId(idValue) {
   return text.replace(/\b\w/g, (char) => char.toUpperCase());
 }
 
+function hslToHex(h, s, l) {
+  const hue = ((Number(h) % 360) + 360) % 360;
+  const sat = clampValue(parseFiniteNumber(s, 0), [0, 100]) / 100;
+  const light = clampValue(parseFiniteNumber(l, 0), [0, 100]) / 100;
+  const chroma = (1 - Math.abs((2 * light) - 1)) * sat;
+  const segment = hue / 60;
+  const x = chroma * (1 - Math.abs((segment % 2) - 1));
+  let r1 = 0;
+  let g1 = 0;
+  let b1 = 0;
+  if (segment >= 0 && segment < 1) {
+    r1 = chroma;
+    g1 = x;
+  } else if (segment < 2) {
+    r1 = x;
+    g1 = chroma;
+  } else if (segment < 3) {
+    g1 = chroma;
+    b1 = x;
+  } else if (segment < 4) {
+    g1 = x;
+    b1 = chroma;
+  } else if (segment < 5) {
+    r1 = x;
+    b1 = chroma;
+  } else {
+    r1 = chroma;
+    b1 = x;
+  }
+  const match = light - (chroma / 2);
+  const toHex = (channel) => Math.round((channel + match) * 255).toString(16).padStart(2, "0");
+  return `#${toHex(r1)}${toHex(g1)}${toHex(b1)}`;
+}
+
+function suggestDistinctGroupColor(preferredColors = []) {
+  const usedColors = new Set(
+    getObjectGroups()
+      .map((group) => normalizeHexColor(group?.color, DEFAULT_GROUP_COLOR))
+  );
+  const candidateColors = [
+    ...preferredColors.map((color) => normalizeHexColor(color, DEFAULT_GROUP_COLOR)),
+    ...GROUP_COLOR_PALETTE.map((color) => normalizeHexColor(color, DEFAULT_GROUP_COLOR)),
+    normalizeHexColor(DEFAULT_GROUP_COLOR, DEFAULT_GROUP_COLOR)
+  ];
+  for (const candidateColor of candidateColors) {
+    if (!usedColors.has(candidateColor)) {
+      return candidateColor;
+    }
+  }
+
+  for (let index = 0; index < 360; index += 1) {
+    const hue = (index * 137.508) % 360;
+    const generatedColor = hslToHex(hue, 58, 42);
+    if (!usedColors.has(generatedColor)) {
+      return generatedColor;
+    }
+  }
+
+  return normalizeHexColor(DEFAULT_GROUP_COLOR, DEFAULT_GROUP_COLOR);
+}
+
 function suggestGroupColorFromSelection(objectIds) {
   const selectedObjects = (Array.isArray(objectIds) ? objectIds : [])
     .map((objectId) => getObjectById(objectId))
     .filter(Boolean);
-  if (!selectedObjects.length) return DEFAULT_GROUP_COLOR;
+  if (!selectedObjects.length) {
+    return suggestDistinctGroupColor([DEFAULT_GROUP_COLOR]);
+  }
   const uniqueColors = [
     ...new Set(selectedObjects.map((obj) => normalizeHexColor(obj.color, DEFAULT_OBJECT_COLOR)))
   ];
   if (uniqueColors.length === 1) {
-    return uniqueColors[0];
+    return suggestDistinctGroupColor([uniqueColors[0]]);
   }
-  return DEFAULT_GROUP_COLOR;
+  return suggestDistinctGroupColor([DEFAULT_GROUP_COLOR]);
 }
 
 function autoGroupId(rawGroupId, selectedObjectIds) {
@@ -4490,9 +4565,9 @@ function renderGroupsManager() {
       setInputValueIfIdle(els.managerGroupId, suggestedId);
     }
     if (!selectedLinkParamsFromInputs().length) {
-      applyLinkParamsToInputs(["x", "y", "z"]);
+      applyLinkParamsToInputs(["x", "y", "z", "color"]);
     }
-    setInputValueIfIdle(els.managerGroupColor, normalizeHexColor(els.managerGroupColor.value, suggestedColor));
+    setInputValueIfIdle(els.managerGroupColor, suggestedColor);
     if (!String(els.managerGroupName.value || "").trim()) {
       const groupName = humanizeId(String(els.managerGroupId.value || suggestedId));
       setInputValueIfIdle(els.managerGroupName, groupName || String(els.managerGroupId.value || suggestedId));
@@ -4611,8 +4686,8 @@ function renderGroupManagerEditor(selectedGroup, objects) {
     clearGroupManagerDraft();
     els.groupManagerEditSelect.innerHTML = '<option value="">No groups</option>';
     setInputValueIfIdle(els.groupManagerEditName, "");
-    setInputValueIfIdle(els.groupManagerEditColor, DEFAULT_GROUP_COLOR);
-    applyGroupManagerLinkParams([]);
+    setInputValueIfIdle(els.groupManagerEditColor, suggestGroupColorFromSelection(selectedObjectTargets()));
+    applyGroupManagerLinkParams(["x", "y", "z", "color"]);
     els.groupManagerEditMembers.innerHTML = '<p class="muted">No members available.</p>';
     renderGroupManagerDraftSummary();
     return;
@@ -5338,10 +5413,12 @@ async function managerCreateGroup() {
     const groupId = autoGroupId(groupIdSeed, selectedObjectIds);
     const suggestedName = humanizeId(groupId);
     const name = inputName || suggestedName || groupId;
-    const groupColor = normalizeHexColor(
-      els.managerGroupColor.value,
-      suggestGroupColorFromSelection(selectedObjectIds)
-    );
+    const suggestedGroupColor = suggestGroupColorFromSelection(selectedObjectIds);
+    const selectedGroupColor = normalizeHexColor(selectedGroup?.color, DEFAULT_GROUP_COLOR);
+    const inputGroupColor = normalizeHexColor(els.managerGroupColor.value, suggestedGroupColor);
+    const groupColor = selectedGroup && inputGroupColor === selectedGroupColor
+      ? suggestDistinctGroupColor([suggestedGroupColor, inputGroupColor])
+      : inputGroupColor;
     const linkParams = selectedLinkParamsFromInputs();
     await api("/api/groups/create", "POST", {
       groupId,
@@ -5446,11 +5523,13 @@ async function groupManagerCreate() {
     const groupId = sanitizeGroupId(baseId, { allowAuto: true });
 
     const name = inputName || humanizeId(groupId) || groupId;
-    const color = normalizeHexColor(
-      els.groupManagerEditColor.value,
-      suggestGroupColorFromSelection(objectIds)
-    );
-    const linkParams = selectedGroup ? selectedGroupManagerLinkParams() : ["x", "y", "z"];
+    const suggestedGroupColor = suggestGroupColorFromSelection(objectIds);
+    const selectedGroupColor = normalizeHexColor(selectedGroup?.color, DEFAULT_GROUP_COLOR);
+    const inputGroupColor = normalizeHexColor(els.groupManagerEditColor.value, suggestedGroupColor);
+    const color = selectedGroup && inputGroupColor === selectedGroupColor
+      ? suggestDistinctGroupColor([suggestedGroupColor, inputGroupColor])
+      : inputGroupColor;
+    const linkParams = selectedGroup ? selectedGroupManagerLinkParams() : ["x", "y", "z", "color"];
 
     await api("/api/groups/create", "POST", {
       groupId,
