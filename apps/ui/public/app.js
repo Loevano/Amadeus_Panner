@@ -90,6 +90,11 @@ const state = {
   draggingOffsetXZ: { x: 0, z: 0 },
   draggingRelativeXZ: {},
   draggingRelativeY: {},
+  dragGestureId: 0,
+  dragPatchInFlightByObjectId: {},
+  dragQueuedPatchByObjectId: {},
+  dragQueuedOptionsByObjectId: {},
+  dragLastTargetPatchByObjectId: {},
   dragSingleObjectOnly: false,
   lastDragSendMs: 0,
   orbiting: false,
@@ -5906,7 +5911,7 @@ async function refreshStatus() {
 }
 
 async function pushObjectPatch(objectId, patch, options = {}) {
-  const { propagateGroupLinks = true, lfoCenterMode = false } = options;
+  const { propagateGroupLinks = true, lfoCenterMode = false, lfoCenterGestureId = "" } = options;
   const normalizedObjectId = String(objectId || "").trim();
   if (!normalizedObjectId) return;
   const previousSeq = Number(state.objectUpdateSeqByObjectId[normalizedObjectId] || 0);
@@ -5918,7 +5923,9 @@ async function pushObjectPatch(objectId, patch, options = {}) {
       propagateGroupLinks: Boolean(propagateGroupLinks),
       clientUpdateSessionId: state.objectUpdateSessionId,
       clientUpdateSeq,
-      lfoCenterMode: Boolean(lfoCenterMode)
+      lfoCenterMode: Boolean(lfoCenterMode),
+      lfoCenterGestureId: String(lfoCenterGestureId || "").trim(),
+      includeStatus: false
     });
   } catch (error) {
     addLog(`object update failed (${normalizedObjectId}): ${error.message}`);
@@ -5970,6 +5977,14 @@ function beginObjectDrag(objectId, point, useHeightMode, options = {}) {
   const { singleObjectOnly = false } = options;
   if (!getObjectById(objectId)) return;
   state.dragSingleObjectOnly = Boolean(singleObjectOnly);
+  state.dragGestureId = (Number(state.dragGestureId || 0) + 1) % 1000000000;
+  if (state.dragGestureId <= 0) {
+    state.dragGestureId = 1;
+  }
+  state.dragPatchInFlightByObjectId = {};
+  state.dragQueuedPatchByObjectId = {};
+  state.dragQueuedOptionsByObjectId = {};
+  state.dragLastTargetPatchByObjectId = {};
   const selectedIds = selectedObjectTargets();
   if (state.dragSingleObjectOnly) {
     state.draggingObjectIds = [objectId];
@@ -6021,34 +6036,104 @@ function configureDragMode(mode, point) {
   }
 }
 
+function mergeDragPatchOptions(currentOptions, nextOptions) {
+  const current = currentOptions && typeof currentOptions === "object" ? currentOptions : {};
+  const next = nextOptions && typeof nextOptions === "object" ? nextOptions : {};
+  return {
+    // If any write disables group-link propagation, keep it disabled.
+    propagateGroupLinks: Boolean(current.propagateGroupLinks !== false) && Boolean(next.propagateGroupLinks !== false),
+    // If any write is center-mode, keep it enabled.
+    lfoCenterMode: Boolean(current.lfoCenterMode) || Boolean(next.lfoCenterMode),
+    lfoCenterGestureId: String(next.lfoCenterGestureId || current.lfoCenterGestureId || "").trim()
+  };
+}
+
+function flushQueuedDragPatch(objectId) {
+  const normalizedObjectId = String(objectId || "").trim();
+  if (!normalizedObjectId) return;
+  if (state.dragPatchInFlightByObjectId[normalizedObjectId]) return;
+  const queuedPatch = state.dragQueuedPatchByObjectId[normalizedObjectId];
+  if (!queuedPatch || typeof queuedPatch !== "object") return;
+  const queuedOptions = state.dragQueuedOptionsByObjectId[normalizedObjectId];
+  delete state.dragQueuedPatchByObjectId[normalizedObjectId];
+  delete state.dragQueuedOptionsByObjectId[normalizedObjectId];
+  state.dragPatchInFlightByObjectId[normalizedObjectId] = true;
+  void pushObjectPatch(normalizedObjectId, queuedPatch, queuedOptions).finally(() => {
+    state.dragPatchInFlightByObjectId[normalizedObjectId] = false;
+    flushQueuedDragPatch(normalizedObjectId);
+  });
+}
+
+function queueDragPatch(objectId, patch, options = {}) {
+  const normalizedObjectId = String(objectId || "").trim();
+  if (!normalizedObjectId || !patch || typeof patch !== "object") return;
+  const existingPatch = state.dragQueuedPatchByObjectId[normalizedObjectId];
+  state.dragQueuedPatchByObjectId[normalizedObjectId] = {
+    ...(existingPatch && typeof existingPatch === "object" ? existingPatch : {}),
+    ...patch
+  };
+  const existingOptions = state.dragQueuedOptionsByObjectId[normalizedObjectId];
+  state.dragQueuedOptionsByObjectId[normalizedObjectId] = mergeDragPatchOptions(existingOptions, options);
+  flushQueuedDragPatch(normalizedObjectId);
+}
+
+function waitForDragPatchIdle(objectId, timeoutMs = 1200) {
+  const normalizedObjectId = String(objectId || "").trim();
+  if (!normalizedObjectId) return Promise.resolve();
+  const startMs = Date.now();
+  return new Promise((resolve) => {
+    const poll = () => {
+      const hasQueued = Boolean(state.dragQueuedPatchByObjectId[normalizedObjectId]);
+      const inFlight = Boolean(state.dragPatchInFlightByObjectId[normalizedObjectId]);
+      if (!hasQueued && !inFlight) {
+        resolve();
+        return;
+      }
+      if ((Date.now() - startMs) >= timeoutMs) {
+        resolve();
+        return;
+      }
+      setTimeout(poll, 12);
+    };
+    poll();
+  });
+}
+
 function maybeSendDragBatch(patchByObjectId, options = {}) {
-  const { propagateGroupLinks = true, lfoCenterMode = false } = options;
+  const { propagateGroupLinks = true, lfoCenterMode = false, lfoCenterGestureId = "" } = options;
   const now = Date.now();
   if (now - state.lastDragSendMs >= DRAG_PATCH_SEND_INTERVAL_MS) {
     state.lastDragSendMs = now;
     for (const [objectId, patch] of Object.entries(patchByObjectId)) {
-      void pushObjectPatch(objectId, patch, { propagateGroupLinks, lfoCenterMode });
+      queueDragPatch(objectId, patch, { propagateGroupLinks, lfoCenterMode, lfoCenterGestureId });
     }
   }
 }
 
 async function finalizeObjectDrag() {
   if (!state.draggingObjectIds.length) return;
-  await Promise.all(
-    state.draggingObjectIds.map((objectId) => {
-      const obj = getObjectById(objectId);
-      if (!obj) return Promise.resolve();
-      return pushObjectPatch(
-        objectId,
-        {
-          x: Number(obj.x),
-          y: Number(obj.y),
-          z: Number(obj.z)
-        },
-        { propagateGroupLinks: false, lfoCenterMode: true }
-      );
-    })
-  );
+  const targetIds = [...state.draggingObjectIds];
+  for (const objectId of targetIds) {
+    const obj = getObjectById(objectId);
+    if (!obj) continue;
+    const lastTargetPatch = state.dragLastTargetPatchByObjectId && typeof state.dragLastTargetPatchByObjectId === "object"
+      ? (state.dragLastTargetPatchByObjectId[objectId] || {})
+      : {};
+    queueDragPatch(
+      objectId,
+      {
+        x: Number(Object.prototype.hasOwnProperty.call(lastTargetPatch, "x") ? lastTargetPatch.x : obj.x),
+        y: Number(Object.prototype.hasOwnProperty.call(lastTargetPatch, "y") ? lastTargetPatch.y : obj.y),
+        z: Number(Object.prototype.hasOwnProperty.call(lastTargetPatch, "z") ? lastTargetPatch.z : obj.z)
+      },
+      {
+        propagateGroupLinks: false,
+        lfoCenterMode: true,
+        lfoCenterGestureId: String(state.dragGestureId || "")
+      }
+    );
+  }
+  await Promise.all(targetIds.map((objectId) => waitForDragPatchIdle(objectId)));
   await refreshStatus();
 }
 
@@ -6076,6 +6161,10 @@ function resetPointerInteraction() {
   state.draggingOffsetXZ = { x: 0, z: 0 };
   state.draggingRelativeXZ = {};
   state.draggingRelativeY = {};
+  state.dragPatchInFlightByObjectId = {};
+  state.dragQueuedPatchByObjectId = {};
+  state.dragQueuedOptionsByObjectId = {};
+  state.dragLastTargetPatchByObjectId = {};
   state.dragSingleObjectOnly = false;
   state.orbiting = false;
   state.activePointerId = null;
@@ -7177,23 +7266,25 @@ function setupHandlers() {
       if (state.draggingMode === "y") {
         const nextAnchorY = clampValue(state.draggingStartY - (pt.y - state.draggingStartPointerY) * 0.6, LIMITS.y);
         const patchByObjectId = {};
-        const previousByObjectId = {};
         for (const objectId of state.draggingObjectIds) {
           const obj = getObjectById(objectId);
           if (!obj) continue;
-          previousByObjectId[objectId] = { y: Number(obj.y) };
           const relY = Number(state.draggingRelativeY[objectId] || 0);
           const nextY = clampValue(nextAnchorY + relY, LIMITS.y);
-          obj.y = nextY;
           patchByObjectId[objectId] = { y: nextY };
         }
-        if (!state.dragSingleObjectOnly) {
-          livePropagateGroupLinks(previousByObjectId, patchByObjectId);
+        for (const [objectId, patch] of Object.entries(patchByObjectId)) {
+          const existing = state.dragLastTargetPatchByObjectId[objectId];
+          state.dragLastTargetPatchByObjectId[objectId] = {
+            ...(existing && typeof existing === "object" ? existing : {}),
+            ...patch
+          };
         }
-        renderInspector();
-        renderManager();
-        renderPanner();
-        maybeSendDragBatch(patchByObjectId, { propagateGroupLinks: false, lfoCenterMode: true });
+        maybeSendDragBatch(patchByObjectId, {
+          propagateGroupLinks: false,
+          lfoCenterMode: true,
+          lfoCenterGestureId: String(state.dragGestureId || "")
+        });
       } else {
         const camera = getCameraBasis();
         const ray = screenRay(camera, pt.x, pt.y);
@@ -7202,25 +7293,26 @@ function setupHandlers() {
           const nextAnchorX = clampValue(hitPoint.x + state.draggingOffsetXZ.x, LIMITS.x);
           const nextAnchorZ = clampValue(hitPoint.z + state.draggingOffsetXZ.z, LIMITS.z);
           const patchByObjectId = {};
-          const previousByObjectId = {};
           for (const objectId of state.draggingObjectIds) {
             const obj = getObjectById(objectId);
             if (!obj) continue;
-            previousByObjectId[objectId] = { x: Number(obj.x), z: Number(obj.z) };
             const relXZ = state.draggingRelativeXZ[objectId] || { x: 0, z: 0 };
             const nextX = clampValue(nextAnchorX + Number(relXZ.x || 0), LIMITS.x);
             const nextZ = clampValue(nextAnchorZ + Number(relXZ.z || 0), LIMITS.z);
-            obj.x = nextX;
-            obj.z = nextZ;
             patchByObjectId[objectId] = { x: nextX, z: nextZ };
           }
-          if (!state.dragSingleObjectOnly) {
-            livePropagateGroupLinks(previousByObjectId, patchByObjectId);
+          for (const [objectId, patch] of Object.entries(patchByObjectId)) {
+            const existing = state.dragLastTargetPatchByObjectId[objectId];
+            state.dragLastTargetPatchByObjectId[objectId] = {
+              ...(existing && typeof existing === "object" ? existing : {}),
+              ...patch
+            };
           }
-          renderInspector();
-          renderManager();
-          renderPanner();
-          maybeSendDragBatch(patchByObjectId, { propagateGroupLinks: false, lfoCenterMode: true });
+          maybeSendDragBatch(patchByObjectId, {
+            propagateGroupLinks: false,
+            lfoCenterMode: true,
+            lfoCenterGestureId: String(state.dragGestureId || "")
+          });
         }
       }
     } else if (state.orbiting) {

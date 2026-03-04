@@ -859,6 +859,9 @@ class Runtime:
         self.event_queues: List[queue.Queue] = []
         self.last_lfo_debug_emit_ms: Dict[str, int] = {}
         self.always_lfo_target_states: Dict[str, Dict[str, float]] = {}
+        self.always_lfo_phase_ms_by_id: Dict[str, float] = {}
+        self.last_client_update_seq_by_object: Dict[Tuple[str, str], int] = {}
+        self.last_client_center_target_by_key: Dict[Tuple[str, str, str, str], float] = {}
 
         self.osc_out_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.osc_in_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -1521,6 +1524,7 @@ class Runtime:
             self.objects = {}
             self.active_scene_id = None
             self.always_lfo_target_states = {}
+            self.always_lfo_phase_ms_by_id = {}
             self.show = {
                 "path": self._relative_project_path(absolute_show_path),
                 "showId": str(raw_show.get("show_id", "show")),
@@ -2311,15 +2315,40 @@ class Runtime:
         source: str = "api",
         emit_osc: bool = True,
         propagate_group_links: bool = True,
+        client_update_session_id: Optional[str] = None,
+        client_update_seq: Optional[int] = None,
+        lfo_center_mode: bool = False,
+        lfo_center_gesture_id: Optional[str] = None,
     ) -> Dict[str, Any]:
+        source_name = str(source or "")
+        client_session = str(client_update_session_id or "").strip()
+        center_gesture_id = str(lfo_center_gesture_id or "").strip()
+        parsed_client_seq: Optional[int] = None
+        if client_update_seq is not None:
+            try:
+                candidate_seq = int(client_update_seq)
+                if candidate_seq > 0:
+                    parsed_client_seq = candidate_seq
+            except (TypeError, ValueError):
+                parsed_client_seq = None
         with self.lock:
             current = self.objects.get(object_id, default_object(object_id))
+            if source_name == "api" and client_session and parsed_client_seq is not None:
+                seq_key = (client_session, object_id)
+                previous_seq = int(self.last_client_update_seq_by_object.get(seq_key, 0))
+                if parsed_client_seq <= previous_seq:
+                    return current
+                self.last_client_update_seq_by_object[seq_key] = parsed_client_seq
+
+            if object_id not in self.objects and source_name.startswith("action:"):
+                # Action/LFO runtime must not resurrect objects that were removed while a frame was in flight.
+                return default_object(object_id)
             merged = {**current, **patch, "objectId": object_id, "object_id": object_id}
             next_obj = normalize_object(merged, object_id)
 
             # External writes to an actively modulated target should move the LFO center,
             # not briefly force an unmodulated value that then snaps on the next tick.
-            if not str(source or "").startswith("action:"):
+            if not source_name.startswith("action:"):
                 now_mono = time.monotonic()
                 for parameter in LFO_PARAMS:
                     if parameter not in patch:
@@ -2329,6 +2358,25 @@ class Runtime:
 
                     desired_value = to_float(next_obj.get(parameter), to_float(current.get(parameter), 0.0))
                     affected_any = False
+                    center_drag_delta: Optional[float] = None
+                    if lfo_center_mode and client_session and center_gesture_id:
+                        center_key = (client_session, center_gesture_id, object_id, parameter)
+                        previous_center_target = self.last_client_center_target_by_key.get(center_key)
+                        self.last_client_center_target_by_key[center_key] = desired_value
+                        if previous_center_target is None:
+                            center_drag_delta = 0.0
+                            stale_center_keys = [
+                                key
+                                for key in list(self.last_client_center_target_by_key.keys())
+                                if key[0] == client_session
+                                and key[2] == object_id
+                                and key[3] == parameter
+                                and key[1] != center_gesture_id
+                            ]
+                            for stale_key in stale_center_keys:
+                                self.last_client_center_target_by_key.pop(stale_key, None)
+                        else:
+                            center_drag_delta = desired_value - to_float(previous_center_target, desired_value)
                     for running in self.running_actions.values():
                         action_snapshot = running.get("action")
                         if not isinstance(action_snapshot, dict):
@@ -2341,7 +2389,16 @@ class Runtime:
                             continue
 
                         elapsed_ms = int(max(0.0, (now_mono - started_at_mono) * 1000.0))
-                        total_mod = self._lfo_total_mod_for_target(action_snapshot, object_id, parameter, elapsed_ms)
+                        lfo_phase_ms_by_id = running.get("lfoPhaseMsById")
+                        if not isinstance(lfo_phase_ms_by_id, dict):
+                            lfo_phase_ms_by_id = None
+                        total_mod = self._lfo_total_mod_for_target(
+                            action_snapshot,
+                            object_id,
+                            parameter,
+                            elapsed_ms,
+                            lfo_phase_ms_by_id=lfo_phase_ms_by_id,
+                        )
                         if total_mod is None:
                             continue
                         action_track_value = self._action_track_value_for_target(action_snapshot, object_id, parameter, elapsed_ms)
@@ -2352,18 +2409,67 @@ class Runtime:
                             state = {}
                             lfo_states[lfo_key] = state
 
+                        current_rendered_value = to_float(current.get(parameter), desired_value)
+                        drag_delta = center_drag_delta if center_drag_delta is not None else (desired_value - current_rendered_value)
                         if action_track_value is not None:
-                            manual_offset = desired_value - (action_track_value + total_mod)
-                            state["manualOffset"] = manual_offset
-                            state["center"] = action_track_value + manual_offset
+                            if lfo_center_mode:
+                                existing_center = to_float(
+                                    state.get("center"),
+                                    action_track_value + to_float(state.get("manualOffset"), 0.0),
+                                )
+                                next_center = existing_center + drag_delta
+                                manual_offset = next_center - action_track_value
+                                state["manualOffset"] = manual_offset
+                                state["center"] = next_center
+                            else:
+                                manual_offset = desired_value - (action_track_value + total_mod)
+                                state["manualOffset"] = manual_offset
+                                state["center"] = action_track_value + manual_offset
                         else:
                             state.pop("manualOffset", None)
-                            state["center"] = desired_value - total_mod
-                        state["lastValue"] = desired_value
+                            if lfo_center_mode:
+                                existing_center = to_float(state.get("center"), current_rendered_value - total_mod)
+                                state["center"] = existing_center + drag_delta
+                            else:
+                                state["center"] = desired_value - total_mod
+                        if lfo_center_mode:
+                            state["lastValue"] = current_rendered_value
+                        else:
+                            state["lastValue"] = desired_value
                         affected_any = True
 
+                    target_key = f"{object_id}:{parameter}"
+                    if lfo_center_mode:
+                        target_state = self.always_lfo_target_states.get(target_key)
+                        if isinstance(target_state, dict):
+                            current_rendered_value = to_float(current.get(parameter), desired_value)
+                            drag_delta = center_drag_delta if center_drag_delta is not None else (desired_value - current_rendered_value)
+                            existing_center = to_float(target_state.get("center"), current_rendered_value)
+                            target_state["center"] = existing_center + drag_delta
+                            target_state["lastValue"] = current_rendered_value
+                            self.always_lfo_target_states[target_key] = target_state
+                            affected_any = True
+                    else:
+                        always_total_mod = self._always_lfo_total_mod_for_target(object_id, parameter)
+                        if always_total_mod is not None:
+                            target_state = self.always_lfo_target_states.get(target_key)
+                            if not isinstance(target_state, dict):
+                                target_state = {}
+                            # Regular writes set the rendered value at current LFO phase.
+                            target_state["center"] = desired_value - always_total_mod
+                            target_state["lastValue"] = desired_value
+                            self.always_lfo_target_states[target_key] = target_state
+                            affected_any = True
+
                     if affected_any and parameter in OBJECT_LIMITS:
-                        next_obj[parameter] = clamp(desired_value, OBJECT_LIMITS[parameter])
+                        if lfo_center_mode:
+                            # For drag-style center moves, keep the currently rendered modulated value.
+                            next_obj[parameter] = clamp(
+                                to_float(current.get(parameter), desired_value),
+                                OBJECT_LIMITS[parameter],
+                            )
+                        else:
+                            next_obj[parameter] = clamp(desired_value, OBJECT_LIMITS[parameter])
 
             changed = [
                 k
@@ -2381,6 +2487,9 @@ class Runtime:
 
         if propagate_group_links and changed:
             self._propagate_group_links(object_id, changed, current, next_obj, source, emit_osc)
+
+        if not changed:
+            return next_obj
 
         self.emit_event(
             "object",
@@ -3026,22 +3135,30 @@ class Runtime:
 
         return (mappings, live_values_by_target)
 
-    def _apply_always_lfo_frame(self, elapsed_ms: int) -> None:
+    def _apply_always_lfo_frame(self, frame_delta_ms: float) -> None:
         mappings, live_values_by_target = self._collect_always_lfo_mappings()
         if not mappings:
             self.always_lfo_target_states = {}
             return
 
+        delta_ms = max(0.0, to_float(frame_delta_ms, 0.0))
+        advanced_lfo_ids: set[str] = set()
         total_mod_by_target: Dict[str, float] = {}
         object_param_by_target: Dict[str, Tuple[str, str]] = {}
         active_target_keys: set[str] = set()
 
         for mapping in mappings:
+            lfo_id = str(mapping.get("lfoId") or "").strip()
             object_id = str(mapping.get("objectId") or "").strip()
             parameter = str(mapping.get("parameter") or "").strip()
             target_key = str(mapping.get("targetKey") or "").strip()
-            if not object_id or parameter not in LFO_PARAMS or not target_key:
+            if not lfo_id or not object_id or parameter not in LFO_PARAMS or not target_key:
                 continue
+            if lfo_id not in advanced_lfo_ids:
+                current_phase_ms = to_float(self.always_lfo_phase_ms_by_id.get(lfo_id), 0.0)
+                self.always_lfo_phase_ms_by_id[lfo_id] = current_phase_ms + delta_ms
+                advanced_lfo_ids.add(lfo_id)
+            phase_ms = to_float(self.always_lfo_phase_ms_by_id.get(lfo_id), 0.0)
 
             wave = str(mapping.get("wave") or "sine").strip().lower()
             if wave not in LFO_WAVES:
@@ -3054,7 +3171,7 @@ class Runtime:
             phase_flip = bool(mapping.get("phaseFlip", False))
             polarity = coerce_lfo_polarity(mapping.get("polarity"))
 
-            phase_cycles = (elapsed_ms / 1000.0) * rate_hz + ((phase_deg + mapping_phase_deg) / 360.0)
+            phase_cycles = (phase_ms / 1000.0) * rate_hz + ((phase_deg + mapping_phase_deg) / 360.0)
             sample = self._lfo_sample(wave, phase_cycles)
             if polarity == "unipolar":
                 sample = (sample + 1.0) * 0.5
@@ -3102,6 +3219,9 @@ class Runtime:
             self.always_lfo_target_states.pop(stale_target_key, None)
 
         for object_id, patch in next_patch_by_object.items():
+            with self.lock:
+                if object_id not in self.objects:
+                    continue
             self.update_object(
                 object_id,
                 patch,
@@ -3111,17 +3231,18 @@ class Runtime:
             )
 
     def _always_lfo_loop(self) -> None:
-        started_at = time.monotonic()
-        next_tick = started_at
+        next_tick = time.monotonic()
+        last_tick = next_tick
         while not self.stop_event.is_set():
             now = time.monotonic()
             if now < next_tick:
                 time.sleep(min(ACTION_TICK_SEC, next_tick - now))
                 continue
 
-            elapsed_ms = int((now - started_at) * 1000)
+            frame_delta_ms = max(0.0, (now - last_tick) * 1000.0)
+            last_tick = now
             try:
-                self._apply_always_lfo_frame(elapsed_ms)
+                self._apply_always_lfo_frame(frame_delta_ms)
             except Exception as exc:  # noqa: BLE001
                 self.emit_event(
                     "system",
@@ -3132,7 +3253,14 @@ class Runtime:
             if (now - next_tick) > (ACTION_TICK_SEC * 4.0):
                 next_tick = now + ACTION_TICK_SEC
 
-    def _lfo_total_mod_for_target(self, action: Dict[str, Any], object_id: str, parameter: str, elapsed_ms: int) -> Optional[float]:
+    def _lfo_total_mod_for_target(
+        self,
+        action: Dict[str, Any],
+        object_id: str,
+        parameter: str,
+        elapsed_ms: int,
+        lfo_phase_ms_by_id: Optional[Dict[str, float]] = None,
+    ) -> Optional[float]:
         total = 0.0
         matched = False
         for lfo in action.get("lfos", []):
@@ -3144,6 +3272,7 @@ class Runtime:
                 continue
             if lfo.get("targetEnabled") is False:
                 continue
+            lfo_id = str(lfo.get("lfoId") or lfo.get("lfo_id") or "").strip()
 
             wave = str(lfo.get("wave") or "sine").strip().lower()
             if wave not in LFO_WAVES:
@@ -3156,7 +3285,50 @@ class Runtime:
             phase_flip = bool(lfo.get("phaseFlip", False))
             polarity = coerce_lfo_polarity(lfo.get("polarity"))
 
-            phase_cycles = (elapsed_ms / 1000.0) * rate_hz + ((phase_deg + mapping_phase_deg) / 360.0)
+            phase_ms = float(elapsed_ms)
+            if isinstance(lfo_phase_ms_by_id, dict) and lfo_id:
+                phase_ms = to_float(lfo_phase_ms_by_id.get(lfo_id), phase_ms)
+            phase_cycles = (phase_ms / 1000.0) * rate_hz + ((phase_deg + mapping_phase_deg) / 360.0)
+            sample = self._lfo_sample(wave, phase_cycles)
+            if polarity == "unipolar":
+                sample = (sample + 1.0) * 0.5
+            if phase_flip:
+                sample *= -1.0
+            total += offset + (depth * sample)
+            matched = True
+
+        if not matched:
+            return None
+        return total
+
+    def _always_lfo_total_mod_for_target(self, object_id: str, parameter: str) -> Optional[float]:
+        target_key = f"{object_id}:{parameter}"
+        mappings, _ = self._collect_always_lfo_mappings()
+        if not mappings:
+            return None
+
+        total = 0.0
+        matched = False
+        for mapping in mappings:
+            if str(mapping.get("targetKey") or "").strip() != target_key:
+                continue
+            lfo_id = str(mapping.get("lfoId") or "").strip()
+            if not lfo_id:
+                continue
+            phase_ms = to_float(self.always_lfo_phase_ms_by_id.get(lfo_id), 0.0)
+
+            wave = str(mapping.get("wave") or "sine").strip().lower()
+            if wave not in LFO_WAVES:
+                wave = "sine"
+            rate_hz = max(0.0, to_float(mapping.get("rateHz"), 0.0))
+            depth = to_float(mapping.get("depth"), 0.0)
+            offset = to_float(mapping.get("offset"), 0.0)
+            phase_deg = to_float(mapping.get("phaseDeg"), 0.0)
+            mapping_phase_deg = to_float(mapping.get("mappingPhaseDeg"), 0.0)
+            phase_flip = bool(mapping.get("phaseFlip", False))
+            polarity = coerce_lfo_polarity(mapping.get("polarity"))
+
+            phase_cycles = (phase_ms / 1000.0) * rate_hz + ((phase_deg + mapping_phase_deg) / 360.0)
             sample = self._lfo_sample(wave, phase_cycles)
             if polarity == "unipolar":
                 sample = (sample + 1.0) * 0.5
@@ -3182,11 +3354,20 @@ class Runtime:
                 return float(numeric)
         return None
 
-    def _apply_action_frame(self, action: Dict[str, Any], elapsed_ms: int, lfo_states: Dict[str, Dict[str, float]]) -> None:
+    def _apply_action_frame(
+        self,
+        action: Dict[str, Any],
+        elapsed_ms: int,
+        lfo_states: Dict[str, Dict[str, float]],
+        lfo_phase_ms_by_id: Optional[Dict[str, float]] = None,
+        frame_delta_ms: float = 0.0,
+    ) -> None:
         patch_by_object_id: Dict[str, Dict[str, Any]] = {}
         lfo_debug_samples: List[Dict[str, Any]] = []
         action_rule = normalize_action_rule(action.get("actionRule"))
         action_rule_type = normalize_action_rule_type(action_rule.get("type"))
+        phase_state = lfo_phase_ms_by_id if isinstance(lfo_phase_ms_by_id, dict) else {}
+        delta_ms = max(0.0, to_float(frame_delta_ms, 0.0))
         with self.lock:
             existing_object_ids = set(self.objects.keys())
 
@@ -3298,10 +3479,14 @@ class Runtime:
         lfos_enabled = self.lfos_enabled
         if lfos_enabled:
             lfo_accumulators: Dict[str, Dict[str, Any]] = {}
+            advanced_lfo_ids: set[str] = set()
             for index, lfo in enumerate(action.get("lfos", [])):
                 if lfo.get("enabled") is False:
                     continue
                 if lfo.get("targetEnabled") is False:
+                    continue
+                lfo_id = str(lfo.get("lfoId") or lfo.get("lfo_id") or "").strip()
+                if not lfo_id:
                     continue
                 object_id = str(lfo.get("objectId") or lfo.get("object_id") or "").strip()
                 parameter = str(lfo.get("parameter") or "").strip()
@@ -3309,6 +3494,11 @@ class Runtime:
                     continue
                 if object_id not in existing_object_ids:
                     continue
+                if lfo_id not in advanced_lfo_ids:
+                    current_phase_ms = to_float(phase_state.get(lfo_id), 0.0)
+                    phase_state[lfo_id] = current_phase_ms + delta_ms
+                    advanced_lfo_ids.add(lfo_id)
+                phase_ms = to_float(phase_state.get(lfo_id), 0.0)
 
                 lfo_key = f"{object_id}:{parameter}"
                 lfo_state = lfo_states.get(lfo_key)
@@ -3364,7 +3554,7 @@ class Runtime:
                 phase_flip = bool(lfo.get("phaseFlip", False))
                 polarity = coerce_lfo_polarity(lfo.get("polarity"))
 
-                phase_cycles = (elapsed_ms / 1000.0) * rate_hz + ((phase_deg + mapping_phase_deg) / 360.0)
+                phase_cycles = (phase_ms / 1000.0) * rate_hz + ((phase_deg + mapping_phase_deg) / 360.0)
                 sample = self._lfo_sample(wave, phase_cycles)
                 if polarity == "unipolar":
                     sample = (sample + 1.0) * 0.5
@@ -3425,6 +3615,9 @@ class Runtime:
                     debug_sample["value"] = final_values_by_key[lfo_key]
 
         for object_id, patch in patch_by_object_id.items():
+            with self.lock:
+                if object_id not in self.objects:
+                    continue
             self.update_object(
                 object_id,
                 patch,
@@ -3466,8 +3659,12 @@ class Runtime:
                 raise ValueError(f"Action is disabled: {normalized_action_id}")
             action_snapshot = json.loads(json.dumps(action))
             lfo_states: Dict[str, Dict[str, float]] = {}
+            lfo_phase_ms_by_id: Dict[str, float] = {}
             has_active_lfo_target = False
             for lfo in action_snapshot.get("lfos", []):
+                lfo_id = str(lfo.get("lfoId") or lfo.get("lfo_id") or "").strip()
+                if lfo_id and lfo_id not in lfo_phase_ms_by_id:
+                    lfo_phase_ms_by_id[lfo_id] = 0.0
                 if lfo.get("enabled") is False:
                     continue
                 if lfo.get("targetEnabled") is False:
@@ -3491,15 +3688,20 @@ class Runtime:
 
         def run() -> None:
             next_tick = time.monotonic()
+            last_tick = next_tick
+            phase_state_ref = lfo_phase_ms_by_id
             while not stop_flag.is_set():
                 now = time.monotonic()
                 if now < next_tick:
                     time.sleep(min(ACTION_TICK_SEC, next_tick - now))
                     continue
 
+                frame_delta_ms = max(0.0, (now - last_tick) * 1000.0)
+                last_tick = now
                 elapsed_ms = int((now - started_at) * 1000)
                 current_action_snapshot = action_snapshot
                 current_duration_ms = int(max(0.0, to_float(action_snapshot.get("durationMs"), 0.0)))
+                current_lfo_phase_ms_by_id = phase_state_ref
                 with self.lock:
                     running = self.running_actions.get(normalized_action_id)
                     if isinstance(running, dict):
@@ -3507,8 +3709,18 @@ class Runtime:
                         if isinstance(updated_action_snapshot, dict):
                             current_action_snapshot = updated_action_snapshot
                             current_duration_ms = int(max(0.0, to_float(updated_action_snapshot.get("durationMs"), 0.0)))
+                        updated_lfo_phase = running.get("lfoPhaseMsById")
+                        if isinstance(updated_lfo_phase, dict):
+                            phase_state_ref = updated_lfo_phase
+                            current_lfo_phase_ms_by_id = updated_lfo_phase
 
-                self._apply_action_frame(current_action_snapshot, elapsed_ms, lfo_states)
+                self._apply_action_frame(
+                    current_action_snapshot,
+                    elapsed_ms,
+                    lfo_states,
+                    current_lfo_phase_ms_by_id,
+                    frame_delta_ms,
+                )
                 if elapsed_ms >= current_duration_ms:
                     self.stop_action(normalized_action_id, "complete")
                     return
@@ -3527,6 +3739,7 @@ class Runtime:
                 "source": source,
                 "action": action_snapshot,
                 "lfoStates": lfo_states,
+                "lfoPhaseMsById": lfo_phase_ms_by_id,
             }
             self.last_lfo_debug_emit_ms[normalized_action_id] = 0
 
@@ -3878,23 +4091,61 @@ class Handler(BaseHTTPRequestHandler):
                 object_id = unquote(parts[3]) if len(parts) > 3 else ""
                 body = self._read_json_body()
                 propagate_group_links = True
+                client_update_session_id = ""
+                client_update_seq: Optional[int] = None
+                lfo_center_mode = False
+                lfo_center_gesture_id = ""
+                include_status = True
                 if isinstance(body, dict):
+                    body = dict(body)
                     if "propagateGroupLinks" in body:
                         propagate_group_links = bool(body.get("propagateGroupLinks"))
-                        body = dict(body)
                         body.pop("propagateGroupLinks", None)
                     elif "propagate_group_links" in body:
                         propagate_group_links = bool(body.get("propagate_group_links"))
-                        body = dict(body)
                         body.pop("propagate_group_links", None)
+                    raw_client_session_id = body.pop(
+                        "clientUpdateSessionId",
+                        body.pop("client_update_session_id", ""),
+                    )
+                    client_update_session_id = str(raw_client_session_id or "").strip()
+                    raw_client_seq = body.pop("clientUpdateSeq", body.pop("client_update_seq", None))
+                    if raw_client_seq is not None:
+                        try:
+                            candidate_seq = int(raw_client_seq)
+                            if candidate_seq > 0:
+                                client_update_seq = candidate_seq
+                        except (TypeError, ValueError):
+                            client_update_seq = None
+                    raw_lfo_center_mode = body.pop(
+                        "lfoCenterMode",
+                        body.pop("lfo_center_mode", False),
+                    )
+                    lfo_center_mode = bool(raw_lfo_center_mode)
+                    raw_lfo_center_gesture_id = body.pop(
+                        "lfoCenterGestureId",
+                        body.pop("lfo_center_gesture_id", ""),
+                    )
+                    lfo_center_gesture_id = str(raw_lfo_center_gesture_id or "").strip()
+                    if "includeStatus" in body:
+                        include_status = bool(body.pop("includeStatus"))
+                    elif "include_status" in body:
+                        include_status = bool(body.pop("include_status"))
                 updated = RUNTIME.update_object(
                     object_id,
                     body,
                     source="api",
                     emit_osc=True,
                     propagate_group_links=propagate_group_links,
+                    client_update_session_id=client_update_session_id,
+                    client_update_seq=client_update_seq,
+                    lfo_center_mode=lfo_center_mode,
+                    lfo_center_gesture_id=lfo_center_gesture_id,
                 )
-                self._send_json(HTTPStatus.OK, {"ok": True, "object": updated, "status": RUNTIME.status()})
+                response_payload: Dict[str, Any] = {"ok": True, "object": updated}
+                if include_status:
+                    response_payload["status"] = RUNTIME.status()
+                self._send_json(HTTPStatus.OK, response_payload)
                 return
 
             if path_name == "/api/groups/create":
