@@ -3,7 +3,7 @@
   "name": "Demo Show",
   "version": "0.1.0",
   "created_at": "2026-03-03T00:00:00Z",
-  "updated_at": "2026-03-03T19:40:22Z",
+  "updated_at": "2026-03-04T16:25:02Z",
   "default_scene_id": "scene-intro",
   "scenes": [
     {
@@ -23,7 +23,27 @@
   ],
   "global_lfos": [
     {
+      "lfo_id": "lfo",
+      "enabled": true,
+      "wave": "sine",
+      "rate_hz": 0.25,
+      "depth": 20.0,
+      "offset": 0.0,
+      "phase_deg": 0.0,
+      "polarity": "bipolar"
+    },
+    {
       "lfo_id": "lfo-1",
+      "enabled": true,
+      "wave": "sine",
+      "rate_hz": 0.25,
+      "depth": 20.0,
+      "offset": 0.0,
+      "phase_deg": 0.0,
+      "polarity": "bipolar"
+    },
+    {
+      "lfo_id": "lfo-2",
       "enabled": true,
       "wave": "sine",
       "rate_hz": 0.25,

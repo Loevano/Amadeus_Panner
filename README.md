@@ -5,7 +5,7 @@ Runnable web-based Amadeus ART controller with OSC in/out, showfiles, scenes, ac
 ## Quick Start
 
 ```bash
-cd /Users/jens/Documents/Coding/Amadeus_Panner
+cd /path/to/Amadeus_Panner
 ./scripts/run-dev.sh
 ```
 

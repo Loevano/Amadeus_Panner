@@ -9,6 +9,26 @@
     "name": { "type": "string", "minLength": 1 },
     "enabled": { "type": "boolean", "default": true },
     "duration_ms": { "type": "integer", "minimum": 0 },
+    "action_rule": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": { "type": "string", "enum": ["modulation_control", "parameter_ramp"] },
+        "target_modulator": { "type": "string" },
+        "parameter": {
+          "type": "string",
+          "enum": ["enabled", "wave", "rateHz", "depth", "offset", "phaseDeg", "mappingPhaseDeg", "polarity"]
+        },
+        "value": { "type": ["number", "boolean", "string"] },
+        "target": { "type": "string" },
+        "start_value": { "type": "number" },
+        "end_value": { "type": "number" },
+        "speed": { "type": "number", "minimum": 0 },
+        "speed_ms": { "type": "number", "minimum": 0 },
+        "relative": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
     "on_end_action_id": { "type": "string" },
     "tracks": {
       "type": "array",
@@ -51,6 +71,8 @@
           "offset": { "type": "number" },
           "phase_deg": { "type": "number" },
           "mapping_phase_deg": { "type": "number" },
+          "phase_flip": { "type": "boolean", "default": false },
+          "target_enabled": { "type": "boolean", "default": true },
           "polarity": { "type": "string", "enum": ["bipolar", "unipolar"] }
         },
         "additionalProperties": false

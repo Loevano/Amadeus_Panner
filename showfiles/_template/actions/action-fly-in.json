@@ -26,13 +26,36 @@
     {
       "lfo_id": "lfo-1",
       "enabled": true,
-      "object_id": "obj",
-      "parameter": "y",
       "wave": "sine",
       "rate_hz": 0.25,
       "depth": 20.0,
       "offset": 0.0,
       "phase_deg": 0.0,
+      "mapping_phase_deg": 0.0,
+      "polarity": "bipolar",
+      "object_id": "obj",
+      "parameter": "y"
+    },
+    {
+      "lfo_id": "lfo",
+      "enabled": true,
+      "wave": "sine",
+      "rate_hz": 0.25,
+      "depth": 20.0,
+      "offset": 0.0,
+      "phase_deg": 0.0,
+      "mapping_phase_deg": 0.0,
+      "polarity": "bipolar"
+    },
+    {
+      "lfo_id": "lfo-2",
+      "enabled": true,
+      "wave": "sine",
+      "rate_hz": 0.25,
+      "depth": 20.0,
+      "offset": 0.0,
+      "phase_deg": 0.0,
+      "mapping_phase_deg": 0.0,
       "polarity": "bipolar"
     }
   ],

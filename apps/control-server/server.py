@@ -53,6 +53,8 @@ LFO_WAVES = {"sine", "triangle", "square", "saw"}
 LFO_POLARITIES = {"bipolar", "unipolar"}
 ACTION_TICK_SEC = 1.0 / 60.0
 ACTION_GROUP_ACTION_COMMANDS = {"start", "stop", "abort"}
+ACTION_RULE_TYPES = {"modulationControl", "parameterRamp"}
+ACTION_RULE_MODULATION_PARAMS = {"enabled", "wave", "rateHz", "depth", "offset", "phaseDeg", "mappingPhaseDeg", "polarity"}
 
 
 def clamp(value: float, min_max: Tuple[float, float]) -> float:
@@ -114,6 +116,145 @@ def coerce_lfo_polarity(value: Any) -> str:
     if polarity in LFO_POLARITIES:
         return polarity
     return "bipolar"
+
+
+def normalize_action_rule_type(value: Any) -> str:
+    raw = str(value or "").strip()
+    if raw in ACTION_RULE_TYPES:
+        return raw
+    lowered = raw.lower()
+    if lowered in {"modulationcontrol", "modulation_control", "modulation"}:
+        return "modulationControl"
+    if lowered in {"parameterramp", "parameter_ramp", "ramp"}:
+        return "parameterRamp"
+    return "parameterRamp"
+
+
+def _parse_boolean_like(value: Any, fallback: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    normalized = str(value or "").strip().lower()
+    if normalized in {"1", "true", "yes", "on", "enabled"}:
+        return True
+    if normalized in {"0", "false", "no", "off", "disabled"}:
+        return False
+    return bool(fallback)
+
+
+def normalize_action_rule_mod_value(parameter: str, value: Any, fallback: Any = 0.0) -> Any:
+    if parameter == "enabled":
+        return _parse_boolean_like(value, _parse_boolean_like(fallback, True))
+    if parameter == "wave":
+        normalized_wave = str(value or "").strip().lower()
+        if normalized_wave in LFO_WAVES:
+            return normalized_wave
+        fallback_wave = str(fallback or "").strip().lower()
+        return fallback_wave if fallback_wave in LFO_WAVES else "sine"
+    if parameter == "polarity":
+        return coerce_lfo_polarity(value or fallback)
+    numeric = to_float(value, to_float(fallback, 0.0))
+    if parameter == "rateHz":
+        numeric = max(0.0, numeric)
+    return numeric
+
+
+def normalize_action_rule(raw_rule: Any) -> Dict[str, Any]:
+    source = raw_rule if isinstance(raw_rule, dict) else {}
+    rule_type = normalize_action_rule_type(source.get("type"))
+
+    if rule_type == "modulationControl":
+        raw_target_modulator = source.get("target_modulator") if "target_modulator" in source else source.get("targetModulator")
+        target_modulator = ""
+        try:
+            target_modulator = normalize_lfo_id(raw_target_modulator or "")
+        except Exception:
+            target_modulator = ""
+
+        parameter = str(source.get("parameter") or "").strip()
+        if parameter not in ACTION_RULE_MODULATION_PARAMS:
+            parameter = "depth"
+        default_value: Any = "sine" if parameter == "wave" else ("bipolar" if parameter == "polarity" else (True if parameter == "enabled" else 0.0))
+        normalized_value = normalize_action_rule_mod_value(parameter, source.get("value"), default_value)
+        return {
+            "type": "modulationControl",
+            "targetModulator": target_modulator,
+            "parameter": parameter,
+            "value": normalized_value,
+        }
+
+    raw_target = str(source.get("target") or "").strip()
+    target = ""
+    if raw_target:
+        split_index = raw_target.rfind(".")
+        if split_index > 0:
+            object_id_raw = raw_target[:split_index]
+            parameter_raw = raw_target[split_index + 1:].strip().lower()
+            try:
+                object_id = normalize_object_id(object_id_raw)
+            except Exception:
+                object_id = ""
+            if object_id and parameter_raw in LFO_PARAMS:
+                target = f"{object_id}.{parameter_raw}"
+
+    start_value = to_float(source.get("start_value") if "start_value" in source else source.get("startValue"), 0.0)
+    end_value = to_float(source.get("end_value") if "end_value" in source else source.get("endValue"), start_value)
+    speed_ms = max(0.0, to_float(
+        source.get("speed_ms") if "speed_ms" in source else (
+            source.get("speedMs") if "speedMs" in source else source.get("speed")
+        ),
+        0.0,
+    ))
+    relative = _parse_boolean_like(source.get("relative"), False)
+    return {
+        "type": "parameterRamp",
+        "target": target,
+        "startValue": start_value,
+        "endValue": end_value,
+        "speedMs": speed_ms,
+        "relative": relative,
+    }
+
+
+def action_rule_to_raw(action_rule: Any) -> Dict[str, Any]:
+    normalized = normalize_action_rule(action_rule)
+    rule_type = normalize_action_rule_type(normalized.get("type"))
+    if rule_type == "modulationControl":
+        parameter = str(normalized.get("parameter") or "depth")
+        return {
+            "type": "modulation_control",
+            "target_modulator": str(normalized.get("targetModulator") or ""),
+            "parameter": parameter,
+            "value": normalize_action_rule_mod_value(parameter, normalized.get("value"), 0.0),
+        }
+    return {
+        "type": "parameter_ramp",
+        "target": str(normalized.get("target") or ""),
+        "start_value": to_float(normalized.get("startValue"), 0.0),
+        "end_value": to_float(normalized.get("endValue"), 0.0),
+        "speed_ms": max(0.0, to_float(
+            normalized.get("speedMs") if "speedMs" in normalized else normalized.get("speed"),
+            0.0,
+        )),
+        "relative": bool(normalized.get("relative", False)),
+    }
+
+
+def parse_action_rule_target(value: Any) -> Tuple[str, str]:
+    raw_target = str(value or "").strip()
+    if not raw_target:
+        return "", ""
+    split_index = raw_target.rfind(".")
+    if split_index <= 0:
+        return "", ""
+    object_id_raw = raw_target[:split_index]
+    parameter = raw_target[split_index + 1:].strip().lower()
+    if parameter not in LFO_PARAMS:
+        return "", ""
+    try:
+        object_id = normalize_object_id(object_id_raw)
+    except Exception:
+        return "", ""
+    return object_id, parameter
 
 
 def normalize_action_group_id(value: Any) -> str:
@@ -289,6 +430,8 @@ def normalize_action_lfo_mapping(raw_lfo: Dict[str, Any], fallback_lfo_id: str =
         raw_lfo.get("mapping_phase_deg") if "mapping_phase_deg" in raw_lfo else raw_lfo.get("mappingPhaseDeg"),
         0.0,
     )
+    phase_flip = bool(raw_lfo.get("phase_flip") if "phase_flip" in raw_lfo else raw_lfo.get("phaseFlip", False))
+    target_enabled = bool(raw_lfo.get("target_enabled") if "target_enabled" in raw_lfo else raw_lfo.get("targetEnabled", True))
     raw_lfo_id = raw_lfo.get("lfo_id") if "lfo_id" in raw_lfo else raw_lfo.get("lfoId")
     lfo_id = normalize_lfo_id(raw_lfo_id or fallback_lfo_id)
 
@@ -297,6 +440,8 @@ def normalize_action_lfo_mapping(raw_lfo: Dict[str, Any], fallback_lfo_id: str =
         "objectId": object_id,
         "parameter": parameter,
         "mappingPhaseDeg": mapping_phase_deg,
+        "phaseFlip": phase_flip,
+        "targetEnabled": target_enabled,
     }
 
 
@@ -304,6 +449,7 @@ def merge_lfo_definition_into_mapping(mapping: Dict[str, Any], definition: Dict[
     return {
         "lfoId": normalize_lfo_id(mapping.get("lfoId") or definition.get("lfoId") or "lfo"),
         "enabled": bool(definition.get("enabled", True)),
+        "targetEnabled": bool(mapping.get("targetEnabled", True)),
         "objectId": str(mapping.get("objectId") or ""),
         "parameter": str(mapping.get("parameter") or ""),
         "wave": str(definition.get("wave") or "sine"),
@@ -312,6 +458,7 @@ def merge_lfo_definition_into_mapping(mapping: Dict[str, Any], definition: Dict[
         "offset": to_float(definition.get("offset"), 0.0),
         "phaseDeg": to_float(definition.get("phaseDeg"), 0.0),
         "mappingPhaseDeg": to_float(mapping.get("mappingPhaseDeg"), 0.0),
+        "phaseFlip": bool(mapping.get("phaseFlip", False)),
         "polarity": coerce_lfo_polarity(definition.get("polarity")),
     }
 
@@ -401,6 +548,8 @@ def normalize_action(raw_action: Dict[str, Any], fallback_id: str) -> Dict[str, 
     osc_triggers_raw = raw_action.get("osc_triggers") if "osc_triggers" in raw_action else raw_action.get("oscTriggers")
     if not isinstance(osc_triggers_raw, dict):
         osc_triggers_raw = {}
+    action_rule_raw = raw_action.get("action_rule") if "action_rule" in raw_action else raw_action.get("actionRule")
+    action_rule = normalize_action_rule(action_rule_raw)
 
     tracks = raw_action.get("tracks", [])
     if not isinstance(tracks, list):
@@ -445,6 +594,7 @@ def normalize_action(raw_action: Dict[str, Any], fallback_id: str) -> Dict[str, 
         "name": str(raw_action.get("name") or action_id),
         "enabled": bool(raw_action.get("enabled", True)),
         "durationMs": int(max(0.0, to_float(raw_action.get("duration_ms") if "duration_ms" in raw_action else raw_action.get("durationMs"), 0.0))),
+        "actionRule": action_rule,
         "tracks": tracks,
         "lfos": normalized_lfos,
         "onEndActionId": on_end_action_id,
@@ -468,6 +618,8 @@ def lfo_to_raw(lfo: Dict[str, Any]) -> Dict[str, Any]:
         "offset": to_float(lfo.get("offset"), 0.0),
         "phase_deg": to_float(lfo.get("phaseDeg"), 0.0),
         "mapping_phase_deg": to_float(lfo.get("mappingPhaseDeg"), 0.0),
+        "phase_flip": bool(lfo.get("phaseFlip", False)),
+        "target_enabled": bool(lfo.get("targetEnabled", True)),
         "polarity": coerce_lfo_polarity(lfo.get("polarity")),
     }
     if object_id and parameter in LFO_PARAMS:
@@ -495,6 +647,7 @@ def action_to_raw(action: Dict[str, Any]) -> Dict[str, Any]:
         "name": str(action.get("name") or action.get("actionId") or "action"),
         "enabled": bool(action.get("enabled", True)),
         "duration_ms": int(max(0.0, to_float(action.get("durationMs"), 0.0))),
+        "action_rule": action_rule_to_raw(action.get("actionRule")),
         "on_end_action_id": str(action.get("onEndActionId") or ""),
         "tracks": action.get("tracks", []) if isinstance(action.get("tracks"), list) else [],
         "lfos": [lfo_to_raw(lfo) for lfo in (action.get("lfos") if isinstance(action.get("lfos"), list) else [])],
@@ -1641,6 +1794,117 @@ class Runtime:
         self.emit_event("action_lfo", payload)
         return payload
 
+    def update_action_lfo(self, action_id: str, lfo_id: str, patch: Dict[str, Any], source: str = "api") -> Dict[str, Any]:
+        normalized_action_id = normalize_action_id(action_id)
+        normalized_lfo_id = normalize_lfo_id(lfo_id)
+        patch_input = patch if isinstance(patch, dict) else {}
+        changed_count = 0
+        changed_count_in_action = 0
+
+        with self.lock:
+            if not self.show:
+                raise ValueError("No show loaded")
+            actions_by_id = self.show.get("actionsById")
+            if not isinstance(actions_by_id, dict):
+                actions_by_id = {}
+            action = actions_by_id.get(normalized_action_id)
+            if not isinstance(action, dict):
+                raise ValueError(f"Action not found: {normalized_action_id}")
+
+            lfos = action.get("lfos")
+            if not isinstance(lfos, list):
+                lfos = []
+            changed_count_in_action = sum(
+                1
+                for lfo in lfos
+                if isinstance(lfo, dict) and str(lfo.get("lfoId") or lfo.get("lfo_id") or "").strip() == normalized_lfo_id
+            )
+            if changed_count_in_action <= 0:
+                raise ValueError(f"LFO not found in action: {normalized_action_id}.{normalized_lfo_id}")
+
+            global_lfos_by_id = self.show.get("globalLfosById")
+            if not isinstance(global_lfos_by_id, dict):
+                global_lfos_by_id = {}
+            next_global_lfos_by_id = dict(global_lfos_by_id)
+
+            existing_definition = next_global_lfos_by_id.get(normalized_lfo_id)
+            if not isinstance(existing_definition, dict):
+                existing_definition = None
+                for lfo in lfos:
+                    if not isinstance(lfo, dict):
+                        continue
+                    current_lfo_id = str(lfo.get("lfoId") or lfo.get("lfo_id") or "").strip()
+                    if current_lfo_id != normalized_lfo_id:
+                        continue
+                    existing_definition = normalize_lfo_definition(lfo, normalized_lfo_id)
+                    break
+            if not isinstance(existing_definition, dict):
+                raise ValueError(f"LFO definition not found: {normalized_lfo_id}")
+
+            definition_input: Dict[str, Any] = {
+                **existing_definition,
+                "lfoId": normalized_lfo_id,
+            }
+
+            if "enabled" in patch_input:
+                definition_input["enabled"] = bool(patch_input.get("enabled"))
+            if "wave" in patch_input:
+                definition_input["wave"] = str(patch_input.get("wave") or "").strip().lower()
+            if "rateHz" in patch_input or "rate_hz" in patch_input:
+                definition_input["rateHz"] = to_float(
+                    patch_input.get("rate_hz") if "rate_hz" in patch_input else patch_input.get("rateHz"),
+                    to_float(existing_definition.get("rateHz"), 0.0),
+                )
+            if "depth" in patch_input:
+                definition_input["depth"] = to_float(patch_input.get("depth"), to_float(existing_definition.get("depth"), 0.0))
+            if "offset" in patch_input:
+                definition_input["offset"] = to_float(patch_input.get("offset"), to_float(existing_definition.get("offset"), 0.0))
+            if "phaseDeg" in patch_input or "phase_deg" in patch_input:
+                definition_input["phaseDeg"] = to_float(
+                    patch_input.get("phase_deg") if "phase_deg" in patch_input else patch_input.get("phaseDeg"),
+                    to_float(existing_definition.get("phaseDeg"), 0.0),
+                )
+            if "polarity" in patch_input:
+                definition_input["polarity"] = str(patch_input.get("polarity") or "").strip().lower()
+
+            normalized_definition = normalize_lfo_definition(definition_input, normalized_lfo_id)
+            next_global_lfos_by_id[normalized_lfo_id] = normalized_definition
+
+            synced_global_lfos_by_id = sync_action_lfo_snapshots_with_global(actions_by_id, next_global_lfos_by_id)
+            self.show["actionsById"] = actions_by_id
+            self.show["globalLfosById"] = synced_global_lfos_by_id
+            for candidate_action in actions_by_id.values():
+                action_lfos = candidate_action.get("lfos")
+                if not isinstance(action_lfos, list):
+                    continue
+                for lfo in action_lfos:
+                    if not isinstance(lfo, dict):
+                        continue
+                    if str(lfo.get("lfoId") or lfo.get("lfo_id") or "").strip() == normalized_lfo_id:
+                        changed_count += 1
+
+            for running_action_id, running in self.running_actions.items():
+                if not isinstance(running, dict):
+                    continue
+                running_action = running.get("action")
+                if not isinstance(running_action, dict):
+                    continue
+                snapshot_map = {running_action_id: dict(running_action)}
+                sync_action_lfo_snapshots_with_global(snapshot_map, synced_global_lfos_by_id)
+                running["action"] = snapshot_map[running_action_id]
+                self.running_actions[running_action_id] = running
+
+        payload = {
+            "actionId": normalized_action_id,
+            "lfoId": normalized_lfo_id,
+            "changedMappings": changed_count,
+            "changedMappingsInAction": changed_count_in_action,
+            "lfo": normalized_definition,
+            "source": source,
+        }
+        self.emit_event("action_lfo", payload)
+        return payload
+
     def delete_object_group(self, group_id: str, source: str = "api") -> Dict[str, Any]:
         normalized_group_id = normalize_object_id(group_id)
         if normalized_group_id.lower() == VIRTUAL_ALL_GROUP_ID:
@@ -2479,6 +2743,8 @@ class Runtime:
                 continue
             if lfo.get("enabled") is False:
                 continue
+            if lfo.get("targetEnabled") is False:
+                continue
 
             wave = str(lfo.get("wave") or "sine").strip().lower()
             if wave not in LFO_WAVES:
@@ -2488,12 +2754,15 @@ class Runtime:
             offset = to_float(lfo.get("offset"), 0.0)
             phase_deg = to_float(lfo.get("phaseDeg"), 0.0)
             mapping_phase_deg = to_float(lfo.get("mappingPhaseDeg"), 0.0)
+            phase_flip = bool(lfo.get("phaseFlip", False))
             polarity = coerce_lfo_polarity(lfo.get("polarity"))
 
             phase_cycles = (elapsed_ms / 1000.0) * rate_hz + ((phase_deg + mapping_phase_deg) / 360.0)
             sample = self._lfo_sample(wave, phase_cycles)
             if polarity == "unipolar":
                 sample = (sample + 1.0) * 0.5
+            if phase_flip:
+                sample *= -1.0
             total += offset + (depth * sample)
             matched = True
 
@@ -2517,6 +2786,32 @@ class Runtime:
     def _apply_action_frame(self, action: Dict[str, Any], elapsed_ms: int, lfo_states: Dict[str, Dict[str, float]]) -> None:
         patch_by_object_id: Dict[str, Dict[str, Any]] = {}
         lfo_debug_samples: List[Dict[str, Any]] = []
+        action_rule = normalize_action_rule(action.get("actionRule"))
+        action_rule_type = normalize_action_rule_type(action_rule.get("type"))
+
+        if action_rule_type == "modulationControl":
+            target_modulator = str(action_rule.get("targetModulator") or "").strip()
+            parameter = str(action_rule.get("parameter") or "").strip()
+            if target_modulator and parameter in ACTION_RULE_MODULATION_PARAMS:
+                mod_value = normalize_action_rule_mod_value(parameter, action_rule.get("value"), 0.0)
+                for lfo in (action.get("lfos") if isinstance(action.get("lfos"), list) else []):
+                    if not isinstance(lfo, dict):
+                        continue
+                    lfo_id = str(lfo.get("lfoId") or lfo.get("lfo_id") or "").strip()
+                    if lfo_id != target_modulator:
+                        continue
+                    if parameter == "enabled":
+                        lfo["enabled"] = bool(mod_value)
+                    elif parameter == "wave":
+                        wave = str(mod_value or "").strip().lower()
+                        lfo["wave"] = wave if wave in LFO_WAVES else "sine"
+                    elif parameter == "polarity":
+                        lfo["polarity"] = coerce_lfo_polarity(mod_value)
+                    else:
+                        numeric = to_float(mod_value, to_float(lfo.get(parameter), 0.0))
+                        if parameter == "rateHz":
+                            numeric = max(0.0, numeric)
+                        lfo[parameter] = numeric
 
         for track in action.get("tracks", []):
             object_id = str(track.get("object_id") or track.get("objectId") or "")
@@ -2552,11 +2847,55 @@ class Runtime:
                 patch_by_object_id[object_id] = patch
             patch[parameter] = value
 
+        if action_rule_type == "parameterRamp":
+            target_object_id, target_parameter = parse_action_rule_target(action_rule.get("target"))
+            if target_object_id and target_parameter in LFO_PARAMS:
+                start_value = to_float(action_rule.get("startValue"), 0.0)
+                end_value = to_float(action_rule.get("endValue"), start_value)
+                speed_ms = max(0.0, to_float(
+                    action_rule.get("speedMs") if "speedMs" in action_rule else action_rule.get("speed"),
+                    0.0,
+                ))
+                relative = bool(action_rule.get("relative", False))
+
+                if relative:
+                    state_key = f"__ruleRampBase:{target_object_id}:{target_parameter}"
+                    rule_state = lfo_states.get(state_key)
+                    if not isinstance(rule_state, dict):
+                        with self.lock:
+                            base_object = self.objects.get(target_object_id, default_object(target_object_id))
+                        base_value = to_float(base_object.get(target_parameter), 0.0)
+                        rule_state = {"baseValue": base_value}
+                        lfo_states[state_key] = rule_state
+                    base_value = to_float(rule_state.get("baseValue"), 0.0)
+                    start_value += base_value
+                    end_value += base_value
+
+                distance = end_value - start_value
+                if speed_ms > 0.0:
+                    ratio = max(0.0, min(1.0, max(0.0, float(elapsed_ms)) / speed_ms))
+                    ramp_value = start_value + (distance * ratio)
+                else:
+                    duration_ms = max(1.0, to_float(action.get("durationMs"), 0.0))
+                    ratio = max(0.0, min(1.0, max(0.0, float(elapsed_ms)) / duration_ms))
+                    ramp_value = start_value + (distance * ratio)
+
+                if target_parameter in OBJECT_LIMITS:
+                    ramp_value = clamp(ramp_value, OBJECT_LIMITS[target_parameter])
+
+                patch = patch_by_object_id.get(target_object_id)
+                if not patch:
+                    patch = {}
+                    patch_by_object_id[target_object_id] = patch
+                patch[target_parameter] = ramp_value
+
         lfos_enabled = self.lfos_enabled
         if lfos_enabled:
             lfo_accumulators: Dict[str, Dict[str, Any]] = {}
             for index, lfo in enumerate(action.get("lfos", [])):
                 if lfo.get("enabled") is False:
+                    continue
+                if lfo.get("targetEnabled") is False:
                     continue
                 object_id = str(lfo.get("objectId") or lfo.get("object_id") or "").strip()
                 parameter = str(lfo.get("parameter") or "").strip()
@@ -2614,12 +2953,15 @@ class Runtime:
                 offset = to_float(lfo.get("offset"), 0.0)
                 phase_deg = to_float(lfo.get("phaseDeg"), 0.0)
                 mapping_phase_deg = to_float(lfo.get("mappingPhaseDeg"), 0.0)
+                phase_flip = bool(lfo.get("phaseFlip", False))
                 polarity = coerce_lfo_polarity(lfo.get("polarity"))
 
                 phase_cycles = (elapsed_ms / 1000.0) * rate_hz + ((phase_deg + mapping_phase_deg) / 360.0)
                 sample = self._lfo_sample(wave, phase_cycles)
                 if polarity == "unipolar":
                     sample = (sample + 1.0) * 0.5
+                if phase_flip:
+                    sample *= -1.0
                 contribution = offset + (depth * sample)
                 accumulator["totalMod"] = to_float(accumulator.get("totalMod"), 0.0) + contribution
 
@@ -2639,6 +2981,7 @@ class Runtime:
                         "offset": offset,
                         "phaseDeg": phase_deg,
                         "mappingPhaseDeg": mapping_phase_deg,
+                        "phaseFlip": phase_flip,
                         "polarity": polarity,
                     }
                 )
@@ -2718,6 +3061,8 @@ class Runtime:
             for lfo in action_snapshot.get("lfos", []):
                 if lfo.get("enabled") is False:
                     continue
+                if lfo.get("targetEnabled") is False:
+                    continue
                 object_id = str(lfo.get("objectId") or "").strip()
                 parameter = str(lfo.get("parameter") or "").strip()
                 if not object_id or parameter not in LFO_PARAMS:
@@ -2741,8 +3086,18 @@ class Runtime:
                     continue
 
                 elapsed_ms = int((now - started_at) * 1000)
-                self._apply_action_frame(action_snapshot, elapsed_ms, lfo_states)
-                if elapsed_ms >= action_snapshot.get("durationMs", 0):
+                current_action_snapshot = action_snapshot
+                current_duration_ms = int(max(0.0, to_float(action_snapshot.get("durationMs"), 0.0)))
+                with self.lock:
+                    running = self.running_actions.get(normalized_action_id)
+                    if isinstance(running, dict):
+                        updated_action_snapshot = running.get("action")
+                        if isinstance(updated_action_snapshot, dict):
+                            current_action_snapshot = updated_action_snapshot
+                            current_duration_ms = int(max(0.0, to_float(updated_action_snapshot.get("durationMs"), 0.0)))
+
+                self._apply_action_frame(current_action_snapshot, elapsed_ms, lfo_states)
+                if elapsed_ms >= current_duration_ms:
                     self.stop_action(normalized_action_id, "complete")
                     return
 
@@ -3165,6 +3520,21 @@ class Handler(BaseHTTPRequestHandler):
                 lfo_id = normalize_lfo_id(body.get("lfoId") or body.get("lfo_id"))
                 enabled = bool(body.get("enabled", True))
                 result = RUNTIME.set_action_lfo_enabled(action_id, lfo_id, enabled, source="api")
+                self._send_json(HTTPStatus.OK, {"ok": True, **result, "status": RUNTIME.status()})
+                return
+
+            if path_name == "/api/action-lfo/update":
+                body = self._read_json_body()
+                if not isinstance(body, dict):
+                    raise ValueError("Body must be an object")
+                action_id = normalize_action_id(body.get("actionId") or body.get("action_id"))
+                lfo_id = normalize_lfo_id(body.get("lfoId") or body.get("lfo_id"))
+                patch = dict(body)
+                patch.pop("actionId", None)
+                patch.pop("action_id", None)
+                patch.pop("lfoId", None)
+                patch.pop("lfo_id", None)
+                result = RUNTIME.update_action_lfo(action_id, lfo_id, patch, source="api")
                 self._send_json(HTTPStatus.OK, {"ok": True, **result, "status": RUNTIME.status()})
                 return
 

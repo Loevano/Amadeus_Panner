@@ -4,9 +4,9 @@
   "transition_ms": 1500,
   "objects": [
     {
-      "object_id": "obj-1",
+      "object_id": "1VA",
       "x": -62.66533623506105,
-      "y": 0.0,
+      "y": 23.021484375,
       "z": -6.326179666217939,
       "size": 25.0,
       "gain": -6.0,
@@ -14,47 +14,17 @@
       "algorithm": "default"
     },
     {
-      "object_id": "obj",
-      "x": 59.95646028145506,
+      "object_id": "1VB",
+      "x": 32.59037784933911,
       "y": 0.0,
-      "z": 72.45331629332892,
+      "z": -66.64333342750416,
       "size": 25.0,
       "gain": 0.0,
       "mute": false,
       "algorithm": "default"
     },
     {
-      "object_id": "obj-2",
-      "x": -57.53992567277085,
-      "y": 0.0,
-      "z": 62.66288433684878,
-      "size": 25.0,
-      "gain": 0.0,
-      "mute": false,
-      "algorithm": "default"
-    },
-    {
-      "object_id": "obj-2-2",
-      "x": 50.70280526771491,
-      "y": 0.0,
-      "z": 12.472924090336846,
-      "size": 25.0,
-      "gain": 0.0,
-      "mute": false,
-      "algorithm": "default"
-    },
-    {
-      "object_id": "obj-2-2-2",
-      "x": -81.03032780268644,
-      "y": 0.0,
-      "z": -22.728279439760087,
-      "size": 25.0,
-      "gain": 0.0,
-      "mute": false,
-      "algorithm": "default"
-    },
-    {
-      "object_id": "obj-2-2-2-2",
+      "object_id": "1VC",
       "x": -48.522603126640284,
       "y": 0.0,
       "z": -64.40550015871239,
@@ -64,10 +34,40 @@
       "algorithm": "default"
     },
     {
-      "object_id": "obj-2-2-2-2-2",
-      "x": 32.59037784933911,
+      "object_id": "1VD",
+      "x": -81.03032780268644,
+      "y": 23.021484375,
+      "z": -22.728279439760087,
+      "size": 25.0,
+      "gain": 0.0,
+      "mute": false,
+      "algorithm": "default"
+    },
+    {
+      "object_id": "VA1",
+      "x": 59.95646028145506,
       "y": 0.0,
-      "z": -66.64333342750416,
+      "z": 72.45331629332892,
+      "size": 25.0,
+      "gain": 0.0,
+      "mute": false,
+      "algorithm": "default"
+    },
+    {
+      "object_id": "VA2",
+      "x": -57.53992567277085,
+      "y": 0.0,
+      "z": 62.66288433684878,
+      "size": 25.0,
+      "gain": 0.0,
+      "mute": false,
+      "algorithm": "default"
+    },
+    {
+      "object_id": "VA3",
+      "x": 50.70280526771491,
+      "y": 0.0,
+      "z": 12.472924090336846,
       "size": 25.0,
       "gain": 0.0,
       "mute": false,

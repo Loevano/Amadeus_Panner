@@ -40,6 +40,22 @@ const DEBUG_LOG_NOISY_TYPES = new Set(["object", "osc_out", "osc_in"]);
 const DEBUG_LOG_NOISY_THROTTLE_MS = 250;
 const LFO_PARAM_OPTIONS = ["x", "y", "z", "size", "gain"];
 const LFO_POLARITIES = new Set(["bipolar", "unipolar"]);
+const ACTION_RULE_TYPES = new Set(["modulationControl", "parameterRamp"]);
+const ACTION_RULE_MODULATION_PARAMS = new Set([
+  "enabled",
+  "wave",
+  "rateHz",
+  "depth",
+  "offset",
+  "phaseDeg",
+  "mappingPhaseDeg",
+  "polarity"
+]);
+const ACTION_RULE_MODULATION_DISCRETE_VALUES = {
+  enabled: ["true", "false"],
+  wave: ["sine", "triangle", "square", "saw"],
+  polarity: ["bipolar", "unipolar"]
+};
 
 const state = {
   status: null,
@@ -192,11 +208,22 @@ const els = {
   actionManagerIdInput: document.getElementById("actionManagerIdInput"),
   actionManagerNameInput: document.getElementById("actionManagerNameInput"),
   actionManagerDurationInput: document.getElementById("actionManagerDurationInput"),
+  actionManagerRuleTypeInput: document.getElementById("actionManagerRuleTypeInput"),
+  actionManagerRuleModFields: document.getElementById("actionManagerRuleModFields"),
+  actionManagerRuleModTargetInput: document.getElementById("actionManagerRuleModTargetInput"),
+  actionManagerRuleModParamInput: document.getElementById("actionManagerRuleModParamInput"),
+  actionManagerRuleModValueInput: document.getElementById("actionManagerRuleModValueInput"),
+  actionManagerRuleModValueSelect: document.getElementById("actionManagerRuleModValueSelect"),
+  actionManagerRuleRampFields: document.getElementById("actionManagerRuleRampFields"),
+  actionManagerRuleRampTargetInput: document.getElementById("actionManagerRuleRampTargetInput"),
+  actionManagerRuleRampStartInput: document.getElementById("actionManagerRuleRampStartInput"),
+  actionManagerRuleRampEndInput: document.getElementById("actionManagerRuleRampEndInput"),
+  actionManagerRuleRampSpeedInput: document.getElementById("actionManagerRuleRampSpeedInput"),
+  actionManagerRuleRampRelativeInput: document.getElementById("actionManagerRuleRampRelativeInput"),
   actionManagerOnEndInput: document.getElementById("actionManagerOnEndInput"),
   actionManagerOscStartInput: document.getElementById("actionManagerOscStartInput"),
   actionManagerOscStopInput: document.getElementById("actionManagerOscStopInput"),
   actionManagerOscAbortInput: document.getElementById("actionManagerOscAbortInput"),
-  actionManagerEnabledInput: document.getElementById("actionManagerEnabledInput"),
   actionManagerCreateBtn: document.getElementById("actionManagerCreateBtn"),
   actionManagerSaveBtn: document.getElementById("actionManagerSaveBtn"),
   actionManagerSaveAsBtn: document.getElementById("actionManagerSaveAsBtn"),
@@ -205,7 +232,6 @@ const els = {
   actionGroupManagerIdInput: document.getElementById("actionGroupManagerIdInput"),
   actionGroupManagerNameInput: document.getElementById("actionGroupManagerNameInput"),
   actionGroupManagerOscTriggerInput: document.getElementById("actionGroupManagerOscTriggerInput"),
-  actionGroupManagerEnabledInput: document.getElementById("actionGroupManagerEnabledInput"),
   actionGroupManagerCreateBtn: document.getElementById("actionGroupManagerCreateBtn"),
   actionGroupManagerDeleteBtn: document.getElementById("actionGroupManagerDeleteBtn"),
   actionGroupEntryTypeInput: document.getElementById("actionGroupEntryTypeInput"),
@@ -982,6 +1008,196 @@ function normalizeLfoPolarity(value) {
   return "bipolar";
 }
 
+function normalizeActionRuleType(value) {
+  const raw = String(value || "").trim();
+  if (ACTION_RULE_TYPES.has(raw)) {
+    return raw;
+  }
+  const normalized = raw.toLowerCase();
+  if (normalized === "modulationcontrol" || normalized === "modulation_control" || normalized === "modulation") {
+    return "modulationControl";
+  }
+  if (normalized === "parameterramp" || normalized === "parameter_ramp" || normalized === "ramp") {
+    return "parameterRamp";
+  }
+  return "parameterRamp";
+}
+
+function parseBooleanLike(value, fallback = false) {
+  if (typeof value === "boolean") {
+    return value;
+  }
+  const normalized = String(value || "").trim().toLowerCase();
+  if (["1", "true", "yes", "on", "enabled"].includes(normalized)) {
+    return true;
+  }
+  if (["0", "false", "no", "off", "disabled"].includes(normalized)) {
+    return false;
+  }
+  return Boolean(fallback);
+}
+
+function parseActionRuleRampTarget(rawTarget) {
+  const value = String(rawTarget || "").trim();
+  if (!value) {
+    return { objectId: "", parameter: "", target: "" };
+  }
+  const splitIndex = value.lastIndexOf(".");
+  if (splitIndex <= 0) {
+    return { objectId: "", parameter: "", target: "" };
+  }
+  const objectId = normalizeObjectId(value.slice(0, splitIndex));
+  const parameter = String(value.slice(splitIndex + 1) || "").trim().toLowerCase();
+  if (!objectId || !LFO_PARAM_OPTIONS.includes(parameter)) {
+    return { objectId: "", parameter: "", target: "" };
+  }
+  return { objectId, parameter, target: `${objectId}.${parameter}` };
+}
+
+function listActionRuleRampTargets() {
+  const objectIds = getObjects()
+    .map((obj) => String(obj?.objectId || "").trim())
+    .filter(Boolean)
+    .sort((a, b) => a.localeCompare(b));
+  const targets = [];
+  for (const objectId of objectIds) {
+    for (const parameter of LFO_PARAM_OPTIONS) {
+      targets.push(`${objectId}.${parameter}`);
+    }
+  }
+  return targets;
+}
+
+function listActionRuleModulatorTargets(selectedAction = null, globalLfoIds = []) {
+  const values = new Set();
+  for (const lfoId of Array.isArray(globalLfoIds) ? globalLfoIds : []) {
+    const normalized = normalizeObjectId(lfoId);
+    if (normalized) {
+      values.add(normalized);
+    }
+  }
+  const actionLfos = Array.isArray(selectedAction?.lfos) ? selectedAction.lfos : [];
+  const actionLfoGroups = collectLfoGroups(actionLfos);
+  for (const group of actionLfoGroups) {
+    const lfoId = normalizeObjectId(group?.lfoId);
+    if (lfoId) {
+      values.add(lfoId);
+    }
+  }
+  return [...values].sort((a, b) => a.localeCompare(b));
+}
+
+function normalizeActionRuleModulationValue(parameter, rawValue, fallbackValue = 0) {
+  const param = ACTION_RULE_MODULATION_PARAMS.has(parameter) ? parameter : "depth";
+  if (param === "enabled") {
+    return parseBooleanLike(rawValue, parseBooleanLike(fallbackValue, true));
+  }
+  if (param === "wave") {
+    const normalizedWave = String(rawValue || "").trim().toLowerCase();
+    if (["sine", "triangle", "square", "saw"].includes(normalizedWave)) {
+      return normalizedWave;
+    }
+    const fallbackWave = String(fallbackValue || "").trim().toLowerCase();
+    return ["sine", "triangle", "square", "saw"].includes(fallbackWave) ? fallbackWave : "sine";
+  }
+  if (param === "polarity") {
+    return normalizeLfoPolarity(rawValue || fallbackValue);
+  }
+  const numericFallback = parseFiniteNumber(fallbackValue, 0);
+  let numeric = parseFiniteNumber(rawValue, numericFallback);
+  if (param === "rateHz") {
+    numeric = Math.max(0, numeric);
+  }
+  return numeric;
+}
+
+function normalizeActionRuleModel(rawRule = null, options = {}) {
+  const source = rawRule && typeof rawRule === "object" ? rawRule : {};
+  const selectedAction = options.selectedAction || null;
+  const globalLfoIds = Array.isArray(options.globalLfoIds) ? options.globalLfoIds : [];
+  const rampTargets = Array.isArray(options.rampTargets) ? options.rampTargets : listActionRuleRampTargets();
+  const modulationTargets = Array.isArray(options.modulationTargets)
+    ? options.modulationTargets
+    : listActionRuleModulatorTargets(selectedAction, globalLfoIds);
+  const type = normalizeActionRuleType(source.type);
+
+  if (type === "modulationControl") {
+    const targetModulatorRaw = source.targetModulator ?? source.target_modulator ?? source.target ?? "";
+    const targetModulator = normalizeObjectId(targetModulatorRaw);
+    const parameterRaw = String(source.parameter || "").trim();
+    const parameter = ACTION_RULE_MODULATION_PARAMS.has(parameterRaw) ? parameterRaw : "depth";
+    const fallbackDiscreteValues = ACTION_RULE_MODULATION_DISCRETE_VALUES[parameter];
+    const fallbackValue = fallbackDiscreteValues ? fallbackDiscreteValues[0] : 0;
+    const value = normalizeActionRuleModulationValue(parameter, source.value, fallbackValue);
+    const preferredModulator = targetModulator && modulationTargets.includes(targetModulator)
+      ? targetModulator
+      : (modulationTargets[0] || targetModulator || "");
+    return {
+      type: "modulationControl",
+      targetModulator: preferredModulator,
+      parameter,
+      value
+    };
+  }
+
+  const parsedTarget = parseActionRuleRampTarget(source.target);
+  const preferredTarget = parsedTarget.target && rampTargets.includes(parsedTarget.target)
+    ? parsedTarget.target
+    : (rampTargets[0] || parsedTarget.target || "");
+  const startValue = parseFiniteNumber(source.startValue ?? source.start_value, 0);
+  const endValue = parseFiniteNumber(source.endValue ?? source.end_value, startValue);
+  const speedMs = Math.max(0, parseFiniteNumber(source.speedMs ?? source.speed_ms ?? source.speed, 1000));
+  return {
+    type: "parameterRamp",
+    target: preferredTarget,
+    startValue,
+    endValue,
+    speedMs,
+    relative: parseBooleanLike(source.relative, false)
+  };
+}
+
+function actionRuleModulationValueFromInputs(parameter, fallback = 0) {
+  const param = ACTION_RULE_MODULATION_PARAMS.has(parameter) ? parameter : "depth";
+  if (Object.prototype.hasOwnProperty.call(ACTION_RULE_MODULATION_DISCRETE_VALUES, param)) {
+    const selectValue = String(els.actionManagerRuleModValueSelect?.value || "").trim();
+    return normalizeActionRuleModulationValue(param, selectValue, fallback);
+  }
+  const numberValue = parseFiniteNumber(els.actionManagerRuleModValueInput?.value, parseFiniteNumber(fallback, 0));
+  return normalizeActionRuleModulationValue(param, numberValue, fallback);
+}
+
+function actionRulePayloadFromInputs(baseRule = null) {
+  const fallbackRule = normalizeActionRuleModel(baseRule);
+  const type = normalizeActionRuleType(els.actionManagerRuleTypeInput?.value || fallbackRule.type);
+  if (type === "modulationControl") {
+    const parameterRaw = String(els.actionManagerRuleModParamInput?.value || fallbackRule.parameter || "depth").trim();
+    const parameter = ACTION_RULE_MODULATION_PARAMS.has(parameterRaw) ? parameterRaw : "depth";
+    const targetModulator = normalizeObjectId(els.actionManagerRuleModTargetInput?.value || fallbackRule.targetModulator || "");
+    const value = actionRuleModulationValueFromInputs(parameter, fallbackRule.value);
+    return {
+      type: "modulationControl",
+      targetModulator,
+      parameter,
+      value
+    };
+  }
+
+  const parsedTarget = parseActionRuleRampTarget(els.actionManagerRuleRampTargetInput?.value || fallbackRule.target);
+  const startValue = parseFiniteNumber(els.actionManagerRuleRampStartInput?.value, fallbackRule.startValue);
+  const endValue = parseFiniteNumber(els.actionManagerRuleRampEndInput?.value, fallbackRule.endValue);
+  const speedMsValue = Math.max(0, parseFiniteNumber(els.actionManagerRuleRampSpeedInput?.value, fallbackRule.speedMs));
+  const relative = Boolean(els.actionManagerRuleRampRelativeInput?.checked);
+  return {
+    type: "parameterRamp",
+    target: parsedTarget.target,
+    startValue,
+    endValue,
+    speedMs: speedMsValue,
+    relative
+  };
+}
+
 function lfoHasAssignedTarget(lfo) {
   const objectId = String(lfo?.objectId || lfo?.object_id || "").trim();
   const parameter = String(lfo?.parameter || "").trim();
@@ -1068,6 +1284,10 @@ async function upsertActionLfoTargetMapping(actionId, selectorKey, objectId, par
   const normalizedParam = String(parameter || "").trim();
   const normalizedPhaseInput = parseFiniteNumber(options.mappingPhaseDeg, Number.NaN);
   const hasPhaseInput = Number.isFinite(normalizedPhaseInput);
+  const hasPhaseFlipInput = options.phaseFlip !== undefined;
+  const normalizedPhaseFlipInput = Boolean(options.phaseFlip);
+  const hasTargetEnabledInput = options.targetEnabled !== undefined;
+  const normalizedTargetEnabledInput = Boolean(options.targetEnabled);
 
   if (!normalizedActionId || !normalizedSelectorKey || !normalizedObjectId || !LFO_PARAM_OPTIONS.includes(normalizedParam)) {
     throw new Error("Invalid LFO mapping request");
@@ -1105,24 +1325,36 @@ async function upsertActionLfoTargetMapping(actionId, selectorKey, objectId, par
     const basePhase = hasPhaseInput
       ? normalizedPhaseInput
       : parseFiniteNumber(currentLfo.mappingPhaseDeg, 0);
+    const phaseFlip = hasPhaseFlipInput
+      ? normalizedPhaseFlipInput
+      : Boolean(currentLfo.phaseFlip);
+    const targetEnabled = hasTargetEnabledInput
+      ? normalizedTargetEnabledInput
+      : currentLfo.targetEnabled !== false;
     mappingPhaseDeg = normalizePhaseDegrees(basePhase, parseFiniteNumber(currentLfo.mappingPhaseDeg, 0));
     nextLfos = [...lfos];
     nextLfos[existingIndex] = {
       ...currentLfo,
       objectId: normalizedObjectId,
       parameter: normalizedParam,
-      mappingPhaseDeg
+      mappingPhaseDeg,
+      phaseFlip,
+      targetEnabled
     };
   } else {
     const basePhase = hasPhaseInput
       ? normalizedPhaseInput
       : parseFiniteNumber(sourceLfo.mappingPhaseDeg, 0);
+    const phaseFlip = hasPhaseFlipInput ? normalizedPhaseFlipInput : false;
+    const targetEnabled = hasTargetEnabledInput ? normalizedTargetEnabledInput : true;
     mappingPhaseDeg = normalizePhaseDegrees(basePhase, parseFiniteNumber(sourceLfo.mappingPhaseDeg, 0));
     const linkedLfo = {
       ...(sourceLfo || {}),
       objectId: normalizedObjectId,
       parameter: normalizedParam,
-      mappingPhaseDeg
+      mappingPhaseDeg,
+      phaseFlip,
+      targetEnabled
     };
     nextLfos = [...lfos, linkedLfo];
     created = true;
@@ -1585,6 +1817,12 @@ function applyLinkParamsToInputs(linkParams) {
 function setInputValueIfIdle(input, value) {
   if (document.activeElement === input) return;
   input.value = value;
+}
+
+function setCheckboxCheckedIfIdle(input, checked) {
+  if (!(input instanceof HTMLInputElement)) return;
+  if (document.activeElement === input) return;
+  input.checked = Boolean(checked);
 }
 
 function getObjectById(objectId) {
@@ -2476,7 +2714,7 @@ function actionGroupPayloadFromInputs(baseGroup = null, options = {}) {
   return {
     groupId,
     name,
-    enabled: Boolean(els.actionGroupManagerEnabledInput.checked),
+    enabled: base.enabled !== false,
     entries: Array.isArray(base.entries) ? base.entries : [],
     oscTriggers: {
       trigger: triggerPath
@@ -2535,6 +2773,172 @@ function updateActionGroupEntryInputsState() {
   updateActionGroupEntryNamePreview();
 }
 
+function setSelectOptionsFromValues(selectElement, values, selectedValue, emptyLabel = "No options") {
+  if (!(selectElement instanceof HTMLSelectElement)) return;
+  const normalizedValues = (Array.isArray(values) ? values : [])
+    .map((value) => String(value || "").trim())
+    .filter(Boolean);
+  const normalizedSelected = String(selectedValue || "").trim();
+  const previousValue = String(selectElement.value || "").trim();
+
+  const optionValues = [...normalizedValues];
+  if (normalizedSelected && !optionValues.includes(normalizedSelected)) {
+    optionValues.push(normalizedSelected);
+  }
+
+  selectElement.innerHTML = "";
+  if (!optionValues.length) {
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = emptyLabel;
+    option.disabled = true;
+    option.selected = true;
+    selectElement.appendChild(option);
+    selectElement.disabled = true;
+    return;
+  }
+
+  for (const value of optionValues) {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = value;
+    selectElement.appendChild(option);
+  }
+  selectElement.disabled = false;
+  const nextSelected = normalizedSelected && optionValues.includes(normalizedSelected)
+    ? normalizedSelected
+    : (previousValue && optionValues.includes(previousValue) ? previousValue : optionValues[0]);
+  if (nextSelected) {
+    selectElement.value = nextSelected;
+  }
+}
+
+function setActionRuleModValueEditor(parameter, value) {
+  const param = ACTION_RULE_MODULATION_PARAMS.has(parameter) ? parameter : "depth";
+  const discreteValues = ACTION_RULE_MODULATION_DISCRETE_VALUES[param] || null;
+  const valueSelect = els.actionManagerRuleModValueSelect;
+  const valueInput = els.actionManagerRuleModValueInput;
+  if (!(valueSelect instanceof HTMLSelectElement) || !(valueInput instanceof HTMLInputElement)) {
+    return;
+  }
+
+  if (discreteValues) {
+    valueSelect.innerHTML = "";
+    for (const optionValue of discreteValues) {
+      const option = document.createElement("option");
+      option.value = optionValue;
+      if (param === "enabled") {
+        option.textContent = optionValue === "true" ? "On" : "Off";
+      } else if (param === "polarity") {
+        option.textContent = optionValue === "unipolar" ? "Unipolar" : "Bipolar";
+      } else {
+        option.textContent = optionValue.charAt(0).toUpperCase() + optionValue.slice(1);
+      }
+      valueSelect.appendChild(option);
+    }
+    const normalizedValue = param === "enabled"
+      ? (parseBooleanLike(value, true) ? "true" : "false")
+      : String(value || discreteValues[0] || "").trim().toLowerCase();
+    if (document.activeElement !== valueSelect) {
+      valueSelect.value = discreteValues.includes(normalizedValue) ? normalizedValue : discreteValues[0];
+    }
+    valueSelect.hidden = false;
+    valueInput.hidden = true;
+    valueInput.disabled = true;
+    valueSelect.disabled = false;
+    return;
+  }
+
+  valueSelect.hidden = true;
+  valueSelect.disabled = true;
+  valueInput.hidden = false;
+  valueInput.disabled = false;
+  valueInput.type = "number";
+  if (param === "rateHz") {
+    valueInput.min = "0";
+    valueInput.step = "0.01";
+  } else if (param === "phaseDeg" || param === "mappingPhaseDeg") {
+    valueInput.removeAttribute("min");
+    valueInput.step = "1";
+  } else {
+    valueInput.removeAttribute("min");
+    valueInput.step = "0.1";
+  }
+  setInputValueIfIdle(valueInput, String(parseFiniteNumber(value, 0)));
+}
+
+function updateActionRuleInputsState() {
+  const ruleType = normalizeActionRuleType(els.actionManagerRuleTypeInput?.value || "parameterRamp");
+  const showModulation = ruleType === "modulationControl";
+  if (els.actionManagerRuleModFields) {
+    els.actionManagerRuleModFields.hidden = !showModulation;
+    for (const input of els.actionManagerRuleModFields.querySelectorAll("input, select, button, textarea")) {
+      input.disabled = !showModulation;
+    }
+  }
+  if (els.actionManagerRuleRampFields) {
+    els.actionManagerRuleRampFields.hidden = showModulation;
+    for (const input of els.actionManagerRuleRampFields.querySelectorAll("input, select, button, textarea")) {
+      input.disabled = showModulation;
+    }
+  }
+  if (els.actionManagerRuleRampRelativeInput?.parentElement) {
+    els.actionManagerRuleRampRelativeInput.parentElement.hidden = showModulation;
+  }
+  if (els.actionManagerRuleRampRelativeInput) {
+    els.actionManagerRuleRampRelativeInput.disabled = showModulation;
+  }
+
+  const parameter = String(els.actionManagerRuleModParamInput?.value || "depth").trim();
+  const currentValue = Object.prototype.hasOwnProperty.call(ACTION_RULE_MODULATION_DISCRETE_VALUES, parameter)
+    ? String(els.actionManagerRuleModValueSelect?.value || "")
+    : String(els.actionManagerRuleModValueInput?.value || "");
+  setActionRuleModValueEditor(parameter, currentValue);
+}
+
+function syncActionRuleEditor(selectedAction = null, globalLfoIds = []) {
+  const modulationTargets = listActionRuleModulatorTargets(selectedAction, globalLfoIds);
+  const rampTargets = listActionRuleRampTargets();
+  const rule = normalizeActionRuleModel(selectedAction?.actionRule, {
+    selectedAction,
+    globalLfoIds,
+    modulationTargets,
+    rampTargets
+  });
+
+  setSelectOptionsFromValues(
+    els.actionManagerRuleModTargetInput,
+    modulationTargets,
+    rule.targetModulator,
+    "No modulators"
+  );
+  setSelectOptionsFromValues(
+    els.actionManagerRuleRampTargetInput,
+    rampTargets,
+    rule.target,
+    "No targets"
+  );
+
+  if (els.actionManagerRuleTypeInput) {
+    setInputValueIfIdle(els.actionManagerRuleTypeInput, rule.type);
+  }
+  if (els.actionManagerRuleModParamInput) {
+    setInputValueIfIdle(els.actionManagerRuleModParamInput, rule.parameter || "depth");
+  }
+  if (els.actionManagerRuleRampStartInput) {
+    setInputValueIfIdle(els.actionManagerRuleRampStartInput, String(parseFiniteNumber(rule.startValue, 0)));
+  }
+  if (els.actionManagerRuleRampEndInput) {
+    setInputValueIfIdle(els.actionManagerRuleRampEndInput, String(parseFiniteNumber(rule.endValue, 0)));
+  }
+  if (els.actionManagerRuleRampSpeedInput) {
+    setInputValueIfIdle(els.actionManagerRuleRampSpeedInput, String(Math.max(0, parseFiniteNumber(rule.speedMs, 0))));
+  }
+  setCheckboxCheckedIfIdle(els.actionManagerRuleRampRelativeInput, rule.relative);
+  setActionRuleModValueEditor(rule.parameter, rule.value);
+  updateActionRuleInputsState();
+}
+
 function actionPayloadFromInputs(baseAction = null, options = {}) {
   const base = baseAction && typeof baseAction === "object" ? baseAction : {};
   const fallbackActionId = String(options.fallbackActionId || state.selectedActionId || "action").trim() || "action";
@@ -2574,8 +2978,9 @@ function actionPayloadFromInputs(baseAction = null, options = {}) {
     actionId,
     name,
     durationMs,
-    enabled: Boolean(els.actionManagerEnabledInput.checked),
+    enabled: base.enabled !== false,
     onEndActionId: onEndActionId || "",
+    actionRule: actionRulePayloadFromInputs(base.actionRule),
     tracks: Array.isArray(base.tracks) ? base.tracks : [],
     lfos: Array.isArray(base.lfos) ? base.lfos : [],
     oscTriggers: {
@@ -3092,24 +3497,38 @@ async function actionManagerUpdateLfoTargetConfig(index, options = {}) {
       options.mappingPhaseDeg,
       parseFiniteNumber(lfo.mappingPhaseDeg, 0)
     );
-    const nextDepth = parseFiniteNumber(
+    const nextDepth = clampValue(parseFiniteNumber(
       options.depth,
       parseFiniteNumber(lfo.depth, 0)
-    );
+    ), [0, 100]);
     const nextOffset = parseFiniteNumber(
       options.offset,
       parseFiniteNumber(lfo.offset, 0)
     );
-    const nextPolarity = normalizeLfoPolarity(options.polarity || lfo.polarity);
+    const nextPhaseFlip = options.phaseFlip === undefined
+      ? Boolean(lfo.phaseFlip)
+      : Boolean(options.phaseFlip);
+    const nextTargetEnabled = options.targetEnabled === undefined
+      ? lfo.targetEnabled !== false
+      : Boolean(options.targetEnabled);
+    const selectedLfoId = String(selectedGroup.lfoId || "").trim();
+    if (!selectedLfoId) {
+      throw new Error("Selected LFO is missing an ID");
+    }
 
     const nextLfos = [...currentLfos];
     nextLfos[index] = {
       ...lfo,
       mappingPhaseDeg: nextPhaseDeg,
-      depth: nextDepth,
-      offset: nextOffset,
-      polarity: nextPolarity
+      phaseFlip: nextPhaseFlip,
+      targetEnabled: nextTargetEnabled
     };
+    await api("/api/action-lfo/update", "POST", {
+      actionId,
+      lfoId: selectedLfoId,
+      depth: nextDepth,
+      offset: nextOffset
+    });
     await api(`/api/action/${encodeURIComponent(actionId)}/update`, "POST", { lfos: nextLfos });
     state.selectedActionLfoActionId = actionId;
     const nextGroups = collectLfoGroups(nextLfos);
@@ -3118,7 +3537,7 @@ async function actionManagerUpdateLfoTargetConfig(index, options = {}) {
     state.selectedActionLfoTargetIndex = index;
 
     const targetLabel = lfoTargetLabel(nextLfos[index]) || `target #${index + 1}`;
-    addLog(`action lfo target update -> ${actionId} ${targetLabel} (phase ${nextPhaseDeg}°, depth ${nextDepth.toFixed(3)}, offset ${nextOffset.toFixed(3)}, ${nextPolarity})`);
+    addLog(`action lfo target update -> ${actionId} ${targetLabel} (phase ${nextPhaseDeg}°, depth ${nextDepth.toFixed(3)}, offset ${nextOffset.toFixed(3)}, flip ${nextPhaseFlip ? "on" : "off"}, target ${nextTargetEnabled ? "on" : "off"})`);
     await refreshStatus();
   } catch (error) {
     addLog(`action lfo target update failed: ${error.message}`);
@@ -3178,6 +3597,16 @@ function cancelActionLfoAutoApplyTimer() {
   state.actionLfoAutoApplyQueued = false;
 }
 
+async function waitForActionLfoAutoApplyIdle(timeoutMs = 1200) {
+  const startedAt = Date.now();
+  while (state.actionLfoAutoApplyInFlight) {
+    if ((Date.now() - startedAt) >= timeoutMs) {
+      break;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+}
+
 async function flushActionLfoAutoApply() {
   if (state.actionLfoAutoApplyInFlight) {
     state.actionLfoAutoApplyQueued = true;
@@ -3225,17 +3654,37 @@ async function actionManagerUpdateLfo(options = {}) {
       existingLfos: currentLfos,
       selectedSelector: selectedGroup.selector
     });
-    const nextLfos = [...currentLfos];
-    for (const entryIndex of selectedGroup.entryIndices) {
-      const currentEntry = nextLfos[entryIndex] || {};
-      nextLfos[entryIndex] = {
-        ...currentEntry,
-        ...updatedLfo
-      };
+    const previousLfoId = String(selectedGroup.lfoId || "").trim();
+    const nextLfoId = String(updatedLfo.lfoId || "").trim();
+    if (!previousLfoId) {
+      throw new Error("Selected LFO is missing an ID");
     }
-    await api(`/api/action/${encodeURIComponent(actionId)}/update`, "POST", {
-      lfos: nextLfos
-    });
+
+    if (nextLfoId && nextLfoId !== previousLfoId) {
+      const nextLfos = [...currentLfos];
+      for (const entryIndex of selectedGroup.entryIndices) {
+        const currentEntry = nextLfos[entryIndex] || {};
+        nextLfos[entryIndex] = {
+          ...currentEntry,
+          ...updatedLfo
+        };
+      }
+      await api(`/api/action/${encodeURIComponent(actionId)}/update`, "POST", {
+        lfos: nextLfos
+      });
+    } else {
+      await api("/api/action-lfo/update", "POST", {
+        actionId,
+        lfoId: previousLfoId,
+        wave: updatedLfo.wave,
+        rateHz: updatedLfo.rateHz,
+        depth: updatedLfo.depth,
+        offset: updatedLfo.offset,
+        phaseDeg: updatedLfo.phaseDeg,
+        polarity: updatedLfo.polarity,
+        enabled: updatedLfo.enabled
+      });
+    }
     state.selectedActionLfoActionId = actionId;
     state.selectedActionLfoIndex = selectedGroup.representativeIndex;
     if (logSuccess) {
@@ -3296,9 +3745,10 @@ async function actionManagerRemoveLfo(index) {
   }
 }
 
-async function actionManagerToggleLfoEnabled(index, enabled) {
+async function actionManagerToggleLfoEnabled(indexOrLfoId, enabled) {
   try {
     cancelActionLfoAutoApplyTimer();
+    await waitForActionLfoAutoApplyIdle();
     const actionId = selectedActionIdOrThrow();
     const action = selectedActionOrNull();
     if (!action) {
@@ -3306,20 +3756,17 @@ async function actionManagerToggleLfoEnabled(index, enabled) {
     }
     const currentLfos = Array.isArray(action.lfos) ? action.lfos : [];
     const groups = collectLfoGroups(currentLfos);
-    const selectedGroup = groups.find((group) => group.representativeIndex === index) || null;
+    const normalizedLfoId = sanitizeActionId(indexOrLfoId, { allowEmpty: true });
+    const selectedGroup = typeof indexOrLfoId === "number"
+      ? (groups.find((group) => group.representativeIndex === indexOrLfoId) || null)
+      : (groups.find((group) => group.lfoId === normalizedLfoId) || null);
     if (!selectedGroup) {
       return;
     }
-    const nextLfos = [...currentLfos];
-    for (const entryIndex of selectedGroup.entryIndices) {
-      const currentEntry = nextLfos[entryIndex] || {};
-      nextLfos[entryIndex] = {
-        ...currentEntry,
-        enabled: Boolean(enabled)
-      };
-    }
-    await api(`/api/action/${encodeURIComponent(actionId)}/update`, "POST", {
-      lfos: nextLfos
+    await api("/api/action-lfo/enabled", "POST", {
+      actionId,
+      lfoId: selectedGroup.lfoId,
+      enabled: Boolean(enabled)
     });
     state.selectedActionLfoActionId = actionId;
     state.selectedActionLfoIndex = selectedGroup.representativeIndex;
@@ -3584,6 +4031,7 @@ function renderActionManager() {
   const selectedLfoCount = Array.isArray(selectedAction?.lfos) ? collectLfoGroups(selectedAction.lfos).length : 0;
   const selectedActionLabel = selectedActionId || "-";
   els.modulationManagerSummary.textContent = `Action: ${selectedActionLabel} | LFOs: ${selectedLfoCount} | running: ${isRunning ? "yes" : "no"}`;
+  syncActionRuleEditor(selectedAction, globalLfoIds);
 
   els.actionManagerRows.innerHTML = "";
   if (!actionIds.length) {
@@ -3660,7 +4108,6 @@ function renderActionManager() {
     setInputValueIfIdle(els.actionManagerOscStartInput, String(selectedAction.oscTriggers?.start || defaultActionOscPath(actionId, "start")));
     setInputValueIfIdle(els.actionManagerOscStopInput, String(selectedAction.oscTriggers?.stop || defaultActionOscPath(actionId, "stop")));
     setInputValueIfIdle(els.actionManagerOscAbortInput, String(selectedAction.oscTriggers?.abort || defaultActionOscPath(actionId, "abort")));
-    els.actionManagerEnabledInput.checked = selectedAction.enabled !== false;
     if (!document.activeElement || document.activeElement !== els.actionManagerOnEndInput) {
       els.actionManagerOnEndInput.value = String(selectedAction.onEndActionId || "");
     }
@@ -3685,9 +4132,6 @@ function renderActionManager() {
     }
     if (!String(els.actionManagerOscAbortInput.value || "").trim()) {
       setInputValueIfIdle(els.actionManagerOscAbortInput, defaultActionOscPath(fallbackId, "abort"));
-    }
-    if (!document.activeElement || document.activeElement !== els.actionManagerEnabledInput) {
-      els.actionManagerEnabledInput.checked = true;
     }
     if (!document.activeElement || document.activeElement !== els.actionManagerOnEndInput) {
       els.actionManagerOnEndInput.value = "";
@@ -3715,7 +4159,6 @@ function renderActionManager() {
       els.actionGroupManagerOscTriggerInput,
       String(selectedActionGroup.oscTriggers?.trigger || defaultActionGroupOscPath(groupId))
     );
-    els.actionGroupManagerEnabledInput.checked = selectedActionGroup.enabled !== false;
   } else {
     const suggestedGroupId = sanitizeActionGroupId(
       deriveIdBaseFromName(String(els.actionGroupManagerNameInput.value || "").trim(), "group"),
@@ -3728,9 +4171,6 @@ function renderActionManager() {
     }
     if (!String(els.actionGroupManagerOscTriggerInput.value || "").trim()) {
       setInputValueIfIdle(els.actionGroupManagerOscTriggerInput, defaultActionGroupOscPath(suggestedGroupId));
-    }
-    if (!document.activeElement || document.activeElement !== els.actionGroupManagerEnabledInput) {
-      els.actionGroupManagerEnabledInput.checked = true;
     }
   }
 
@@ -4051,8 +4491,8 @@ function renderActionManager() {
         mappingPhaseDeg: normalizePhaseDegrees(entry.mappingPhaseDeg, 0),
         depth: parseFiniteNumber(entry.depth, 0),
         offset: parseFiniteNumber(entry.offset, 0),
-        polarity: normalizeLfoPolarity(entry.polarity),
-        enabled: entry.enabled !== false
+        phaseFlip: Boolean(entry.phaseFlip),
+        targetEnabled: entry.targetEnabled !== false
       });
     }
   }
@@ -4149,6 +4589,7 @@ function renderActionManager() {
       if (!lfoEnabled) {
         row.classList.add("is-disabled");
       }
+      const lfoToggleId = String(group.lfoId || "").trim();
       row.innerHTML = `
         <td class="action-lfo-enabled-cell">
           <button
@@ -4177,7 +4618,7 @@ function renderActionManager() {
         toggleBtn.addEventListener("click", (event) => {
           event.stopPropagation();
           const enabledNow = String(toggleBtn.dataset.actionLfoToggleEnabled || "").toLowerCase() !== "false";
-          void actionManagerToggleLfoEnabled(index, !enabledNow);
+          void actionManagerToggleLfoEnabled(lfoToggleId || index, !enabledNow);
         });
       }
       const removeBtn = row.querySelector(".action-lfo-remove-btn");
@@ -4232,30 +4673,51 @@ function renderActionManager() {
         if (targetEntry.entryIndex === state.selectedActionLfoTargetIndex) {
           row.classList.add("is-selected");
         }
-        if (targetEntry.enabled === false) {
+        if (targetEntry.targetEnabled === false) {
           row.classList.add("is-disabled");
         }
+        const depthPercent = clampValue(parseFiniteNumber(targetEntry.depth, 0), [0, 100]);
+        const phaseDegrees = normalizePhaseDegrees(targetEntry.mappingPhaseDeg, 0);
+        const isPhaseFlipped = Boolean(targetEntry.phaseFlip);
         row.innerHTML = `
+          <td class="action-lfo-target-enabled-cell">
+            <button
+              type="button"
+              class="action-enabled-toggle action-lfo-target-enabled-toggle ${targetEntry.targetEnabled ? "is-on" : ""}"
+              data-action-lfo-target-toggle-enabled="${targetEntry.targetEnabled ? "true" : "false"}"
+              aria-pressed="${targetEntry.targetEnabled ? "true" : "false"}"
+            >${targetEntry.targetEnabled ? "On" : "Off"}</button>
+          </td>
           <td>${escapeHtml(targetEntry.targetLabel)}</td>
           <td>
-            <input
-              class="action-lfo-target-phase-input"
-              type="number"
-              step="1"
-              value="${escapeHtml(String(targetEntry.mappingPhaseDeg))}"
-              data-lfo-target-index="${targetEntry.entryIndex}"
-              aria-label="Mapping phase for ${escapeHtml(targetEntry.targetLabel)}"
-            />
+            <div class="action-lfo-target-rotary-cell">
+              <input
+                class="action-lfo-target-phase-input action-lfo-target-range-input"
+                type="range"
+                min="0"
+                max="359"
+                step="1"
+                value="${escapeHtml(String(Math.round(phaseDegrees)))}"
+                data-lfo-target-index="${targetEntry.entryIndex}"
+                aria-label="Mapping phase for ${escapeHtml(targetEntry.targetLabel)}"
+              />
+              <span class="action-lfo-target-value action-lfo-target-phase-value">${escapeHtml(String(Math.round(phaseDegrees)))}&deg;</span>
+            </div>
           </td>
           <td>
-            <input
-              class="action-lfo-target-depth-input"
-              type="number"
-              step="0.1"
-              value="${escapeHtml(String(targetEntry.depth))}"
-              data-lfo-target-index="${targetEntry.entryIndex}"
-              aria-label="Depth for ${escapeHtml(targetEntry.targetLabel)}"
-            />
+            <div class="action-lfo-target-rotary-cell">
+              <input
+                class="action-lfo-target-depth-input action-lfo-target-range-input"
+                type="range"
+                min="0"
+                max="100"
+                step="1"
+                value="${escapeHtml(String(Math.round(depthPercent)))}"
+                data-lfo-target-index="${targetEntry.entryIndex}"
+                aria-label="Depth for ${escapeHtml(targetEntry.targetLabel)}"
+              />
+              <span class="action-lfo-target-value action-lfo-target-depth-value">${escapeHtml(String(Math.round(depthPercent)))}%</span>
+            </div>
           </td>
           <td>
             <input
@@ -4267,17 +4729,14 @@ function renderActionManager() {
               aria-label="Offset for ${escapeHtml(targetEntry.targetLabel)}"
             />
           </td>
-          <td>
-            <select
-              class="action-lfo-target-polarity-input"
-              data-lfo-target-index="${targetEntry.entryIndex}"
-              aria-label="Polarity for ${escapeHtml(targetEntry.targetLabel)}"
-            >
-              <option value="bipolar"${targetEntry.polarity === "bipolar" ? " selected" : ""}>Bipolar</option>
-              <option value="unipolar"${targetEntry.polarity === "unipolar" ? " selected" : ""}>Unipolar</option>
-            </select>
+          <td class="action-lfo-target-polarity-cell">
+            <button
+              type="button"
+              class="action-enabled-toggle action-lfo-target-polarity-toggle ${isPhaseFlipped ? "is-on" : ""}"
+              data-action-lfo-target-phase-flip="${isPhaseFlipped ? "true" : "false"}"
+              aria-pressed="${isPhaseFlipped ? "true" : "false"}"
+            >${isPhaseFlipped ? "Flipped" : "Normal"}</button>
           </td>
-          <td>${targetEntry.enabled ? "On" : "Off"}</td>
           <td class="action-manager-row-actions-cell">
             <div class="action-manager-row-actions">
               <button type="button" data-action-lfo-target-command="update" data-index="${targetEntry.entryIndex}">Save</button>
@@ -4289,50 +4748,118 @@ function renderActionManager() {
         const phaseInput = row.querySelector(".action-lfo-target-phase-input");
         const depthInput = row.querySelector(".action-lfo-target-depth-input");
         const offsetInput = row.querySelector(".action-lfo-target-offset-input");
-        const polarityInput = row.querySelector(".action-lfo-target-polarity-input");
+        const phaseValueLabel = row.querySelector(".action-lfo-target-phase-value");
+        const depthValueLabel = row.querySelector(".action-lfo-target-depth-value");
+        const polarityToggle = row.querySelector(".action-lfo-target-polarity-toggle");
+        const enabledToggle = row.querySelector(".action-lfo-target-enabled-toggle");
         const saveBtn = row.querySelector('button[data-action-lfo-target-command="update"]');
         const removeBtn = row.querySelector('button[data-action-lfo-target-command="remove"]');
         const entryIndex = targetEntry.entryIndex;
 
         const saveTargetConfig = () => {
           const phaseValue = phaseInput instanceof HTMLInputElement
-            ? parseFiniteNumber(phaseInput.value, targetEntry.mappingPhaseDeg)
+            ? normalizePhaseDegrees(phaseInput.value, targetEntry.mappingPhaseDeg)
             : targetEntry.mappingPhaseDeg;
           const depthValue = depthInput instanceof HTMLInputElement
-            ? parseFiniteNumber(depthInput.value, targetEntry.depth)
+            ? clampValue(parseFiniteNumber(depthInput.value, targetEntry.depth), [0, 100])
             : targetEntry.depth;
           const offsetValue = offsetInput instanceof HTMLInputElement
             ? parseFiniteNumber(offsetInput.value, targetEntry.offset)
             : targetEntry.offset;
-          const polarityValue = polarityInput instanceof HTMLSelectElement
-            ? normalizeLfoPolarity(polarityInput.value)
-            : targetEntry.polarity;
+          const phaseFlipValue = polarityToggle instanceof HTMLButtonElement
+            ? String(polarityToggle.dataset.actionLfoTargetPhaseFlip || "").toLowerCase() === "true"
+            : Boolean(targetEntry.phaseFlip);
+          const targetEnabledValue = enabledToggle instanceof HTMLButtonElement
+            ? String(enabledToggle.dataset.actionLfoTargetToggleEnabled || "").toLowerCase() !== "false"
+            : targetEntry.targetEnabled;
           void actionManagerUpdateLfoTargetConfig(entryIndex, {
             mappingPhaseDeg: phaseValue,
             depth: depthValue,
             offset: offsetValue,
-            polarity: polarityValue
+            phaseFlip: phaseFlipValue,
+            targetEnabled: targetEnabledValue
           });
         };
 
+        const syncPhaseLabel = () => {
+          if (!(phaseInput instanceof HTMLInputElement) || !(phaseValueLabel instanceof HTMLElement)) return;
+          const normalizedPhase = Math.round(normalizePhaseDegrees(phaseInput.value, targetEntry.mappingPhaseDeg));
+          phaseInput.value = String(normalizedPhase);
+          phaseValueLabel.textContent = `${normalizedPhase}°`;
+        };
+
+        const syncDepthLabel = () => {
+          if (!(depthInput instanceof HTMLInputElement) || !(depthValueLabel instanceof HTMLElement)) return;
+          const normalizedDepth = clampValue(parseFiniteNumber(depthInput.value, targetEntry.depth), [0, 100]);
+          const roundedDepth = Math.round(normalizedDepth);
+          depthInput.value = String(roundedDepth);
+          depthValueLabel.textContent = `${roundedDepth}%`;
+        };
+
+        const setTargetPolarityToggle = (phaseFlip) => {
+          if (!(polarityToggle instanceof HTMLButtonElement)) return;
+          const isOn = Boolean(phaseFlip);
+          polarityToggle.dataset.actionLfoTargetPhaseFlip = isOn ? "true" : "false";
+          polarityToggle.classList.toggle("is-on", isOn);
+          polarityToggle.setAttribute("aria-pressed", isOn ? "true" : "false");
+          polarityToggle.textContent = isOn ? "Flipped" : "Normal";
+        };
+
+        const setTargetEnabledToggle = (enabled) => {
+          if (!(enabledToggle instanceof HTMLButtonElement)) return;
+          const nextEnabled = Boolean(enabled);
+          enabledToggle.dataset.actionLfoTargetToggleEnabled = nextEnabled ? "true" : "false";
+          enabledToggle.classList.toggle("is-on", nextEnabled);
+          enabledToggle.setAttribute("aria-pressed", nextEnabled ? "true" : "false");
+          enabledToggle.textContent = nextEnabled ? "On" : "Off";
+        };
+
+        syncPhaseLabel();
+        syncDepthLabel();
+        setTargetPolarityToggle(targetEntry.phaseFlip);
+        setTargetEnabledToggle(targetEntry.targetEnabled);
+
         if (phaseInput instanceof HTMLInputElement) {
-          phaseInput.addEventListener("keydown", (event) => {
-            if (event.key !== "Enter") return;
-            event.preventDefault();
-            saveTargetConfig();
-          });
-        }
-        for (const inputElement of [depthInput, offsetInput]) {
-          if (!(inputElement instanceof HTMLInputElement)) continue;
-          inputElement.addEventListener("keydown", (event) => {
-            if (event.key !== "Enter") return;
-            event.preventDefault();
-            saveTargetConfig();
-          });
-        }
-        if (polarityInput instanceof HTMLSelectElement) {
-          polarityInput.addEventListener("change", (event) => {
+          phaseInput.addEventListener("input", (event) => {
             event.stopPropagation();
+            syncPhaseLabel();
+          });
+          phaseInput.addEventListener("change", (event) => {
+            event.stopPropagation();
+            saveTargetConfig();
+          });
+        }
+        if (depthInput instanceof HTMLInputElement) {
+          depthInput.addEventListener("input", (event) => {
+            event.stopPropagation();
+            syncDepthLabel();
+          });
+          depthInput.addEventListener("change", (event) => {
+            event.stopPropagation();
+            saveTargetConfig();
+          });
+        }
+        if (offsetInput instanceof HTMLInputElement) {
+          offsetInput.addEventListener("keydown", (event) => {
+            if (event.key !== "Enter") return;
+            event.preventDefault();
+            event.stopPropagation();
+            saveTargetConfig();
+          });
+        }
+        if (polarityToggle instanceof HTMLButtonElement) {
+          polarityToggle.addEventListener("click", (event) => {
+            event.stopPropagation();
+            const isFlippedNow = String(polarityToggle.dataset.actionLfoTargetPhaseFlip || "").toLowerCase() === "true";
+            setTargetPolarityToggle(!isFlippedNow);
+            saveTargetConfig();
+          });
+        }
+        if (enabledToggle instanceof HTMLButtonElement) {
+          enabledToggle.addEventListener("click", (event) => {
+            event.stopPropagation();
+            const enabledNow = String(enabledToggle.dataset.actionLfoTargetToggleEnabled || "").toLowerCase() !== "false";
+            setTargetEnabledToggle(!enabledNow);
             saveTargetConfig();
           });
         }
@@ -4906,6 +5433,11 @@ function renderManager() {
       <td>${escapeHtml(positionText)}</td>
       <td class="groups-cell">${escapeHtml(groupText)}</td>
       <td class="all-exclude-cell"><input class="row-exclude-all-toggle" type="checkbox" ${excludeFromAll ? "checked" : ""} aria-label="Exclude ${escapeHtml(obj.objectId)} from All" /></td>
+      <td class="action-manager-row-actions-cell">
+        <div class="action-manager-row-actions">
+          <button class="danger manager-object-remove-btn" type="button" aria-label="Remove ${escapeHtml(obj.objectId)}">Remove</button>
+        </div>
+      </td>
     `;
 
     const excludeToggle = row.querySelector(".row-exclude-all-toggle");
@@ -4921,6 +5453,24 @@ function renderManager() {
         } catch (error) {
           addLog(`exclude-from-all failed (${obj.objectId}): ${error.message}`);
           await refreshStatus();
+        }
+      });
+    }
+
+    const removeBtn = row.querySelector(".manager-object-remove-btn");
+    if (removeBtn instanceof HTMLButtonElement) {
+      removeBtn.addEventListener("click", async (event) => {
+        event.stopPropagation();
+        const objectId = String(obj.objectId || "").trim();
+        if (!objectId) return;
+        try {
+          await api(`/api/object/${encodeURIComponent(objectId)}/remove`, "POST", {});
+          const nextSelection = selectedObjectTargets().filter((selectedId) => selectedId !== objectId);
+          setSelection(nextSelection);
+          addLog(`object remove -> ${objectId}`);
+          await refreshStatus();
+        } catch (error) {
+          addLog(`remove failed: ${error.message}`);
         }
       });
     }
@@ -5873,6 +6423,20 @@ function setupHandlers() {
     }
   });
 
+  if (els.actionManagerRuleTypeInput) {
+    els.actionManagerRuleTypeInput.addEventListener("change", () => {
+      updateActionRuleInputsState();
+    });
+  }
+
+  if (els.actionManagerRuleModParamInput) {
+    els.actionManagerRuleModParamInput.addEventListener("change", () => {
+      const parameter = String(els.actionManagerRuleModParamInput.value || "depth").trim();
+      const defaultValue = normalizeActionRuleModulationValue(parameter, 0, 0);
+      setActionRuleModValueEditor(parameter, defaultValue);
+    });
+  }
+
   els.actionGroupManagerNameInput.addEventListener("input", () => {
     const nameValue = String(els.actionGroupManagerNameInput.value || "").trim();
     if (!nameValue) {
@@ -5904,10 +6468,6 @@ function setupHandlers() {
 
   els.actionGroupManagerOscTriggerInput.addEventListener("input", () => {
     scheduleActionGroupAutoSave();
-  });
-
-  els.actionGroupManagerEnabledInput.addEventListener("change", () => {
-    scheduleActionGroupAutoSave(0);
   });
 
   els.actionGroupManagerIdInput.addEventListener("input", () => {

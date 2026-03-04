@@ -296,3 +296,6 @@
 - Added API endpoint `POST /api/action-lfo/enabled` and switched action-group entry preview execution to use it.
 - Updated Action Group LFO entry selector to use global LFO IDs rather than only the selected action’s local list.
 - Extended showfile schema/templates with optional `global_lfos` definitions.
+
+## 2026-03-04 20:04 CET
+- Fixed live action LFO enable/disable behavior while an action is running: the action worker now reads the latest runtime action snapshot each tick, so `POST /api/action-lfo/enabled` takes effect immediately in modulation output and visible UI movement.

@@ -411,6 +411,58 @@ button:hover {
   padding: 5px 9px;
 }
 
+.object-manager-edit-block {
+  padding: 8px 9px;
+}
+
+.object-manager-edit-block h3 {
+  margin: 0 0 6px;
+}
+
+.object-manager-edit-block > label {
+  display: block;
+  font-size: 0.84rem;
+  margin-bottom: 4px;
+}
+
+.object-manager-edit-block #managerObjectSelect {
+  margin-bottom: 6px;
+  padding: 5px 7px;
+}
+
+.object-manager-edit-block .row {
+  gap: 6px;
+  margin-bottom: 6px;
+  align-items: center;
+}
+
+.object-manager-edit-block .row:last-child {
+  margin-bottom: 0;
+}
+
+.object-manager-edit-block #managerRenameInput,
+.object-manager-edit-block #managerTypeInput {
+  flex: 0 1 190px;
+  max-width: 220px;
+  min-width: 120px;
+  padding: 5px 7px;
+}
+
+.object-manager-edit-block #managerColorInput {
+  flex: 0 0 44px;
+  width: 44px;
+  min-width: 44px;
+  min-height: 30px;
+  padding: 2px;
+}
+
+.object-manager-edit-block #managerRenameBtn,
+.object-manager-edit-block #managerTypeBtn,
+.object-manager-edit-block #managerColorBtn {
+  padding: 5px 8px;
+  font-size: 0.82rem;
+}
+
 .action-manager-grid {
   grid-template-columns: 1fr;
   grid-template-areas:
@@ -594,6 +646,25 @@ button:hover {
   margin-bottom: 10px;
 }
 
+.action-manager-panel .action-rule-grid {
+  margin-top: -2px;
+  margin-bottom: 8px;
+}
+
+.action-manager-panel .action-rule-value-wrap {
+  width: 100%;
+}
+
+.action-manager-panel .action-rule-value-wrap input,
+.action-manager-panel .action-rule-value-wrap select {
+  width: 100%;
+}
+
+.action-manager-panel .action-rule-relative-row {
+  margin-top: -2px;
+  margin-bottom: 8px;
+}
+
 .action-group-select-row {
   display: grid;
   grid-template-columns: minmax(200px, 1fr) minmax(160px, 0.6fr);
@@ -665,6 +736,15 @@ button:hover {
   text-align: right;
 }
 
+.action-group-list-table th:last-child {
+  text-align: right;
+}
+
+.action-group-list-table .action-manager-row-actions {
+  width: 100%;
+  justify-content: flex-end;
+}
+
 .action-group-list-table tbody tr:focus-visible {
   outline: 2px solid #0b6b66;
   outline-offset: -2px;
@@ -733,12 +813,55 @@ button:hover {
 
 .action-lfo-target-table td.action-manager-row-actions-cell {
   text-align: right;
+  white-space: nowrap;
 }
 
-.action-lfo-target-phase-input,
-.action-lfo-target-depth-input,
-.action-lfo-target-offset-input,
-.action-lfo-target-polarity-input {
+.action-lfo-target-table th.action-manager-row-actions-cell {
+  text-align: right;
+}
+
+.action-lfo-target-table .action-manager-row-actions {
+  width: 100%;
+  justify-content: flex-end;
+}
+
+.action-lfo-target-table td.action-lfo-target-enabled-cell,
+.action-lfo-target-table td.action-lfo-target-polarity-cell {
+  text-align: center;
+  white-space: nowrap;
+}
+
+.action-lfo-target-table .action-lfo-target-enabled-toggle {
+  min-width: 46px;
+}
+
+.action-lfo-target-table .action-lfo-target-polarity-toggle {
+  min-width: 82px;
+}
+
+.action-lfo-target-rotary-cell {
+  display: grid;
+  grid-template-columns: minmax(88px, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  min-width: 150px;
+}
+
+.action-lfo-target-range-input {
+  width: 100%;
+  margin: 0;
+  accent-color: #0b6b66;
+}
+
+.action-lfo-target-value {
+  min-width: 36px;
+  text-align: right;
+  font-family: "SFMono-Regular", Menlo, Consolas, monospace;
+  font-size: 0.78rem;
+  color: #385067;
+}
+
+.action-lfo-target-offset-input {
   width: 88px;
   min-width: 72px;
   padding: 4px 6px;
@@ -1120,6 +1243,16 @@ button:hover {
 
   .object-manager-add-block .manager-field-grid {
     grid-template-columns: 1fr 1fr;
+  }
+
+  .object-manager-edit-block .row {
+    flex-wrap: wrap;
+  }
+
+  .object-manager-edit-block #managerRenameInput,
+  .object-manager-edit-block #managerTypeInput {
+    flex: 1 1 180px;
+    max-width: none;
   }
 
   .action-manager-grid {
