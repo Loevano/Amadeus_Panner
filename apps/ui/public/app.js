@@ -145,6 +145,7 @@ const state = {
   lfoDebugLastValueByKey: {},
   lastLfoDebugEventByAction: {},
   logs: [],
+  managerRenderKey: "",
   camera: {
     yawDeg: CAMERA_DEFAULT.yawDeg,
     pitchDeg: CAMERA_DEFAULT.pitchDeg,
@@ -864,6 +865,13 @@ function escapeHtml(value) {
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;");
+}
+
+function setTextIfChanged(element, value) {
+  if (!(element instanceof HTMLElement)) return;
+  const next = String(value || "");
+  if (element.textContent === next) return;
+  element.textContent = next;
 }
 
 async function api(path, method = "GET", body) {
@@ -1834,30 +1842,40 @@ function isColorLinkedForGroup(group) {
   return linkParams.includes("color");
 }
 
-function effectiveGroupColorForObject(objectId) {
-  if (!areGroupsEnabled()) return null;
-  const targetId = String(objectId || "").trim();
-  if (!targetId) return null;
-
-  const groups = [...getObjectGroups()]
+// Resolve deterministic group-driven colors once (groupId order) for the current render pass.
+function buildEffectiveGroupColorMap(groupsInput) {
+  if (!areGroupsEnabled()) return new Map();
+  const groups = [...(Array.isArray(groupsInput) ? groupsInput : getObjectGroups())]
     .filter((group) => isGroupEnabled(group))
     .sort((a, b) => String(a.groupId || "").localeCompare(String(b.groupId || "")));
-
+  const colorByObjectId = new Map();
   for (const group of groups) {
-    const members = Array.isArray(group.objectIds) ? group.objectIds : [];
-    if (!members.includes(targetId)) continue;
     if (!isColorLinkedForGroup(group)) continue;
     const color = groupColorOrNull(group);
-    if (color) return color;
+    if (!color) continue;
+    const members = Array.isArray(group.objectIds) ? group.objectIds : [];
+    for (const memberId of members) {
+      const targetId = String(memberId || "").trim();
+      if (!targetId || colorByObjectId.has(targetId)) continue;
+      colorByObjectId.set(targetId, color);
+    }
   }
-  return null;
+  return colorByObjectId;
 }
 
-function effectiveObjectColor(obj) {
+function effectiveGroupColorForObject(objectId, precomputedColorMap = null) {
+  const targetId = String(objectId || "").trim();
+  if (!targetId) return null;
+  const colorMap = precomputedColorMap instanceof Map ? precomputedColorMap : buildEffectiveGroupColorMap();
+  return colorMap.get(targetId) || null;
+}
+
+function effectiveObjectColor(obj, precomputedColorMap = null) {
   const baseColor = normalizeHexColor(obj?.color, DEFAULT_OBJECT_COLOR);
-  return effectiveGroupColorForObject(obj?.objectId) || baseColor;
+  return effectiveGroupColorForObject(obj?.objectId, precomputedColorMap) || baseColor;
 }
 
+// Reserved for future client-side preview mode where group links are applied before server round-trip.
 function livePropagateGroupLinks(previousByObjectId, patchByObjectId) {
   const groups = getSelectableGroups();
   if (!groups.length) return;
@@ -1900,19 +1918,29 @@ function livePropagateGroupLinks(previousByObjectId, patchByObjectId) {
   }
 }
 
-function selectedLinkParamsFromInputs() {
-  return els.managerGroupLinkInputs
+// Shared helper for checkbox lists that store the logical param key in `data-param`.
+function selectedDataParamsFromInputs(inputs) {
+  return (Array.isArray(inputs) ? inputs : [])
     .filter((input) => input.checked)
     .map((input) => String(input.dataset.param || "").trim())
     .filter(Boolean);
 }
 
-function applyLinkParamsToInputs(linkParams) {
-  const selected = new Set(Array.isArray(linkParams) ? linkParams : []);
-  for (const input of els.managerGroupLinkInputs) {
-    const param = String(input.dataset.param || "");
+// Shared inverse of `selectedDataParamsFromInputs` for restoring checkbox state.
+function applyDataParamsToInputs(inputs, params) {
+  const selected = new Set(Array.isArray(params) ? params : []);
+  for (const input of (Array.isArray(inputs) ? inputs : [])) {
+    const param = String(input.dataset.param || "").trim();
     input.checked = selected.has(param);
   }
+}
+
+function selectedLinkParamsFromInputs() {
+  return selectedDataParamsFromInputs(els.managerGroupLinkInputs);
+}
+
+function applyLinkParamsToInputs(linkParams) {
+  applyDataParamsToInputs(els.managerGroupLinkInputs, linkParams);
 }
 
 function setInputValueIfIdle(input, value) {
@@ -1953,9 +1981,7 @@ function setPage(nextPage) {
   els.viewModulationManagerBtn.setAttribute("aria-selected", nextPage === "modulation-manager" ? "true" : "false");
   els.viewObjectManagerBtn.setAttribute("aria-selected", nextPage === "object-manager" ? "true" : "false");
   els.viewGroupManagerBtn.setAttribute("aria-selected", nextPage === "group-manager" ? "true" : "false");
-  if (nextPage === "panner") {
-    renderPanner();
-  }
+  renderAll();
 }
 
 function getCameraBasis() {
@@ -2133,6 +2159,8 @@ function renderPanner() {
   drawGroundGrid(camera);
   drawRoomBox(camera);
   drawAxes(camera);
+  const selectedObjectIdSet = new Set(state.selectedObjectIds);
+  const groupColorByObjectId = buildEffectiveGroupColorMap();
 
   const renderables = [];
   for (const obj of getObjects()) {
@@ -2154,7 +2182,7 @@ function renderPanner() {
   renderables.sort((a, b) => b.projected.depth - a.projected.depth);
 
   for (const item of renderables) {
-    const isSelected = isObjectSelected(item.obj.objectId);
+    const isSelected = selectedObjectIdSet.has(item.obj.objectId);
     const isPrimarySelected = item.obj.objectId === state.selectedObjectId;
 
     if (item.floorProjected) {
@@ -2179,7 +2207,7 @@ function renderPanner() {
     const cx = item.projected.x;
     const cy = item.projected.y;
     const radius = item.radius;
-    const baseColor = effectiveObjectColor(item.obj);
+    const baseColor = effectiveObjectColor(item.obj, groupColorByObjectId);
     const colorOuter = isSelected ? mixHex(baseColor, "#003f3b", 0.38) : mixHex(baseColor, "#14253b", 0.52);
     const colorInner = isSelected ? mixHex(baseColor, "#ffffff", 0.52) : mixHex(baseColor, "#ffffff", 0.28);
 
@@ -4213,6 +4241,9 @@ function renderSelectedActionLfoDebug() {
 }
 
 function renderActionManager() {
+  if (state.currentPage !== "action-manager" && state.currentPage !== "action-group-manager" && state.currentPage !== "modulation-manager") {
+    return;
+  }
   const actionsById = getActionsById();
   const actionIds = Object.keys(actionsById).sort((a, b) => a.localeCompare(b));
   const actionGroupsById = getActionGroupsById();
@@ -5388,7 +5419,7 @@ function renderGroupsManager() {
     setInputValueIfIdle(els.managerGroupName, String(selectedGroup.name || selectedGroup.groupId));
     setInputValueIfIdle(els.managerGroupColor, normalizeHexColor(selectedGroup.color, DEFAULT_GROUP_COLOR));
     applyLinkParamsToInputs(selectedGroup.linkParams || []);
-    els.managerGroupSummary.textContent = `Group members: ${selectedGroup.objectIds.length}. Update will replace members with current selection (${selectedObjectIds.length}).`;
+    setTextIfChanged(els.managerGroupSummary, `Group members: ${selectedGroup.objectIds.length}. Update will replace members with current selection (${selectedObjectIds.length}).`);
   } else {
     const suggestedId = uniqueGroupId(suggestGroupBaseFromSelection(selectedObjectIds));
     state.draftSuggestedIds.objectGroup = suggestedId;
@@ -5404,7 +5435,7 @@ function renderGroupsManager() {
       const groupName = humanizeId(String(els.managerGroupId.value || suggestedId));
       setInputValueIfIdle(els.managerGroupName, groupName || String(els.managerGroupId.value || suggestedId));
     }
-    els.managerGroupSummary.textContent = `${groups.length} group${groups.length === 1 ? "" : "s"} total. Create can be empty; Update uses current selection (${selectedObjectIds.length}).`;
+    setTextIfChanged(els.managerGroupSummary, `${groups.length} group${groups.length === 1 ? "" : "s"} total. Create can be empty; Update uses current selection (${selectedObjectIds.length}).`);
   }
 
   els.managerGroupUpdateBtn.disabled = !state.selectedGroupId;
@@ -5446,18 +5477,11 @@ function sameNormalizedStringSet(a, b) {
 }
 
 function selectedGroupManagerLinkParams() {
-  return els.groupManagerEditLinkInputs
-    .filter((input) => input.checked)
-    .map((input) => String(input.dataset.param || "").trim())
-    .filter(Boolean);
+  return selectedDataParamsFromInputs(els.groupManagerEditLinkInputs);
 }
 
 function applyGroupManagerLinkParams(linkParams) {
-  const selected = new Set(Array.isArray(linkParams) ? linkParams : []);
-  for (const input of els.groupManagerEditLinkInputs) {
-    const param = String(input.dataset.param || "").trim();
-    input.checked = selected.has(param);
-  }
+  applyDataParamsToInputs(els.groupManagerEditLinkInputs, linkParams);
 }
 
 function selectedGroupManagerMemberIds() {
@@ -5666,13 +5690,47 @@ function selectGroupManagerGroup(nextGroupId) {
 }
 
 function renderManager() {
+  if (state.currentPage !== "object-manager") return;
   syncSelectedIdsWithObjects();
   const objects = getObjects();
   const orderedObjectIds = objects.map((obj) => String(obj.objectId || "").trim()).filter(Boolean);
   const groups = getObjectGroups();
   const allGroup = getVirtualAllGroup();
   const allMembers = new Set(allGroup.objectIds);
+  // Pre-index group metadata so each table row can render in O(1) lookups.
+  const groupColorByObjectId = buildEffectiveGroupColorMap(groups);
+  const groupLabelsByObjectId = new Map();
+  for (const group of groups) {
+    const groupLabel = `${group.groupId}${isGroupEnabled(group) ? "" : " (off)"}`;
+    const memberIds = Array.isArray(group.objectIds) ? group.objectIds : [];
+    for (const memberId of memberIds) {
+      const targetId = String(memberId || "").trim();
+      if (!targetId) continue;
+      if (!groupLabelsByObjectId.has(targetId)) {
+        groupLabelsByObjectId.set(targetId, []);
+      }
+      groupLabelsByObjectId.get(targetId).push(groupLabel);
+    }
+  }
   const selectedIds = selectedObjectTargets();
+  const selectedObjectIdSet = new Set(state.selectedObjectIds);
+  const managerRenderKey = [
+    `groups-enabled:${areGroupsEnabled() ? "1" : "0"}`,
+    `group-select-enabled:${state.groupSelectEnabled ? "1" : "0"}`,
+    `selected:${String(state.selectedObjectId || "")}`,
+    `selected-list:${state.selectedObjectIds.join(",")}`,
+    `selected-group:${String(state.selectedGroupId || "")}`,
+    `objects:${objects.map((obj) => (
+      `${String(obj.objectId || "").trim()}|${String(obj.type || "")}|${String(obj.color || "")}|${Number(obj.x)}|${Number(obj.y)}|${Number(obj.z)}|${Boolean(obj.excludeFromAll) ? 1 : 0}`
+    )).join(";")}`,
+    `groups:${groups.map((group) => (
+      `${String(group.groupId || "").trim()}|${String(group.name || "")}|${String(group.color || "")}|${isGroupEnabled(group) ? 1 : 0}|${(Array.isArray(group.linkParams) ? group.linkParams : []).map((param) => String(param || "").trim()).join(",")}|${(Array.isArray(group.objectIds) ? group.objectIds : []).map((memberId) => String(memberId || "").trim()).join(",")}`
+    )).join(";")}`
+  ].join("\n");
+  if (state.managerRenderKey === managerRenderKey) {
+    return;
+  }
+  state.managerRenderKey = managerRenderKey;
   if (els.managerGroupSelectToggle instanceof HTMLInputElement) {
     els.managerGroupSelectToggle.checked = Boolean(state.groupSelectEnabled);
     els.managerGroupSelectToggle.title = areGroupsEnabled()
@@ -5683,7 +5741,7 @@ function renderManager() {
     const suggestedAddId = uniqueObjectId(suggestObjectBaseFromType(els.managerAddType.value || DEFAULT_OBJECT_TYPE));
     setInputValueIfIdle(els.managerAddId, suggestedAddId);
   }
-  els.managerObjectCount.textContent = `${objects.length} object${objects.length === 1 ? "" : "s"}`;
+  setTextIfChanged(els.managerObjectCount, `${objects.length} object${objects.length === 1 ? "" : "s"}`);
 
   els.managerObjectSelect.innerHTML = "";
   const placeholder = document.createElement("option");
@@ -5717,7 +5775,7 @@ function renderManager() {
   els.managerObjectRows.innerHTML = "";
   for (const obj of objects) {
     const row = document.createElement("tr");
-    const rowIsSelected = isObjectSelected(obj.objectId);
+    const rowIsSelected = selectedObjectIdSet.has(obj.objectId);
     if (rowIsSelected) row.classList.add("is-selected");
     if (obj.objectId === state.selectedObjectId) row.classList.add("is-primary");
     row.dataset.objectId = obj.objectId;
@@ -5725,12 +5783,10 @@ function renderManager() {
 
     const positionText = `${Number(obj.x).toFixed(1)}, ${Number(obj.y).toFixed(1)}, ${Number(obj.z).toFixed(1)}`;
     const objectColor = normalizeHexColor(obj.color, DEFAULT_OBJECT_COLOR);
-    const groupColor = effectiveGroupColorForObject(obj.objectId);
+    const groupColor = groupColorByObjectId.get(obj.objectId) || null;
     const color = groupColor || objectColor;
     const colorSuffix = groupColor && groupColor !== objectColor ? " (group)" : "";
-    const groupLabels = groups
-      .filter((group) => Array.isArray(group.objectIds) && group.objectIds.includes(obj.objectId))
-      .map((group) => `${group.groupId}${isGroupEnabled(group) ? "" : " (off)"}`);
+    const groupLabels = [...(groupLabelsByObjectId.get(obj.objectId) || [])];
     if (allMembers.has(obj.objectId)) {
       groupLabels.unshift(VIRTUAL_ALL_GROUP_NAME);
     }
@@ -5854,15 +5910,26 @@ function renderAll() {
   syncSelectedIdsWithObjects();
   renderStatusLine();
   renderShowControls();
-  renderActionManager();
   renderDebugControls();
-  renderObjectSelect();
-  renderInspector();
-  renderGroupsPanel();
-  renderManager();
-  renderGroupManager();
-  syncCameraInputs();
-  renderPanner();
+  if (state.currentPage === "panner") {
+    renderObjectSelect();
+    renderInspector();
+    renderGroupsPanel();
+    syncCameraInputs();
+    renderPanner();
+    return;
+  }
+  if (state.currentPage === "object-manager") {
+    renderManager();
+    return;
+  }
+  if (state.currentPage === "group-manager") {
+    renderGroupManager();
+    return;
+  }
+  if (state.currentPage === "action-manager" || state.currentPage === "action-group-manager" || state.currentPage === "modulation-manager") {
+    renderActionManager();
+  }
 }
 
 async function refreshStatus() {
@@ -5911,7 +5978,7 @@ async function refreshStatus() {
 }
 
 async function pushObjectPatch(objectId, patch, options = {}) {
-  const { propagateGroupLinks = true, lfoCenterMode = false, lfoCenterGestureId = "" } = options;
+  const patchOptions = normalizeObjectPatchOptions(options);
   const normalizedObjectId = String(objectId || "").trim();
   if (!normalizedObjectId) return;
   const previousSeq = Number(state.objectUpdateSeqByObjectId[normalizedObjectId] || 0);
@@ -5920,11 +5987,11 @@ async function pushObjectPatch(objectId, patch, options = {}) {
   try {
     await api(`/api/object/${encodeURIComponent(normalizedObjectId)}`, "POST", {
       ...patch,
-      propagateGroupLinks: Boolean(propagateGroupLinks),
+      propagateGroupLinks: patchOptions.propagateGroupLinks,
       clientUpdateSessionId: state.objectUpdateSessionId,
       clientUpdateSeq,
-      lfoCenterMode: Boolean(lfoCenterMode),
-      lfoCenterGestureId: String(lfoCenterGestureId || "").trim(),
+      lfoCenterMode: patchOptions.lfoCenterMode,
+      lfoCenterGestureId: patchOptions.lfoCenterGestureId,
       includeStatus: false
     });
   } catch (error) {
@@ -6037,14 +6104,14 @@ function configureDragMode(mode, point) {
 }
 
 function mergeDragPatchOptions(currentOptions, nextOptions) {
-  const current = currentOptions && typeof currentOptions === "object" ? currentOptions : {};
-  const next = nextOptions && typeof nextOptions === "object" ? nextOptions : {};
+  const current = normalizeObjectPatchOptions(currentOptions);
+  const next = normalizeObjectPatchOptions(nextOptions);
   return {
     // If any write disables group-link propagation, keep it disabled.
-    propagateGroupLinks: Boolean(current.propagateGroupLinks !== false) && Boolean(next.propagateGroupLinks !== false),
+    propagateGroupLinks: current.propagateGroupLinks && next.propagateGroupLinks,
     // If any write is center-mode, keep it enabled.
-    lfoCenterMode: Boolean(current.lfoCenterMode) || Boolean(next.lfoCenterMode),
-    lfoCenterGestureId: String(next.lfoCenterGestureId || current.lfoCenterGestureId || "").trim()
+    lfoCenterMode: current.lfoCenterMode || next.lfoCenterMode,
+    lfoCenterGestureId: next.lfoCenterGestureId || current.lfoCenterGestureId
   };
 }
 
@@ -6100,14 +6167,31 @@ function waitForDragPatchIdle(objectId, timeoutMs = 1200) {
 }
 
 function maybeSendDragBatch(patchByObjectId, options = {}) {
-  const { propagateGroupLinks = true, lfoCenterMode = false, lfoCenterGestureId = "" } = options;
+  const patchOptions = normalizeObjectPatchOptions(options);
   const now = Date.now();
   if (now - state.lastDragSendMs >= DRAG_PATCH_SEND_INTERVAL_MS) {
     state.lastDragSendMs = now;
     for (const [objectId, patch] of Object.entries(patchByObjectId)) {
-      queueDragPatch(objectId, patch, { propagateGroupLinks, lfoCenterMode, lfoCenterGestureId });
+      queueDragPatch(objectId, patch, patchOptions);
     }
   }
+}
+
+// Normalize drag/object patch flags once so every call site sends the same payload shape.
+function normalizeObjectPatchOptions(options) {
+  const source = options && typeof options === "object" ? options : {};
+  return {
+    propagateGroupLinks: source.propagateGroupLinks !== false,
+    lfoCenterMode: Boolean(source.lfoCenterMode),
+    lfoCenterGestureId: String(source.lfoCenterGestureId || "").trim()
+  };
+}
+
+function dragPatchValue(lastTargetPatch, object, key) {
+  if (Object.prototype.hasOwnProperty.call(lastTargetPatch, key)) {
+    return Number(lastTargetPatch[key]);
+  }
+  return Number(object[key]);
 }
 
 async function finalizeObjectDrag() {
@@ -6122,9 +6206,9 @@ async function finalizeObjectDrag() {
     queueDragPatch(
       objectId,
       {
-        x: Number(Object.prototype.hasOwnProperty.call(lastTargetPatch, "x") ? lastTargetPatch.x : obj.x),
-        y: Number(Object.prototype.hasOwnProperty.call(lastTargetPatch, "y") ? lastTargetPatch.y : obj.y),
-        z: Number(Object.prototype.hasOwnProperty.call(lastTargetPatch, "z") ? lastTargetPatch.z : obj.z)
+        x: dragPatchValue(lastTargetPatch, obj, "x"),
+        y: dragPatchValue(lastTargetPatch, obj, "y"),
+        z: dragPatchValue(lastTargetPatch, obj, "z")
       },
       {
         propagateGroupLinks: false,

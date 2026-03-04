@@ -362,3 +362,6 @@
 ## 2026-03-04 21:32 CET
 - Fixed race-condition object resurrection: action/LFO runtime updates now skip writes for objects deleted mid-frame, and action-sourced updates no longer recreate missing objects.
 - This prevents deleted objects (such as `obj`) from being brought back and re-modulated by in-flight LFO/action ticks.
+
+## 2026-03-04 23:23 CET
+- Optimize UI rendering by gating hidden-panel renders and skipping unchanged Object Manager updates
