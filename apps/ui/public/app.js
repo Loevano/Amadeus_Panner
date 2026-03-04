@@ -213,7 +213,6 @@ const els = {
   actionManagerLfoDepthInput: document.getElementById("actionManagerLfoDepthInput"),
   actionManagerLfoOffsetInput: document.getElementById("actionManagerLfoOffsetInput"),
   actionManagerLfoPolarityBtn: document.getElementById("actionManagerLfoPolarityBtn"),
-  actionManagerLfoEnabledInput: document.getElementById("actionManagerLfoEnabledInput"),
   actionManagerLfoAddBtn: document.getElementById("actionManagerLfoAddBtn"),
   actionManagerLfoAddTargetBtn: document.getElementById("actionManagerLfoAddTargetBtn"),
   actionManagerLfoClearBtn: document.getElementById("actionManagerLfoClearBtn"),
@@ -2539,7 +2538,7 @@ function lfoPayloadFromInputs(baseLfo = null, options = {}) {
   const offset = parseFiniteNumber(els.actionManagerLfoOffsetInput.value, 0);
   const phaseDeg = parseFiniteNumber(base.phaseDeg, 0);
   const polarity = normalizeLfoPolarity(els.actionManagerLfoPolarityBtn?.dataset?.polarity || base.polarity);
-  const enabledValue = Boolean(els.actionManagerLfoEnabledInput?.checked);
+  const enabledValue = base.enabled !== false;
   const rawIdInput = String(els.actionManagerLfoIdInput.value || "").trim();
   const baseLfoId = sanitizeActionId(base.lfoId || base.lfo_id || "", { allowEmpty: true });
   const lfoIdSeed = rawIdInput || baseLfoId || "lfo";
@@ -2586,9 +2585,6 @@ function setLfoInputsFromModel(lfo) {
   setInputValueIfIdle(els.actionManagerLfoDepthInput, String(parseFiniteNumber(lfo.depth, 0)));
   setInputValueIfIdle(els.actionManagerLfoOffsetInput, String(parseFiniteNumber(lfo.offset, 0)));
   updateLfoPolarityButton(lfo.polarity);
-  if (!document.activeElement || document.activeElement !== els.actionManagerLfoEnabledInput) {
-    els.actionManagerLfoEnabledInput.checked = lfo.enabled !== false;
-  }
 }
 
 async function actionManagerCreate() {
@@ -4037,9 +4033,6 @@ function renderActionManager() {
       setInputValueIfIdle(els.actionManagerLfoIdInput, uniqueLfoId("lfo", selectedLfos));
     }
     updateLfoPolarityButton(els.actionManagerLfoPolarityBtn?.dataset?.polarity || "bipolar");
-    if (!document.activeElement || document.activeElement !== els.actionManagerLfoEnabledInput) {
-      els.actionManagerLfoEnabledInput.checked = true;
-    }
   } else {
     const selectedLfo = selectedLfoGroup.lfo;
     if (selectedLfo && typeof selectedLfo === "object") {
@@ -5894,7 +5887,6 @@ function setupHandlers() {
   els.actionManagerLfoRateInput.addEventListener("input", scheduleSelectedLfoAutoApply);
   els.actionManagerLfoDepthInput.addEventListener("input", scheduleSelectedLfoAutoApply);
   els.actionManagerLfoOffsetInput.addEventListener("input", scheduleSelectedLfoAutoApply);
-  els.actionManagerLfoEnabledInput.addEventListener("change", scheduleSelectedLfoAutoApply);
 
   if (els.actionManagerLfoPolarityBtn) {
     els.actionManagerLfoPolarityBtn.addEventListener("click", () => {

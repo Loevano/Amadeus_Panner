@@ -499,13 +499,6 @@ button:hover {
   text-align: left;
 }
 
-.modulation-manager-panel .manager-field-grid .lfo-enabled-checkbox {
-  width: auto;
-  min-width: 18px;
-  margin: 0;
-  justify-self: start;
-}
-
 .modulation-manager-panel .modulation-lfo-editor-grid {
   grid-template-columns:
     max-content minmax(88px, 1fr)
