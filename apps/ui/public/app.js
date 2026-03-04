@@ -82,6 +82,7 @@ const state = {
   runtimeFrameNeedsInspector: false,
   runtimeFrameNeedsManager: false,
   runtimeFrameNeedsActionDebug: false,
+  managerRenameAutoTimerId: null,
   groupManagerAutoSaveTimerId: null,
   actionGroupAutoSaveTimerId: null,
   actionLfoAutoApplyTimerId: null,
@@ -652,6 +653,25 @@ function scheduleStatusRefresh(delayMs = 0) {
   state.statusRefreshTimerId = setTimeout(() => {
     state.statusRefreshTimerId = null;
     void refreshStatus();
+  }, Math.max(0, Number(delayMs) || 0));
+}
+
+function cancelManagerRenameAutoApplyTimer() {
+  if (state.managerRenameAutoTimerId !== null) {
+    clearTimeout(state.managerRenameAutoTimerId);
+    state.managerRenameAutoTimerId = null;
+  }
+}
+
+function scheduleManagerRenameAutoApply(delayMs = 300) {
+  const selectedIds = selectedObjectTargets();
+  cancelManagerRenameAutoApplyTimer();
+  if (selectedIds.length !== 1) return;
+  const expectedCurrentId = String(selectedIds[0] || "").trim();
+  if (!expectedCurrentId) return;
+  state.managerRenameAutoTimerId = setTimeout(() => {
+    state.managerRenameAutoTimerId = null;
+    void managerRenameObject({ auto: true, expectedCurrentId });
   }, Math.max(0, Number(delayMs) || 0));
 }
 
@@ -5086,23 +5106,47 @@ async function managerAddObject() {
   }
 }
 
-async function managerRenameObject() {
+async function managerRenameObject(options = {}) {
+  const { auto = false, expectedCurrentId = "" } = options;
+  cancelManagerRenameAutoApplyTimer();
   try {
     const selectedIds = selectedObjectTargets();
     if (selectedIds.length !== 1) {
-      throw new Error("Rename requires exactly one selected object");
+      if (!auto) {
+        throw new Error("Rename requires exactly one selected object");
+      }
+      return false;
     }
     const currentId = selectedIds[0];
     if (!currentId) {
-      throw new Error("No object selected");
+      if (!auto) {
+        throw new Error("No object selected");
+      }
+      return false;
     }
-    const newObjectId = sanitizeObjectId(els.managerRenameInput.value);
+    if (expectedCurrentId && String(expectedCurrentId || "").trim() !== String(currentId || "").trim()) {
+      return false;
+    }
+    const rawNewObjectId = String(els.managerRenameInput.value || "").trim();
+    if (!rawNewObjectId && auto) {
+      return false;
+    }
+    const newObjectId = sanitizeObjectId(rawNewObjectId);
+    if (newObjectId === currentId) {
+      return false;
+    }
     await api(`/api/object/${encodeURIComponent(currentId)}/rename`, "POST", { newObjectId });
     setSingleSelection(newObjectId);
-    addLog(`object rename -> ${currentId} to ${newObjectId}`);
+    if (!auto) {
+      addLog(`object rename -> ${currentId} to ${newObjectId}`);
+    }
     await refreshStatus();
+    return true;
   } catch (error) {
-    addLog(`object rename failed: ${error.message}`);
+    if (!auto) {
+      addLog(`object rename failed: ${error.message}`);
+    }
+    return false;
   }
 }
 
@@ -5777,6 +5821,7 @@ function setupHandlers() {
   });
 
   els.managerObjectSelect.addEventListener("change", () => {
+    cancelManagerRenameAutoApplyTimer();
     setSingleSelection(els.managerObjectSelect.value);
     renderAll();
   });
@@ -5793,6 +5838,10 @@ function setupHandlers() {
 
   els.managerRenameBtn.addEventListener("click", () => {
     void managerRenameObject();
+  });
+
+  els.managerRenameInput.addEventListener("input", () => {
+    scheduleManagerRenameAutoApply();
   });
 
   els.managerRenameInput.addEventListener("keydown", (event) => {
