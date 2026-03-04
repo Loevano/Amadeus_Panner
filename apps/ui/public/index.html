@@ -380,7 +380,20 @@
             <button id="actionGroupEntryTriggerBtn" type="button">Trigger Entry</button>
             <button id="actionGroupEntryClearBtn" class="danger" type="button">Clear Entries</button>
           </div>
-          <div id="actionGroupEntryRows" class="action-group-entry-list"></div>
+          <div class="manager-table-wrap">
+            <table class="manager-table action-group-entry-table">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>Entry</th>
+                  <th>Type</th>
+                  <th>Target</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="actionGroupEntryRows"></tbody>
+            </table>
+          </div>
         </div>
       </div>
     </section>
@@ -430,7 +443,9 @@
               <tbody id="actionManagerLfoRows"></tbody>
             </table>
           </div>
+        </div>
 
+        <div class="manager-block modulation-manager-targets-block">
           <h3>LFO Targets</h3>
           <p id="actionManagerLfoTargetsSummary" class="muted">Select an LFO to manage targets.</p>
           <div class="field-grid manager-field-grid action-lfo-target-grid">

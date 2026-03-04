@@ -37,6 +37,8 @@ const state = {
   selectedSceneId: null,
   selectedActionId: null,
   selectedActionGroupId: null,
+  selectedActionGroupEntryIndex: null,
+  selectedActionGroupEntryGroupId: null,
   selectedActionLfoIndex: null,
   selectedActionLfoActionId: null,
   selectedActionLfoTargetIndex: null,
@@ -83,6 +85,11 @@ const state = {
   actionLfoAutoApplyTimerId: null,
   actionLfoAutoApplyInFlight: false,
   actionLfoAutoApplyQueued: false,
+  groupManagerDraft: {
+    groupId: null,
+    memberIds: null,
+    linkParams: null
+  },
   draftSuggestedIds: {
     action: "",
     actionGroup: "",
@@ -2115,6 +2122,84 @@ function describeActionGroupEntry(entry) {
   };
 }
 
+function actionGroupEntryTypeInputValue(entry) {
+  const source = entry && typeof entry === "object" ? entry : {};
+  const entryType = String(source.entryType || "").trim();
+  if (entryType === "lfosEnabled") {
+    return source.enabled === false ? "lfos-disable" : "lfos-enable";
+  }
+  if (entryType === "actionLfoEnabled") {
+    return source.enabled === false ? "action-lfo-disable" : "action-lfo-enable";
+  }
+  const command = String(source.command || "start").trim().toLowerCase();
+  if (command === "stop") return "action-stop";
+  if (command === "abort") return "action-abort";
+  return "action-start";
+}
+
+function actionGroupEntryTypeLabel(entry) {
+  const source = entry && typeof entry === "object" ? entry : {};
+  const entryType = String(source.entryType || "").trim();
+  if (entryType === "lfosEnabled") {
+    return "Global LFO State";
+  }
+  if (entryType === "actionLfoEnabled") {
+    return source.enabled === false ? "Disable Global LFO" : "Enable Global LFO";
+  }
+  const command = String(source.command || "start").trim().toLowerCase();
+  if (command === "stop") return "Stop Action";
+  if (command === "abort") return "Abort Action";
+  return "Start Action";
+}
+
+function actionGroupEntryTargetLabel(entry) {
+  const source = entry && typeof entry === "object" ? entry : {};
+  const entryType = String(source.entryType || "").trim();
+  if (entryType === "lfosEnabled") {
+    return source.enabled === false ? "Disable all LFOs" : "Enable all LFOs";
+  }
+  if (entryType === "actionLfoEnabled") {
+    const actionId = String(source.actionId || "").trim() || "-";
+    const lfoId = String(source.lfoId || "").trim() || "-";
+    return `${actionId}.${lfoId}`;
+  }
+  return String(source.actionId || "").trim() || "-";
+}
+
+function setSelectValueIfOptionExists(selectElement, value, fallbackValue = null) {
+  if (!(selectElement instanceof HTMLSelectElement)) return;
+  const optionValues = new Set(Array.from(selectElement.options).map((option) => String(option.value || "").trim()));
+  const nextValue = String(value || "").trim();
+  if (nextValue && optionValues.has(nextValue)) {
+    selectElement.value = nextValue;
+    return;
+  }
+  if (fallbackValue === null || fallbackValue === undefined) return;
+  const fallback = String(fallbackValue || "").trim();
+  if (optionValues.has(fallback)) {
+    selectElement.value = fallback;
+  }
+}
+
+function reflectActionGroupEntryToInputs(entry) {
+  const source = entry && typeof entry === "object" ? entry : {};
+  setSelectValueIfOptionExists(
+    els.actionGroupEntryTypeInput,
+    actionGroupEntryTypeInputValue(source),
+    "action-start"
+  );
+  setSelectValueIfOptionExists(els.actionGroupEntryActionSelect, String(source.actionId || "").trim());
+  setSelectValueIfOptionExists(els.actionGroupEntryLfoSelect, String(source.lfoId || "").trim());
+  if (String(source.entryType || "").trim() === "lfosEnabled") {
+    setSelectValueIfOptionExists(
+      els.actionGroupEntryLfosEnabledInput,
+      source.enabled === false ? "false" : "true",
+      "true"
+    );
+  }
+  updateActionGroupEntryInputsState();
+}
+
 function updateActionGroupEntryNamePreview() {
   if (!els.actionGroupEntryNameInput) return;
   try {
@@ -2556,12 +2641,21 @@ async function actionGroupManagerToggleEnabled(groupId, enabled) {
 
 async function actionGroupManagerCreate() {
   try {
-    const payload = actionGroupPayloadFromInputs(null, { fallbackGroupId: "group", preferNameDerivedId: true });
+    const groupId = sanitizeActionGroupId("group", { allowAuto: true });
+    const payload = {
+      groupId,
+      name: humanizeId(groupId) || groupId,
+      enabled: true,
+      entries: [],
+      oscTriggers: {
+        trigger: defaultActionGroupOscPath(groupId)
+      }
+    };
     await api("/api/action-group/create", "POST", payload);
-    if (String(els.actionGroupManagerIdInput.value || "").trim() !== payload.groupId) {
-      addLog(`action group id normalized -> ${payload.groupId}`);
-    }
+    state.draftSuggestedIds.actionGroup = "";
     state.selectedActionGroupId = payload.groupId;
+    state.selectedActionGroupEntryGroupId = payload.groupId;
+    state.selectedActionGroupEntryIndex = null;
     addLog(`action group create -> ${payload.groupId}`);
     await refreshStatus();
   } catch (error) {
@@ -2594,6 +2688,10 @@ async function actionGroupManagerDelete() {
     await api(`/api/action-group/${encodeURIComponent(groupId)}/delete`, "POST", {});
     if (state.selectedActionGroupId === groupId) {
       state.selectedActionGroupId = null;
+    }
+    if (state.selectedActionGroupEntryGroupId === groupId) {
+      state.selectedActionGroupEntryGroupId = null;
+      state.selectedActionGroupEntryIndex = null;
     }
     addLog(`action group delete -> ${groupId}`);
     await refreshStatus();
@@ -2669,6 +2767,8 @@ async function actionGroupEntryAdd() {
     const description = describeActionGroupEntry(entry);
     const entries = Array.isArray(group.entries) ? [...group.entries, entry] : [entry];
     await api(`/api/action-group/${encodeURIComponent(groupId)}/update`, "POST", { entries });
+    state.selectedActionGroupEntryGroupId = groupId;
+    state.selectedActionGroupEntryIndex = entries.length - 1;
     addLog(`action group entry add -> ${groupId} (${description.name})`);
     await refreshStatus();
   } catch (error) {
@@ -2687,6 +2787,13 @@ async function actionGroupEntryRemove(index) {
     if (index < 0 || index >= entries.length) return;
     const nextEntries = entries.filter((_, entryIndex) => entryIndex !== index);
     await api(`/api/action-group/${encodeURIComponent(groupId)}/update`, "POST", { entries: nextEntries });
+    if (state.selectedActionGroupEntryGroupId === groupId && Number.isInteger(state.selectedActionGroupEntryIndex)) {
+      if (state.selectedActionGroupEntryIndex === index) {
+        state.selectedActionGroupEntryIndex = null;
+      } else if (state.selectedActionGroupEntryIndex > index) {
+        state.selectedActionGroupEntryIndex -= 1;
+      }
+    }
     addLog(`action group entry remove -> ${groupId} #${index + 1}`);
     await refreshStatus();
   } catch (error) {
@@ -2709,6 +2816,9 @@ async function actionGroupEntryClear() {
       return;
     }
     await api(`/api/action-group/${encodeURIComponent(groupId)}/update`, "POST", { entries: [] });
+    if (state.selectedActionGroupEntryGroupId === groupId) {
+      state.selectedActionGroupEntryIndex = null;
+    }
     addLog(`action group entries cleared -> ${groupId}`);
     await refreshStatus();
   } catch (error) {
@@ -3444,56 +3554,97 @@ function renderActionManager() {
     }
   }
 
+  if (state.selectedActionGroupEntryGroupId !== selectedActionGroupId) {
+    state.selectedActionGroupEntryGroupId = selectedActionGroupId || null;
+    state.selectedActionGroupEntryIndex = null;
+  }
+
   const selectedGroupEntries = Array.isArray(selectedActionGroup?.entries) ? selectedActionGroup.entries : [];
+  if (!selectedActionGroup) {
+    state.selectedActionGroupEntryIndex = null;
+  } else if (
+    !Number.isInteger(state.selectedActionGroupEntryIndex)
+    || state.selectedActionGroupEntryIndex < 0
+    || state.selectedActionGroupEntryIndex >= selectedGroupEntries.length
+  ) {
+    state.selectedActionGroupEntryIndex = null;
+  }
+
   els.actionGroupEntryRows.innerHTML = "";
   if (!selectedActionGroup) {
-    const empty = document.createElement("div");
-    empty.className = "muted action-group-entry-empty";
-    empty.textContent = "Select an action group to view entries.";
-    els.actionGroupEntryRows.appendChild(empty);
+    const row = document.createElement("tr");
+    row.className = "action-group-entry-empty-row";
+    row.innerHTML = '<td class="muted action-group-entry-empty-cell" colspan="5">Select an action group to view entries.</td>';
+    els.actionGroupEntryRows.appendChild(row);
   } else if (!selectedGroupEntries.length) {
-    const empty = document.createElement("div");
-    empty.className = "muted action-group-entry-empty";
-    empty.textContent = "No entries configured.";
-    els.actionGroupEntryRows.appendChild(empty);
+    const row = document.createElement("tr");
+    row.className = "action-group-entry-empty-row";
+    row.innerHTML = '<td class="muted action-group-entry-empty-cell" colspan="5">No entries configured.</td>';
+    els.actionGroupEntryRows.appendChild(row);
   } else {
     selectedGroupEntries.forEach((entry, index) => {
       const description = describeActionGroupEntry(entry);
-      const row = document.createElement("div");
+      const typeLabel = actionGroupEntryTypeLabel(entry);
+      const targetLabel = actionGroupEntryTargetLabel(entry);
+      const row = document.createElement("tr");
       row.className = "action-group-entry-row";
+      row.dataset.entryIndex = String(index);
+      row.tabIndex = 0;
+      if (index === state.selectedActionGroupEntryIndex) {
+        row.classList.add("is-selected");
+      }
+      row.innerHTML = `
+        <td>${index + 1}</td>
+        <td class="action-group-entry-name-cell" title="${escapeHtml(description.detail)}">${escapeHtml(description.name)}</td>
+        <td>${escapeHtml(typeLabel)}</td>
+        <td class="action-group-entry-target-cell">${escapeHtml(targetLabel)}</td>
+        <td class="action-manager-row-actions-cell">
+          <div class="action-manager-row-actions">
+            <button type="button" data-action-group-entry-command="test">Test</button>
+            <button class="danger" type="button" data-action-group-entry-command="remove">Remove</button>
+          </div>
+        </td>
+      `;
 
-      const meta = document.createElement("div");
-      meta.className = "action-group-entry-meta";
-      const title = document.createElement("strong");
-      title.textContent = `${index + 1}. ${description.name}`;
-      const detail = document.createElement("span");
-      detail.className = "muted";
-      detail.textContent = description.detail;
-      meta.appendChild(title);
-      meta.appendChild(detail);
-      row.appendChild(meta);
+      const selectEntry = () => {
+        state.selectedActionGroupEntryIndex = index;
+        reflectActionGroupEntryToInputs(entry);
+        renderActionManager();
+      };
 
-      const controls = document.createElement("div");
-      controls.className = "action-group-entry-controls";
+      const triggerBtn = row.querySelector('button[data-action-group-entry-command="test"]');
+      if (triggerBtn instanceof HTMLButtonElement) {
+        triggerBtn.addEventListener("click", (event) => {
+          event.stopPropagation();
+          void actionGroupEntryTriggerByIndex(index);
+        });
+      }
 
-      const triggerBtn = document.createElement("button");
-      triggerBtn.type = "button";
-      triggerBtn.textContent = "Test";
-      triggerBtn.addEventListener("click", () => {
-        void actionGroupEntryTriggerByIndex(index);
+      const removeBtn = row.querySelector('button[data-action-group-entry-command="remove"]');
+      if (removeBtn instanceof HTMLButtonElement) {
+        removeBtn.addEventListener("click", (event) => {
+          event.stopPropagation();
+          void actionGroupEntryRemove(index);
+        });
+      }
+
+      row.addEventListener("click", (event) => {
+        const target = event.target;
+        if (target instanceof Element && target.closest("button, input, select, textarea, a")) {
+          return;
+        }
+        selectEntry();
       });
-      controls.appendChild(triggerBtn);
-
-      const removeBtn = document.createElement("button");
-      removeBtn.className = "danger";
-      removeBtn.type = "button";
-      removeBtn.textContent = "Remove";
-      removeBtn.addEventListener("click", () => {
-        void actionGroupEntryRemove(index);
+      row.addEventListener("keydown", (event) => {
+        const target = event.target;
+        if (target instanceof Element && target.closest("button, input, select, textarea, a")) {
+          return;
+        }
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        selectEntry();
       });
-      controls.appendChild(removeBtn);
 
-      row.appendChild(controls);
       els.actionGroupEntryRows.appendChild(row);
     });
   }
@@ -4217,6 +4368,24 @@ function selectedGroupManagerMemberIds() {
     .filter(Boolean);
 }
 
+function clearGroupManagerDraft() {
+  state.groupManagerDraft.groupId = null;
+  state.groupManagerDraft.memberIds = null;
+  state.groupManagerDraft.linkParams = null;
+}
+
+function captureGroupManagerDraftFromEditor() {
+  const selectedGroup = getSelectedGroup();
+  const groupId = String(selectedGroup?.groupId || "").trim();
+  if (!groupId) {
+    clearGroupManagerDraft();
+    return;
+  }
+  state.groupManagerDraft.groupId = groupId;
+  state.groupManagerDraft.memberIds = selectedGroupManagerMemberIds();
+  state.groupManagerDraft.linkParams = selectedGroupManagerLinkParams();
+}
+
 function renderGroupManagerDraftSummary() {
   const selectedGroup = getSelectedGroup();
   if (!selectedGroup) {
@@ -4247,6 +4416,7 @@ function renderGroupManagerEditor(selectedGroup, objects) {
   }
 
   if (!hasGroup) {
+    clearGroupManagerDraft();
     els.groupManagerEditSelect.innerHTML = '<option value="">No groups</option>';
     setInputValueIfIdle(els.groupManagerEditName, "");
     setInputValueIfIdle(els.groupManagerEditColor, DEFAULT_GROUP_COLOR);
@@ -4257,12 +4427,28 @@ function renderGroupManagerEditor(selectedGroup, objects) {
   }
 
   const groupId = String(selectedGroup.groupId || "").trim();
-  const members = new Set((Array.isArray(selectedGroup.objectIds) ? selectedGroup.objectIds : []).map((id) => String(id || "").trim()));
-  const linkParams = Array.isArray(selectedGroup.linkParams) ? selectedGroup.linkParams : [];
+  const members = (Array.isArray(selectedGroup.objectIds) ? selectedGroup.objectIds : [])
+    .map((id) => String(id || "").trim())
+    .filter(Boolean);
+  const linkParams = (Array.isArray(selectedGroup.linkParams) ? selectedGroup.linkParams : [])
+    .map((param) => String(param || "").trim())
+    .filter(Boolean);
+  const hasDraftForGroup = state.groupManagerDraft.groupId === groupId;
+  const memberSet = new Set(
+    (hasDraftForGroup && Array.isArray(state.groupManagerDraft.memberIds)
+      ? state.groupManagerDraft.memberIds
+      : members
+    )
+      .map((id) => String(id || "").trim())
+      .filter(Boolean)
+  );
+  const draftLinkParams = hasDraftForGroup && Array.isArray(state.groupManagerDraft.linkParams)
+    ? state.groupManagerDraft.linkParams
+    : linkParams;
 
   setInputValueIfIdle(els.groupManagerEditName, String(selectedGroup.name || groupId));
   setInputValueIfIdle(els.groupManagerEditColor, normalizeHexColor(selectedGroup.color, DEFAULT_GROUP_COLOR));
-  applyGroupManagerLinkParams(linkParams);
+  applyGroupManagerLinkParams(draftLinkParams);
 
   els.groupManagerEditMembers.innerHTML = "";
   if (!objects.length) {
@@ -4273,7 +4459,7 @@ function renderGroupManagerEditor(selectedGroup, objects) {
       const checkbox = document.createElement("input");
       checkbox.type = "checkbox";
       checkbox.dataset.objectId = objectId;
-      checkbox.checked = members.has(objectId);
+      checkbox.checked = memberSet.has(objectId);
       label.appendChild(checkbox);
       label.append(` ${objectId}`);
       els.groupManagerEditMembers.appendChild(label);
@@ -4367,6 +4553,7 @@ function renderGroupManager() {
 function renderManager() {
   syncSelectedIdsWithObjects();
   const objects = getObjects();
+  const orderedObjectIds = objects.map((obj) => String(obj.objectId || "").trim()).filter(Boolean);
   const groups = getObjectGroups();
   const allGroup = getVirtualAllGroup();
   const allMembers = new Set(allGroup.objectIds);
@@ -4409,7 +4596,7 @@ function renderManager() {
   els.managerObjectRows.innerHTML = "";
   for (const obj of objects) {
     const row = document.createElement("tr");
-    const rowIsSelected = obj.objectId === state.selectedObjectId;
+    const rowIsSelected = isObjectSelected(obj.objectId);
     if (rowIsSelected) row.classList.add("is-selected");
     if (obj.objectId === state.selectedObjectId) row.classList.add("is-primary");
     row.dataset.objectId = obj.objectId;
@@ -4460,7 +4647,36 @@ function renderManager() {
       if (target instanceof Element && target.closest("button, input, select, textarea, a")) {
         return;
       }
-      setSingleSelection(obj.objectId);
+      const targetId = String(obj.objectId || "").trim();
+      const isAdditive = event.metaKey || event.ctrlKey;
+      const isRange = event.shiftKey;
+      if (isRange) {
+        const targetIndex = orderedObjectIds.indexOf(targetId);
+        const anchorId = orderedObjectIds.includes(state.selectedObjectId) ? state.selectedObjectId : targetId;
+        const anchorIndex = orderedObjectIds.indexOf(anchorId);
+        if (targetIndex >= 0 && anchorIndex >= 0) {
+          const start = Math.min(anchorIndex, targetIndex);
+          const end = Math.max(anchorIndex, targetIndex);
+          const rangeIds = orderedObjectIds.slice(start, end + 1);
+          const nextIds = isAdditive
+            ? [...new Set([...selectedObjectTargets(), ...rangeIds])]
+            : rangeIds;
+          setSelection(nextIds);
+          if (state.selectedObjectIds.includes(targetId)) {
+            state.selectedObjectId = targetId;
+          }
+        } else {
+          setSingleSelection(targetId);
+        }
+      } else if (isAdditive) {
+        const wasSelected = isObjectSelected(targetId);
+        toggleSelection(targetId);
+        if (!wasSelected && state.selectedObjectIds.includes(targetId)) {
+          state.selectedObjectId = targetId;
+        }
+      } else {
+        setSingleSelection(targetId);
+      }
       renderAll();
     });
 
@@ -4470,7 +4686,17 @@ function renderManager() {
       if (!(target instanceof Element)) return;
       if (target.closest("button, input, select, textarea, a")) return;
       event.preventDefault();
-      setSingleSelection(obj.objectId);
+      const targetId = String(obj.objectId || "").trim();
+      const isAdditive = event.metaKey || event.ctrlKey;
+      if (isAdditive) {
+        const wasSelected = isObjectSelected(targetId);
+        toggleSelection(targetId);
+        if (!wasSelected && state.selectedObjectIds.includes(targetId)) {
+          state.selectedObjectId = targetId;
+        }
+      } else {
+        setSingleSelection(targetId);
+      }
       renderAll();
     });
 
@@ -4983,13 +5209,7 @@ async function groupManagerCreate() {
       ? `${String(selectedGroup.groupId || "group")}-copy`
       : suggestGroupBaseFromSelection(objectIds);
     const baseId = inputName ? deriveIdBaseFromName(inputName, fallbackBaseId) : fallbackBaseId;
-    const suggestedGroupId = uniqueGroupId(baseId);
-    const rawGroupId = prompt("New group ID", suggestedGroupId);
-    if (rawGroupId === null) {
-      addLog("group create cancelled");
-      return;
-    }
-    const groupId = sanitizeGroupId(rawGroupId, { allowAuto: true });
+    const groupId = sanitizeGroupId(baseId, { allowAuto: true });
 
     const name = inputName || humanizeId(groupId) || groupId;
     const color = normalizeHexColor(
@@ -5005,9 +5225,6 @@ async function groupManagerCreate() {
       objectIds,
       linkParams
     });
-    if (String(rawGroupId || "").trim() !== groupId) {
-      addLog(`group id normalized -> ${groupId}`);
-    }
     state.selectedGroupId = groupId;
     addLog(`group create -> ${groupId} (${objectIds.length} members)`);
     await refreshStatus();
@@ -5040,6 +5257,7 @@ async function groupManagerSaveEditor() {
       linkParams,
       objectIds
     });
+    clearGroupManagerDraft();
     addLog(`group updated -> ${groupId} (${objectIds.length} members)`);
     await refreshStatus();
   } catch (error) {
@@ -5503,11 +5721,13 @@ function setupHandlers() {
   });
 
   els.groupManagerEditMembers.addEventListener("change", () => {
+    captureGroupManagerDraftFromEditor();
     renderGroupManagerDraftSummary();
   });
 
   for (const input of els.groupManagerEditLinkInputs) {
     input.addEventListener("change", () => {
+      captureGroupManagerDraftFromEditor();
       renderGroupManagerDraftSummary();
     });
   }
