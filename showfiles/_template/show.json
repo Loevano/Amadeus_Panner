@@ -3,7 +3,7 @@
   "name": "Demo Show",
   "version": "0.1.0",
   "created_at": "2026-03-03T00:00:00Z",
-  "updated_at": "2026-03-04T16:25:02Z",
+  "updated_at": "2026-03-04T19:19:55Z",
   "default_scene_id": "scene-intro",
   "scenes": [
     {
@@ -65,12 +65,6 @@
           "command": "start"
         },
         {
-          "entry_type": "action_lfo_enabled",
-          "action_id": "action-fly-in",
-          "lfo_id": "lfo-1",
-          "enabled": true
-        },
-        {
           "entry_type": "lfos_enabled",
           "enabled": true
         }
@@ -81,7 +75,41 @@
     }
   ],
   "groups_enabled": true,
-  "object_groups": [],
+  "object_groups": [
+    {
+      "group_id": "VA1-group",
+      "name": "VA1 Group",
+      "object_ids": [
+        "VA1"
+      ],
+      "link_params": [
+        "x",
+        "y",
+        "z",
+        "color"
+      ],
+      "enabled": true,
+      "color": "#1c4f89"
+    },
+    {
+      "group_id": "va1-group",
+      "name": "VA1 Group",
+      "object_ids": [
+        "1VA",
+        "1VB",
+        "1VC",
+        "1VD"
+      ],
+      "link_params": [
+        "x",
+        "y",
+        "z",
+        "color"
+      ],
+      "enabled": true,
+      "color": "#2f7f7a"
+    }
+  ],
   "metadata": {
     "author": "operator",
     "notes": "Starter template"

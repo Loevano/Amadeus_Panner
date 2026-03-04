@@ -103,7 +103,13 @@
     </section>
 
     <section class="panel object-manager-panel">
-      <h2>Object Manager</h2>
+      <div class="panel-header-row object-manager-header-row">
+        <h2>Object Manager</h2>
+        <label class="master-toggle object-manager-group-select-toggle">
+          <input id="managerGroupSelectToggle" type="checkbox" checked />
+          <span>Group Select</span>
+        </label>
+      </div>
       <p id="managerObjectCount" class="muted">0 objects</p>
 
       <div class="manager-grid">
@@ -279,55 +285,108 @@
 
         <div class="manager-block action-manager-setup-block">
           <h3>Action Setup</h3>
-          <div class="field-grid manager-field-grid">
-            <input id="actionManagerIdInput" type="hidden" />
-            <label for="actionManagerNameInput">Name</label><input id="actionManagerNameInput" type="text" placeholder="Action 1" />
-            <label for="actionManagerDurationInput">Duration (ms)</label><input id="actionManagerDurationInput" type="number" min="0" step="10" value="4000" />
-            <label for="actionManagerRuleTypeInput">Type</label>
-            <select id="actionManagerRuleTypeInput">
-              <option value="modulationControl">Modulation Control</option>
-              <option value="parameterRamp">Parameter Ramp (ms)</option>
-            </select>
-          </div>
+          <input id="actionManagerIdInput" type="hidden" />
 
-          <div id="actionManagerRuleModFields" class="field-grid manager-field-grid action-rule-grid" hidden>
-            <label for="actionManagerRuleModTargetInput">Target Modulator</label><select id="actionManagerRuleModTargetInput"></select>
-            <label for="actionManagerRuleModParamInput">Parameter</label>
-            <select id="actionManagerRuleModParamInput">
-              <option value="enabled">Enabled</option>
-              <option value="wave">Wave</option>
-              <option value="rateHz">Rate</option>
-              <option value="depth">Depth</option>
-              <option value="offset">Offset</option>
-              <option value="phaseDeg">Phase</option>
-              <option value="mappingPhaseDeg">Mapping Phase</option>
-              <option value="polarity">Polarity</option>
-            </select>
-            <label for="actionManagerRuleModValueInput">Value</label>
-            <div class="action-rule-value-wrap">
-              <select id="actionManagerRuleModValueSelect" hidden></select>
-              <input id="actionManagerRuleModValueInput" type="number" step="0.1" value="0" />
+          <section class="action-setup-section">
+            <h4>Basics</h4>
+            <div class="action-setup-compact-grid">
+              <div class="compact-field compact-field-wide">
+                <label for="actionManagerNameInput">Name</label>
+                <input id="actionManagerNameInput" type="text" placeholder="Action 1" />
+              </div>
+              <div class="compact-field">
+                <label for="actionManagerDurationInput">Duration (ms)</label>
+                <input id="actionManagerDurationInput" type="number" min="0" step="10" value="4000" />
+              </div>
+              <div class="compact-field">
+                <label for="actionManagerRuleTypeInput">Type</label>
+                <select id="actionManagerRuleTypeInput">
+                  <option value="modulationControl">Modulation Control</option>
+                  <option value="parameterRamp">Parameter Ramp (ms)</option>
+                </select>
+              </div>
             </div>
-          </div>
+          </section>
 
-          <div id="actionManagerRuleRampFields" class="field-grid manager-field-grid action-rule-grid">
-            <label for="actionManagerRuleRampTargetInput">Target</label><select id="actionManagerRuleRampTargetInput"></select>
-            <label for="actionManagerRuleRampStartInput">Start</label><input id="actionManagerRuleRampStartInput" type="number" step="0.1" value="0" />
-            <label for="actionManagerRuleRampEndInput">End</label><input id="actionManagerRuleRampEndInput" type="number" step="0.1" value="100" />
-            <label for="actionManagerRuleRampSpeedInput">Ramp Time (ms)</label><input id="actionManagerRuleRampSpeedInput" type="number" min="0" step="10" value="1000" />
-          </div>
-          <label class="checkbox-row action-rule-relative-row" for="actionManagerRuleRampRelativeInput">
-            <input id="actionManagerRuleRampRelativeInput" type="checkbox" /> Relative
-          </label>
+          <section class="action-setup-section">
+            <div class="action-setup-section-head">
+              <h4>Rule</h4>
+              <label class="checkbox-row action-rule-relative-row compact-inline-toggle" for="actionManagerRuleRampRelativeInput">
+                <input id="actionManagerRuleRampRelativeInput" type="checkbox" /> Relative
+              </label>
+            </div>
+            <div id="actionManagerRuleModFields" class="action-rule-grid action-rule-compact-grid" hidden>
+              <div class="compact-field">
+                <label for="actionManagerRuleModTargetInput">Target Modulator</label>
+                <select id="actionManagerRuleModTargetInput"></select>
+              </div>
+              <div class="compact-field">
+                <label for="actionManagerRuleModParamInput">Parameter</label>
+                <select id="actionManagerRuleModParamInput">
+                  <option value="enabled">Enabled</option>
+                  <option value="wave">Wave</option>
+                  <option value="rateHz">Rate</option>
+                  <option value="depth">Depth</option>
+                  <option value="offset">Offset</option>
+                  <option value="phaseDeg">Phase</option>
+                  <option value="mappingPhaseDeg">Mapping Phase</option>
+                  <option value="polarity">Polarity</option>
+                </select>
+              </div>
+              <div class="compact-field">
+                <label for="actionManagerRuleModValueInput">Value</label>
+                <div class="action-rule-value-wrap">
+                  <select id="actionManagerRuleModValueSelect" hidden></select>
+                  <input id="actionManagerRuleModValueInput" type="number" step="0.1" value="0" />
+                </div>
+              </div>
+            </div>
+            <p id="actionManagerRuleModEmptyNote" class="muted action-rule-empty-note" hidden>No modulators available for modulation control.</p>
 
-          <div class="field-grid manager-field-grid">
-            <label for="actionManagerOnEndInput">On End -> Next</label><select id="actionManagerOnEndInput"></select>
-            <label for="actionManagerOscStartInput">OSC Start</label><input id="actionManagerOscStartInput" type="text" placeholder="/show/action-1/start" />
-            <label for="actionManagerOscStopInput">OSC Stop</label><input id="actionManagerOscStopInput" type="text" placeholder="/show/action-1/stop" />
-            <label for="actionManagerOscAbortInput">OSC Abort</label><input id="actionManagerOscAbortInput" type="text" placeholder="/show/action-1/abort" />
-          </div>
+            <div id="actionManagerRuleRampFields" class="action-rule-grid action-rule-compact-grid">
+              <div class="compact-field compact-field-wide">
+                <label for="actionManagerRuleRampTargetInput">Target</label>
+                <select id="actionManagerRuleRampTargetInput"></select>
+              </div>
+              <div class="compact-field">
+                <label for="actionManagerRuleRampStartInput">Start</label>
+                <input id="actionManagerRuleRampStartInput" type="number" step="0.1" value="0" />
+              </div>
+              <div class="compact-field">
+                <label for="actionManagerRuleRampEndInput">End</label>
+                <input id="actionManagerRuleRampEndInput" type="number" step="0.1" value="100" />
+              </div>
+              <div class="compact-field">
+                <label for="actionManagerRuleRampSpeedInput">Ramp Time (ms)</label>
+                <input id="actionManagerRuleRampSpeedInput" type="number" min="0" step="10" value="1000" />
+              </div>
+            </div>
+            <p id="actionManagerRuleRampEmptyNote" class="muted action-rule-empty-note" hidden>No object targets available for ramp rules.</p>
+          </section>
 
-          <div class="row">
+          <section class="action-setup-section">
+            <h4>Routing</h4>
+            <div class="action-setup-routing-grid">
+              <div class="compact-field compact-field-wide">
+                <label for="actionManagerOnEndInput">On End -> Next</label>
+                <select id="actionManagerOnEndInput"></select>
+              </div>
+              <div class="compact-field">
+                <label for="actionManagerOscStartInput">OSC Start</label>
+                <input id="actionManagerOscStartInput" type="text" placeholder="/show/action-1/start" />
+              </div>
+              <div class="compact-field">
+                <label for="actionManagerOscStopInput">OSC Stop</label>
+                <input id="actionManagerOscStopInput" type="text" placeholder="/show/action-1/stop" />
+              </div>
+              <div class="compact-field">
+                <label for="actionManagerOscAbortInput">OSC Abort</label>
+                <input id="actionManagerOscAbortInput" type="text" placeholder="/show/action-1/abort" />
+              </div>
+            </div>
+          </section>
+
+          <div class="row action-setup-actions-row">
             <button id="actionManagerCreateBtn" type="button">Create</button>
             <button id="actionManagerSaveBtn" type="button">Save</button>
             <button id="actionManagerSaveAsBtn" type="button">Save As</button>

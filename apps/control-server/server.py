@@ -858,6 +858,7 @@ class Runtime:
         self.max_recent_events = 250
         self.event_queues: List[queue.Queue] = []
         self.last_lfo_debug_emit_ms: Dict[str, int] = {}
+        self.always_lfo_target_states: Dict[str, Dict[str, float]] = {}
 
         self.osc_out_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.osc_in_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -867,10 +868,12 @@ class Runtime:
 
         self.stop_event = threading.Event()
         self.osc_thread = threading.Thread(target=self._osc_loop, daemon=True)
+        self.always_lfo_thread = threading.Thread(target=self._always_lfo_loop, daemon=True)
 
     def start(self) -> None:
         self.load_show("showfiles/_template/show.json")
         self.osc_thread.start()
+        self.always_lfo_thread.start()
         self.emit_event(
             "system",
             {
@@ -1517,6 +1520,7 @@ class Runtime:
             self.groups_enabled = groups_enabled
             self.objects = {}
             self.active_scene_id = None
+            self.always_lfo_target_states = {}
             self.show = {
                 "path": self._relative_project_path(absolute_show_path),
                 "showId": str(raw_show.get("show_id", "show")),
@@ -1713,6 +1717,10 @@ class Runtime:
         with self.lock:
             if not self.show:
                 raise ValueError("No show loaded")
+            if next_enabled:
+                # Enabling a concrete LFO should make modulation audible/visible immediately,
+                # even if the global LFO master was previously turned off.
+                self.lfos_enabled = True
             actions_by_id = self.show.get("actionsById")
             if not isinstance(actions_by_id, dict):
                 actions_by_id = {}
@@ -1786,6 +1794,97 @@ class Runtime:
         payload = {
             "actionId": normalized_action_id,
             "lfoId": normalized_lfo_id,
+            "enabled": next_enabled,
+            "changedMappings": changed_count,
+            "changedMappingsInAction": changed_count_in_action,
+            "source": source,
+        }
+        self.emit_event("action_lfo", payload)
+        return payload
+
+    def set_action_lfo_target_enabled(
+        self,
+        action_id: str,
+        lfo_id: str,
+        object_id: str,
+        parameter: str,
+        enabled: bool,
+        source: str = "api",
+    ) -> Dict[str, Any]:
+        normalized_action_id = normalize_action_id(action_id)
+        normalized_lfo_id = normalize_lfo_id(lfo_id)
+        normalized_object_id = normalize_object_id(object_id)
+        normalized_parameter = str(parameter or "").strip().lower()
+        if normalized_parameter not in LFO_PARAMS:
+            raise ValueError(f"LFO parameter must be one of: {', '.join(sorted(LFO_PARAMS))}")
+
+        next_enabled = bool(enabled)
+        changed_count = 0
+        changed_count_in_action = 0
+
+        with self.lock:
+            if not self.show:
+                raise ValueError("No show loaded")
+            actions_by_id = self.show.get("actionsById")
+            if not isinstance(actions_by_id, dict):
+                actions_by_id = {}
+            action = actions_by_id.get(normalized_action_id)
+            if not isinstance(action, dict):
+                raise ValueError(f"Action not found: {normalized_action_id}")
+
+            action_lfos = action.get("lfos")
+            if not isinstance(action_lfos, list):
+                action_lfos = []
+
+            next_action_lfos: List[Dict[str, Any]] = []
+            for lfo in action_lfos:
+                if not isinstance(lfo, dict):
+                    continue
+                next_lfo = dict(lfo)
+                current_lfo_id = str(next_lfo.get("lfoId") or next_lfo.get("lfo_id") or "").strip()
+                current_object_id = str(next_lfo.get("objectId") or next_lfo.get("object_id") or "").strip()
+                current_parameter = str(next_lfo.get("parameter") or "").strip().lower()
+                if (
+                    current_lfo_id == normalized_lfo_id
+                    and current_object_id == normalized_object_id
+                    and current_parameter == normalized_parameter
+                ):
+                    changed_count_in_action += 1
+                    current_target_enabled = bool(next_lfo.get("targetEnabled", True))
+                    if current_target_enabled != next_enabled:
+                        changed_count += 1
+                    next_lfo["targetEnabled"] = next_enabled
+                next_action_lfos.append(next_lfo)
+
+            if changed_count_in_action <= 0:
+                raise ValueError(
+                    f"LFO target not found in action: {normalized_action_id}.{normalized_lfo_id}.{normalized_object_id}.{normalized_parameter}"
+                )
+
+            next_action = dict(action)
+            next_action["lfos"] = next_action_lfos
+            actions_by_id = dict(actions_by_id)
+            actions_by_id[normalized_action_id] = next_action
+
+            global_lfos_by_id = self.show.get("globalLfosById")
+            if not isinstance(global_lfos_by_id, dict):
+                global_lfos_by_id = {}
+            global_lfos_by_id = sync_action_lfo_snapshots_with_global(actions_by_id, global_lfos_by_id)
+            next_action = actions_by_id.get(normalized_action_id, next_action)
+
+            self.show["actionsById"] = actions_by_id
+            self.show["globalLfosById"] = global_lfos_by_id
+
+            running = self.running_actions.get(normalized_action_id)
+            if isinstance(running, dict):
+                running["action"] = json.loads(json.dumps(next_action))
+                self.running_actions[normalized_action_id] = running
+
+        payload = {
+            "actionId": normalized_action_id,
+            "lfoId": normalized_lfo_id,
+            "objectId": normalized_object_id,
+            "parameter": normalized_parameter,
             "enabled": next_enabled,
             "changedMappings": changed_count,
             "changedMappingsInAction": changed_count_in_action,
@@ -2066,10 +2165,101 @@ class Runtime:
 
     def remove_object(self, object_id: str, source: str = "api") -> Dict[str, Any]:
         normalized_id = normalize_object_id(object_id)
+        cleaned_action_ids: List[str] = []
+        removed_track_count = 0
+        removed_lfo_target_count = 0
+        cleared_ramp_target_count = 0
         with self.lock:
             if normalized_id not in self.objects:
                 raise ValueError(f"Object not found: {normalized_id}")
             removed = self.objects.pop(normalized_id)
+
+            if self.show and isinstance(self.show.get("actionsById"), dict):
+                actions_by_id = dict(self.show.get("actionsById") or {})
+                next_actions_by_id = dict(actions_by_id)
+                for action_id, action in actions_by_id.items():
+                    if not isinstance(action, dict):
+                        continue
+                    action_changed = False
+                    next_action = dict(action)
+
+                    tracks = action.get("tracks")
+                    if isinstance(tracks, list):
+                        next_tracks: List[Dict[str, Any]] = []
+                        for track in tracks:
+                            if not isinstance(track, dict):
+                                continue
+                            track_object_id = str(track.get("objectId") or track.get("object_id") or "").strip()
+                            if track_object_id == normalized_id:
+                                removed_track_count += 1
+                                action_changed = True
+                                continue
+                            next_tracks.append(track)
+                        if len(next_tracks) != len(tracks):
+                            next_action["tracks"] = next_tracks
+
+                    lfos = action.get("lfos")
+                    if isinstance(lfos, list):
+                        next_lfos: List[Dict[str, Any]] = []
+                        for lfo in lfos:
+                            if not isinstance(lfo, dict):
+                                continue
+                            lfo_object_id = str(lfo.get("objectId") or lfo.get("object_id") or "").strip()
+                            if lfo_object_id == normalized_id:
+                                removed_lfo_target_count += 1
+                                action_changed = True
+                                continue
+                            next_lfos.append(lfo)
+                        if len(next_lfos) != len(lfos):
+                            next_action["lfos"] = next_lfos
+
+                    action_rule = normalize_action_rule(next_action.get("actionRule"))
+                    if normalize_action_rule_type(action_rule.get("type")) == "parameterRamp":
+                        target_object_id, _ = parse_action_rule_target(action_rule.get("target"))
+                        if target_object_id == normalized_id:
+                            action_rule["target"] = ""
+                            next_action["actionRule"] = action_rule
+                            cleared_ramp_target_count += 1
+                            action_changed = True
+
+                    if action_changed:
+                        cleaned_action_ids.append(action_id)
+                        next_actions_by_id[action_id] = next_action
+
+                if cleaned_action_ids:
+                    global_lfos_by_id = self.show.get("globalLfosById")
+                    if not isinstance(global_lfos_by_id, dict):
+                        global_lfos_by_id = {}
+                    global_lfos_by_id = sync_action_lfo_snapshots_with_global(next_actions_by_id, global_lfos_by_id)
+                    self.show["actionsById"] = next_actions_by_id
+                    self.show["globalLfosById"] = global_lfos_by_id
+
+                    for action_id in cleaned_action_ids:
+                        running = self.running_actions.get(action_id)
+                        if not isinstance(running, dict):
+                            continue
+                        next_action = next_actions_by_id.get(action_id)
+                        if isinstance(next_action, dict):
+                            running["action"] = json.loads(json.dumps(next_action))
+                        lfo_states = running.get("lfoStates")
+                        if isinstance(lfo_states, dict):
+                            stale_lfo_state_keys = [
+                                key
+                                for key in list(lfo_states.keys())
+                                if key.startswith(f"{normalized_id}:") or key.startswith(f"__ruleRampBase:{normalized_id}:")
+                            ]
+                            for stale_key in stale_lfo_state_keys:
+                                lfo_states.pop(stale_key, None)
+                            running["lfoStates"] = lfo_states
+                        self.running_actions[action_id] = running
+
+            stale_always_lfo_keys = [
+                key
+                for key in list(self.always_lfo_target_states.keys())
+                if key.startswith(f"{normalized_id}:")
+            ]
+            for stale_key in stale_always_lfo_keys:
+                self.always_lfo_target_states.pop(stale_key, None)
 
         self._cleanup_groups_for_object(normalized_id)
 
@@ -2079,6 +2269,10 @@ class Runtime:
                 "source": source,
                 "action": "remove",
                 "objectId": normalized_id,
+                "cleanedActions": cleaned_action_ids,
+                "removedTracks": removed_track_count,
+                "removedLfoTargets": removed_lfo_target_count,
+                "clearedRampTargets": cleared_ramp_target_count,
             },
         )
         return removed
@@ -2385,9 +2579,15 @@ class Runtime:
             if current.get("enabled", True) and not updated.get("enabled", True):
                 should_stop = normalized_action_id in self.running_actions
 
+            running = self.running_actions.get(normalized_action_id)
+            if isinstance(running, dict):
+                # Keep live action runner aligned with edited action state so LFO/track changes
+                # apply immediately while the action is already running.
+                running["action"] = json.loads(json.dumps(updated))
+                self.running_actions[normalized_action_id] = running
+
         if should_stop:
             self.stop_action(normalized_action_id, "disabled")
-
         self.emit_event(
             "action",
             {"actionId": normalized_action_id, "state": "updated", "source": source, "action": updated},
@@ -2733,6 +2933,205 @@ class Runtime:
             return (2.0 * phase) - 1.0
         return math.sin(2.0 * math.pi * phase)
 
+    def _collect_always_lfo_mappings(self) -> Tuple[List[Dict[str, Any]], Dict[str, float]]:
+        mappings: List[Dict[str, Any]] = []
+        live_values_by_target: Dict[str, float] = {}
+
+        with self.lock:
+            if not self.show or not self.lfos_enabled:
+                return (mappings, live_values_by_target)
+            actions_by_id = self.show.get("actionsById")
+            if not isinstance(actions_by_id, dict):
+                return (mappings, live_values_by_target)
+
+            running_mapping_keys: set[Tuple[str, str, str]] = set()
+            for running in self.running_actions.values():
+                if not isinstance(running, dict):
+                    continue
+                running_action = running.get("action")
+                if not isinstance(running_action, dict):
+                    continue
+                running_lfos = running_action.get("lfos")
+                if not isinstance(running_lfos, list):
+                    continue
+                for lfo in running_lfos:
+                    if not isinstance(lfo, dict):
+                        continue
+                    if lfo.get("enabled") is False or lfo.get("targetEnabled") is False:
+                        continue
+                    lfo_id = str(lfo.get("lfoId") or lfo.get("lfo_id") or "").strip()
+                    object_id = str(lfo.get("objectId") or lfo.get("object_id") or "").strip()
+                    parameter = str(lfo.get("parameter") or "").strip()
+                    if not lfo_id or not object_id or parameter not in LFO_PARAMS:
+                        continue
+                    if object_id not in self.objects:
+                        continue
+                    running_mapping_keys.add((lfo_id, object_id, parameter))
+
+            seen_mapping_keys: set[Tuple[str, str, str]] = set()
+            tracked_targets: set[str] = set()
+
+            for action_id in sorted(actions_by_id.keys()):
+                action = actions_by_id.get(action_id)
+                if not isinstance(action, dict):
+                    continue
+                if not bool(action.get("enabled", True)):
+                    continue
+
+                action_lfos = action.get("lfos")
+                if not isinstance(action_lfos, list):
+                    continue
+                for lfo in action_lfos:
+                    if not isinstance(lfo, dict):
+                        continue
+                    if lfo.get("enabled") is False or lfo.get("targetEnabled") is False:
+                        continue
+                    lfo_id = str(lfo.get("lfoId") or lfo.get("lfo_id") or "").strip()
+                    object_id = str(lfo.get("objectId") or lfo.get("object_id") or "").strip()
+                    parameter = str(lfo.get("parameter") or "").strip()
+                    if not lfo_id or not object_id or parameter not in LFO_PARAMS:
+                        continue
+                    if object_id not in self.objects:
+                        continue
+                    mapping_key = (lfo_id, object_id, parameter)
+                    if mapping_key in running_mapping_keys:
+                        continue
+                    if mapping_key in seen_mapping_keys:
+                        continue
+                    seen_mapping_keys.add(mapping_key)
+
+                    target_key = f"{object_id}:{parameter}"
+                    tracked_targets.add(target_key)
+                    mappings.append(
+                        {
+                            "lfoId": lfo_id,
+                            "objectId": object_id,
+                            "parameter": parameter,
+                            "wave": str(lfo.get("wave") or "sine").strip().lower(),
+                            "rateHz": max(0.0, to_float(lfo.get("rateHz"), 0.0)),
+                            "depth": to_float(lfo.get("depth"), 0.0),
+                            "offset": to_float(lfo.get("offset"), 0.0),
+                            "phaseDeg": to_float(lfo.get("phaseDeg"), 0.0),
+                            "mappingPhaseDeg": to_float(lfo.get("mappingPhaseDeg"), 0.0),
+                            "phaseFlip": bool(lfo.get("phaseFlip", False)),
+                            "polarity": coerce_lfo_polarity(lfo.get("polarity")),
+                            "targetKey": target_key,
+                        }
+                    )
+
+            for target_key in tracked_targets:
+                object_id, parameter = target_key.split(":", 1)
+                current_obj = self.objects.get(object_id, default_object(object_id))
+                live_values_by_target[target_key] = to_float(current_obj.get(parameter), 0.0)
+
+        return (mappings, live_values_by_target)
+
+    def _apply_always_lfo_frame(self, elapsed_ms: int) -> None:
+        mappings, live_values_by_target = self._collect_always_lfo_mappings()
+        if not mappings:
+            self.always_lfo_target_states = {}
+            return
+
+        total_mod_by_target: Dict[str, float] = {}
+        object_param_by_target: Dict[str, Tuple[str, str]] = {}
+        active_target_keys: set[str] = set()
+
+        for mapping in mappings:
+            object_id = str(mapping.get("objectId") or "").strip()
+            parameter = str(mapping.get("parameter") or "").strip()
+            target_key = str(mapping.get("targetKey") or "").strip()
+            if not object_id or parameter not in LFO_PARAMS or not target_key:
+                continue
+
+            wave = str(mapping.get("wave") or "sine").strip().lower()
+            if wave not in LFO_WAVES:
+                wave = "sine"
+            rate_hz = max(0.0, to_float(mapping.get("rateHz"), 0.0))
+            depth = to_float(mapping.get("depth"), 0.0)
+            offset = to_float(mapping.get("offset"), 0.0)
+            phase_deg = to_float(mapping.get("phaseDeg"), 0.0)
+            mapping_phase_deg = to_float(mapping.get("mappingPhaseDeg"), 0.0)
+            phase_flip = bool(mapping.get("phaseFlip", False))
+            polarity = coerce_lfo_polarity(mapping.get("polarity"))
+
+            phase_cycles = (elapsed_ms / 1000.0) * rate_hz + ((phase_deg + mapping_phase_deg) / 360.0)
+            sample = self._lfo_sample(wave, phase_cycles)
+            if polarity == "unipolar":
+                sample = (sample + 1.0) * 0.5
+            if phase_flip:
+                sample *= -1.0
+            contribution = offset + (depth * sample)
+
+            total_mod_by_target[target_key] = to_float(total_mod_by_target.get(target_key), 0.0) + contribution
+            object_param_by_target[target_key] = (object_id, parameter)
+            active_target_keys.add(target_key)
+
+        next_patch_by_object: Dict[str, Dict[str, float]] = {}
+        for target_key in active_target_keys:
+            object_id, parameter = object_param_by_target[target_key]
+            live_value = to_float(live_values_by_target.get(target_key), 0.0)
+            target_state = self.always_lfo_target_states.get(target_key)
+            if not isinstance(target_state, dict):
+                target_state = {
+                    "center": live_value,
+                    "lastValue": live_value,
+                }
+                self.always_lfo_target_states[target_key] = target_state
+
+            center_value = to_float(target_state.get("center"), live_value)
+            last_value = to_float(target_state.get("lastValue"), live_value)
+            center_value += (live_value - last_value)
+
+            total_mod = to_float(total_mod_by_target.get(target_key), 0.0)
+            final_value = center_value + total_mod
+            if parameter in OBJECT_LIMITS:
+                final_value = clamp(final_value, OBJECT_LIMITS[parameter])
+
+            target_state["center"] = center_value
+            target_state["lastValue"] = final_value
+            self.always_lfo_target_states[target_key] = target_state
+
+            patch = next_patch_by_object.get(object_id)
+            if not isinstance(patch, dict):
+                patch = {}
+                next_patch_by_object[object_id] = patch
+            patch[parameter] = final_value
+
+        stale_targets = [key for key in self.always_lfo_target_states.keys() if key not in active_target_keys]
+        for stale_target_key in stale_targets:
+            self.always_lfo_target_states.pop(stale_target_key, None)
+
+        for object_id, patch in next_patch_by_object.items():
+            self.update_object(
+                object_id,
+                patch,
+                source="action:lfo-always",
+                emit_osc=True,
+                propagate_group_links=False,
+            )
+
+    def _always_lfo_loop(self) -> None:
+        started_at = time.monotonic()
+        next_tick = started_at
+        while not self.stop_event.is_set():
+            now = time.monotonic()
+            if now < next_tick:
+                time.sleep(min(ACTION_TICK_SEC, next_tick - now))
+                continue
+
+            elapsed_ms = int((now - started_at) * 1000)
+            try:
+                self._apply_always_lfo_frame(elapsed_ms)
+            except Exception as exc:  # noqa: BLE001
+                self.emit_event(
+                    "system",
+                    {"message": "always_lfo_error", "error": str(exc)},
+                )
+
+            next_tick += ACTION_TICK_SEC
+            if (now - next_tick) > (ACTION_TICK_SEC * 4.0):
+                next_tick = now + ACTION_TICK_SEC
+
     def _lfo_total_mod_for_target(self, action: Dict[str, Any], object_id: str, parameter: str, elapsed_ms: int) -> Optional[float]:
         total = 0.0
         matched = False
@@ -2788,6 +3187,8 @@ class Runtime:
         lfo_debug_samples: List[Dict[str, Any]] = []
         action_rule = normalize_action_rule(action.get("actionRule"))
         action_rule_type = normalize_action_rule_type(action_rule.get("type"))
+        with self.lock:
+            existing_object_ids = set(self.objects.keys())
 
         if action_rule_type == "modulationControl":
             target_modulator = str(action_rule.get("targetModulator") or "").strip()
@@ -2817,6 +3218,8 @@ class Runtime:
             object_id = str(track.get("object_id") or track.get("objectId") or "")
             parameter = str(track.get("parameter") or "")
             if not object_id or not parameter:
+                continue
+            if object_id not in existing_object_ids:
                 continue
 
             if parameter == "mute":
@@ -2849,6 +3252,9 @@ class Runtime:
 
         if action_rule_type == "parameterRamp":
             target_object_id, target_parameter = parse_action_rule_target(action_rule.get("target"))
+            if target_object_id and target_parameter in LFO_PARAMS:
+                if target_object_id not in existing_object_ids:
+                    target_object_id = ""
             if target_object_id and target_parameter in LFO_PARAMS:
                 start_value = to_float(action_rule.get("startValue"), 0.0)
                 end_value = to_float(action_rule.get("endValue"), start_value)
@@ -2900,6 +3306,8 @@ class Runtime:
                 object_id = str(lfo.get("objectId") or lfo.get("object_id") or "").strip()
                 parameter = str(lfo.get("parameter") or "").strip()
                 if not object_id or parameter not in LFO_PARAMS:
+                    continue
+                if object_id not in existing_object_ids:
                     continue
 
                 lfo_key = f"{object_id}:{parameter}"
@@ -3058,6 +3466,7 @@ class Runtime:
                 raise ValueError(f"Action is disabled: {normalized_action_id}")
             action_snapshot = json.loads(json.dumps(action))
             lfo_states: Dict[str, Dict[str, float]] = {}
+            has_active_lfo_target = False
             for lfo in action_snapshot.get("lfos", []):
                 if lfo.get("enabled") is False:
                     continue
@@ -3067,12 +3476,15 @@ class Runtime:
                 parameter = str(lfo.get("parameter") or "").strip()
                 if not object_id or parameter not in LFO_PARAMS:
                     continue
+                has_active_lfo_target = True
                 base_object = self.objects.get(object_id, default_object(object_id))
                 seed = to_float(base_object.get(parameter), 0.0)
                 lfo_states[f"{object_id}:{parameter}"] = {
                     "center": seed,
                     "lastValue": seed,
                 }
+            if has_active_lfo_target:
+                self.lfos_enabled = True
             stop_flag = threading.Event()
 
         started_at = time.monotonic()
@@ -3520,6 +3932,24 @@ class Handler(BaseHTTPRequestHandler):
                 lfo_id = normalize_lfo_id(body.get("lfoId") or body.get("lfo_id"))
                 enabled = bool(body.get("enabled", True))
                 result = RUNTIME.set_action_lfo_enabled(action_id, lfo_id, enabled, source="api")
+                self._send_json(HTTPStatus.OK, {"ok": True, **result, "status": RUNTIME.status()})
+                return
+
+            if path_name == "/api/action-lfo/target-enabled":
+                body = self._read_json_body()
+                action_id = normalize_action_id(body.get("actionId") or body.get("action_id"))
+                lfo_id = normalize_lfo_id(body.get("lfoId") or body.get("lfo_id"))
+                object_id = normalize_object_id(body.get("objectId") or body.get("object_id"))
+                parameter = str(body.get("parameter") or "").strip().lower()
+                enabled = bool(body.get("enabled", True))
+                result = RUNTIME.set_action_lfo_target_enabled(
+                    action_id,
+                    lfo_id,
+                    object_id,
+                    parameter,
+                    enabled,
+                    source="api",
+                )
                 self._send_json(HTTPStatus.OK, {"ok": True, **result, "status": RUNTIME.status()})
                 return
 

@@ -3,6 +3,14 @@
   "name": "Fly In",
   "enabled": true,
   "duration_ms": 20000,
+  "action_rule": {
+    "type": "parameter_ramp",
+    "target": "",
+    "start_value": 0.0,
+    "end_value": 0.0,
+    "speed_ms": 0.0,
+    "relative": false
+  },
   "on_end_action_id": "",
   "tracks": [
     {
@@ -24,19 +32,6 @@
   ],
   "lfos": [
     {
-      "lfo_id": "lfo-1",
-      "enabled": true,
-      "wave": "sine",
-      "rate_hz": 0.25,
-      "depth": 20.0,
-      "offset": 0.0,
-      "phase_deg": 0.0,
-      "mapping_phase_deg": 0.0,
-      "polarity": "bipolar",
-      "object_id": "obj",
-      "parameter": "y"
-    },
-    {
       "lfo_id": "lfo",
       "enabled": true,
       "wave": "sine",
@@ -45,17 +40,8 @@
       "offset": 0.0,
       "phase_deg": 0.0,
       "mapping_phase_deg": 0.0,
-      "polarity": "bipolar"
-    },
-    {
-      "lfo_id": "lfo-2",
-      "enabled": true,
-      "wave": "sine",
-      "rate_hz": 0.25,
-      "depth": 20.0,
-      "offset": 0.0,
-      "phase_deg": 0.0,
-      "mapping_phase_deg": 0.0,
+      "phase_flip": false,
+      "target_enabled": true,
       "polarity": "bipolar"
     }
   ],

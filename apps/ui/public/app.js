@@ -61,6 +61,7 @@ const state = {
   status: null,
   selectedObjectId: null,
   selectedObjectIds: [],
+  groupSelectEnabled: true,
   selectedGroupId: null,
   selectedSceneId: null,
   selectedActionId: null,
@@ -192,6 +193,7 @@ const els = {
   managerColorBtn: document.getElementById("managerColorBtn"),
   managerRemoveBtn: document.getElementById("managerRemoveBtn"),
   managerClearBtn: document.getElementById("managerClearBtn"),
+  managerGroupSelectToggle: document.getElementById("managerGroupSelectToggle"),
   managerObjectRows: document.getElementById("managerObjectRows"),
   managerGroupSelect: document.getElementById("managerGroupSelect"),
   managerGroupId: document.getElementById("managerGroupId"),
@@ -214,12 +216,14 @@ const els = {
   actionManagerRuleModParamInput: document.getElementById("actionManagerRuleModParamInput"),
   actionManagerRuleModValueInput: document.getElementById("actionManagerRuleModValueInput"),
   actionManagerRuleModValueSelect: document.getElementById("actionManagerRuleModValueSelect"),
+  actionManagerRuleModEmptyNote: document.getElementById("actionManagerRuleModEmptyNote"),
   actionManagerRuleRampFields: document.getElementById("actionManagerRuleRampFields"),
   actionManagerRuleRampTargetInput: document.getElementById("actionManagerRuleRampTargetInput"),
   actionManagerRuleRampStartInput: document.getElementById("actionManagerRuleRampStartInput"),
   actionManagerRuleRampEndInput: document.getElementById("actionManagerRuleRampEndInput"),
   actionManagerRuleRampSpeedInput: document.getElementById("actionManagerRuleRampSpeedInput"),
   actionManagerRuleRampRelativeInput: document.getElementById("actionManagerRuleRampRelativeInput"),
+  actionManagerRuleRampEmptyNote: document.getElementById("actionManagerRuleRampEmptyNote"),
   actionManagerOnEndInput: document.getElementById("actionManagerOnEndInput"),
   actionManagerOscStartInput: document.getElementById("actionManagerOscStartInput"),
   actionManagerOscStopInput: document.getElementById("actionManagerOscStopInput"),
@@ -1602,6 +1606,7 @@ function applyObjectRuntimeUpdate(payload) {
 }
 
 function getSelectableGroups() {
+  if (!state.groupSelectEnabled) return [];
   if (!areGroupsEnabled()) return [];
   return getObjectGroups().filter((group) => isGroupEnabled(group));
 }
@@ -2609,7 +2614,7 @@ async function runActionGroupEntry(entry) {
       lfoId,
       enabled: source.enabled !== false
     });
-    return `global lfo ${source.enabled !== false ? "enabled" : "disabled"} -> ${lfoId}`;
+    return `action lfo ${source.enabled !== false ? "enabled" : "disabled"} -> ${actionId}.${lfoId}`;
   }
   const actionId = String(source.actionId || "").trim();
   if (!actionId) {
@@ -2813,6 +2818,49 @@ function setSelectOptionsFromValues(selectElement, values, selectedValue, emptyL
   }
 }
 
+function selectHasAvailableChoices(selectElement) {
+  if (!(selectElement instanceof HTMLSelectElement)) return false;
+  return Array.from(selectElement.options || []).some((option) => {
+    if (!(option instanceof HTMLOptionElement)) return false;
+    if (option.disabled) return false;
+    return Boolean(String(option.value || "").trim());
+  });
+}
+
+function setRuleCompactFieldVisibility(inputElement, visible) {
+  const field = inputElement?.closest?.(".compact-field");
+  if (field) {
+    field.hidden = !visible;
+  }
+}
+
+function updateActionRuleFieldAvailabilityVisibility(showModulation) {
+  const hasModTargets = selectHasAvailableChoices(els.actionManagerRuleModTargetInput);
+  const hasRampTargets = selectHasAvailableChoices(els.actionManagerRuleRampTargetInput);
+
+  setRuleCompactFieldVisibility(els.actionManagerRuleModTargetInput, hasModTargets);
+  setRuleCompactFieldVisibility(els.actionManagerRuleModParamInput, hasModTargets);
+  setRuleCompactFieldVisibility(els.actionManagerRuleModValueInput || els.actionManagerRuleModValueSelect, hasModTargets);
+
+  setRuleCompactFieldVisibility(els.actionManagerRuleRampTargetInput, hasRampTargets);
+  setRuleCompactFieldVisibility(els.actionManagerRuleRampStartInput, hasRampTargets);
+  setRuleCompactFieldVisibility(els.actionManagerRuleRampEndInput, hasRampTargets);
+  setRuleCompactFieldVisibility(els.actionManagerRuleRampSpeedInput, hasRampTargets);
+
+  if (els.actionManagerRuleModEmptyNote) {
+    els.actionManagerRuleModEmptyNote.hidden = !showModulation || hasModTargets;
+  }
+  if (els.actionManagerRuleRampEmptyNote) {
+    els.actionManagerRuleRampEmptyNote.hidden = showModulation || hasRampTargets;
+  }
+  if (els.actionManagerRuleRampRelativeInput?.parentElement) {
+    els.actionManagerRuleRampRelativeInput.parentElement.hidden = showModulation || !hasRampTargets;
+  }
+  if (els.actionManagerRuleRampRelativeInput) {
+    els.actionManagerRuleRampRelativeInput.disabled = showModulation || !hasRampTargets;
+  }
+}
+
 function setActionRuleModValueEditor(parameter, value) {
   const param = ACTION_RULE_MODULATION_PARAMS.has(parameter) ? parameter : "depth";
   const discreteValues = ACTION_RULE_MODULATION_DISCRETE_VALUES[param] || null;
@@ -2882,12 +2930,7 @@ function updateActionRuleInputsState() {
       input.disabled = showModulation;
     }
   }
-  if (els.actionManagerRuleRampRelativeInput?.parentElement) {
-    els.actionManagerRuleRampRelativeInput.parentElement.hidden = showModulation;
-  }
-  if (els.actionManagerRuleRampRelativeInput) {
-    els.actionManagerRuleRampRelativeInput.disabled = showModulation;
-  }
+  updateActionRuleFieldAvailabilityVisibility(showModulation);
 
   const parameter = String(els.actionManagerRuleModParamInput?.value || "depth").trim();
   const currentValue = Object.prototype.hasOwnProperty.call(ACTION_RULE_MODULATION_DISCRETE_VALUES, parameter)
@@ -3763,6 +3806,9 @@ async function actionManagerToggleLfoEnabled(indexOrLfoId, enabled) {
     if (!selectedGroup) {
       return;
     }
+    if (enabled) {
+      await api("/api/lfos/enabled", "POST", { enabled: true });
+    }
     await api("/api/action-lfo/enabled", "POST", {
       actionId,
       lfoId: selectedGroup.lfoId,
@@ -3770,10 +3816,55 @@ async function actionManagerToggleLfoEnabled(indexOrLfoId, enabled) {
     });
     state.selectedActionLfoActionId = actionId;
     state.selectedActionLfoIndex = selectedGroup.representativeIndex;
-    addLog(`action lfo ${enabled ? "enabled" : "disabled"} -> ${actionId} ${selectedGroup.lfoId}`);
+    const suffixParts = [];
+    if (enabled) {
+      suffixParts.push("global lfos on");
+    }
+    const suffix = suffixParts.length ? ` (${suffixParts.join(", ")})` : "";
+    addLog(`action lfo ${enabled ? "enabled" : "disabled"} -> ${actionId} ${selectedGroup.lfoId}${suffix}`);
     await refreshStatus();
   } catch (error) {
     addLog(`action lfo toggle failed: ${error.message}`);
+    await refreshStatus();
+  }
+}
+
+async function actionManagerToggleLfoTargetEnabled(index, enabled) {
+  try {
+    cancelActionLfoAutoApplyTimer();
+    await waitForActionLfoAutoApplyIdle();
+    const actionId = selectedActionIdOrThrow();
+    const action = selectedActionOrNull();
+    if (!action) {
+      throw new Error(`Action not found: ${actionId}`);
+    }
+    const currentLfos = Array.isArray(action.lfos) ? action.lfos : [];
+    if (!Number.isInteger(index) || index < 0 || index >= currentLfos.length) {
+      throw new Error("Invalid LFO target index");
+    }
+    const lfo = currentLfos[index] || {};
+    if (!lfoHasAssignedTarget(lfo)) {
+      throw new Error("Target mapping is missing object/parameter");
+    }
+    const lfoId = String(lfo.lfoId || lfo.lfo_id || "").trim();
+    const objectId = String(lfo.objectId || lfo.object_id || "").trim();
+    const parameter = String(lfo.parameter || "").trim().toLowerCase();
+    if (!lfoId || !objectId || !LFO_PARAM_OPTIONS.includes(parameter)) {
+      throw new Error("Invalid LFO target mapping");
+    }
+    await api("/api/action-lfo/target-enabled", "POST", {
+      actionId,
+      lfoId,
+      objectId,
+      parameter,
+      enabled: Boolean(enabled)
+    });
+    state.selectedActionLfoActionId = actionId;
+    state.selectedActionLfoTargetIndex = index;
+    addLog(`action lfo target ${enabled ? "enabled" : "disabled"} -> ${actionId} ${objectId}.${parameter} (${lfoId})`);
+    await refreshStatus();
+  } catch (error) {
+    addLog(`action lfo target toggle failed: ${error.message}`);
     await refreshStatus();
   }
 }
@@ -4030,7 +4121,7 @@ function renderActionManager() {
   els.actionManagerSummary.textContent = `${actionIds.length} action${actionIds.length === 1 ? "" : "s"} | groups: ${actionGroupIds.length} | running: ${runningList.length ? runningList.join(", ") : "-"}`;
   const selectedLfoCount = Array.isArray(selectedAction?.lfos) ? collectLfoGroups(selectedAction.lfos).length : 0;
   const selectedActionLabel = selectedActionId || "-";
-  els.modulationManagerSummary.textContent = `Action: ${selectedActionLabel} | LFOs: ${selectedLfoCount} | running: ${isRunning ? "yes" : "no"}`;
+  els.modulationManagerSummary.textContent = `Action: ${selectedActionLabel} | LFOs: ${selectedLfoCount} | running: ${isRunning ? "yes" : "no"} | global: ${areLfosEnabled() ? "on" : "off"}`;
   syncActionRuleEditor(selectedAction, globalLfoIds);
 
   els.actionManagerRows.innerHTML = "";
@@ -4860,7 +4951,7 @@ function renderActionManager() {
             event.stopPropagation();
             const enabledNow = String(enabledToggle.dataset.actionLfoTargetToggleEnabled || "").toLowerCase() !== "false";
             setTargetEnabledToggle(!enabledNow);
-            saveTargetConfig();
+            void actionManagerToggleLfoTargetEnabled(entryIndex, !enabledNow);
           });
         }
         if (saveBtn instanceof HTMLButtonElement) {
@@ -5368,6 +5459,12 @@ function renderManager() {
   const allGroup = getVirtualAllGroup();
   const allMembers = new Set(allGroup.objectIds);
   const selectedIds = selectedObjectTargets();
+  if (els.managerGroupSelectToggle instanceof HTMLInputElement) {
+    els.managerGroupSelectToggle.checked = Boolean(state.groupSelectEnabled);
+    els.managerGroupSelectToggle.title = areGroupsEnabled()
+      ? "Selecting one member can include enabled group members."
+      : "Groups are disabled globally.";
+  }
   if (!String(els.managerAddId.value || "").trim()) {
     const suggestedAddId = uniqueObjectId(suggestObjectBaseFromType(els.managerAddType.value || DEFAULT_OBJECT_TYPE));
     setInputValueIfIdle(els.managerAddId, suggestedAddId);
@@ -6538,6 +6635,17 @@ function setupHandlers() {
   els.enableGroupsToggle.addEventListener("change", () => {
     void setGroupsEnabled(els.enableGroupsToggle.checked);
   });
+
+  if (els.managerGroupSelectToggle instanceof HTMLInputElement) {
+    els.managerGroupSelectToggle.addEventListener("change", () => {
+      state.groupSelectEnabled = Boolean(els.managerGroupSelectToggle.checked);
+      if (state.groupSelectEnabled && state.selectedObjectIds.length) {
+        setSelection(state.selectedObjectIds);
+      }
+      addLog(`object manager group select ${state.groupSelectEnabled ? "enabled" : "disabled"}`);
+      renderAll();
+    });
+  }
 
   els.objectSelect.addEventListener("change", () => {
     setSingleSelection(els.objectSelect.value);

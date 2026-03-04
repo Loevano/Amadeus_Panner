@@ -299,3 +299,39 @@
 
 ## 2026-03-04 20:04 CET
 - Fixed live action LFO enable/disable behavior while an action is running: the action worker now reads the latest runtime action snapshot each tick, so `POST /api/action-lfo/enabled` takes effect immediately in modulation output and visible UI movement.
+
+## 2026-03-04 20:11 CET
+- Updated LFO toggle behavior so enabling an action LFO forces global LFO master on (`lfosEnabled = true`), preventing a hidden global-off state from blocking visible modulation.
+- Added modulation summary indicator (`global: on/off`) in Modulation Manager for immediate operator feedback when global LFO master is disabled.
+
+## 2026-03-04 20:21 CET
+- Refined action-group entry preview messaging for action-LFO entries to report explicit `actionId.lfoId` targets.
+- Kept action-group LFO enable entries on the same API path (`POST /api/action-lfo/enabled`) used by the Modulation Manager.
+
+## 2026-03-04 20:23 CET
+- Added a new Object Manager `Group Select` toggle to control whether object selection expands by enabled group membership.
+- Wired selection expansion logic to this toggle so row-click, multi-select, and selection-based operations can be switched between grouped and per-object selection behavior.
+
+## 2026-03-04 20:28 CET
+- Removed implicit action auto-start coupling from LFO update paths so LFO modulation stays tied to explicit action triggers.
+- Kept live-running action state sync for LFO edits, so while an action is running, LFO target/parameter updates apply immediately.
+
+## 2026-03-04 20:29 CET
+- Fixed live-running action sync: `update_action(...)` now updates the in-memory running action snapshot immediately, so LFO target/parameter edits take effect while the action is already running (no restart required).
+
+## 2026-03-04 20:37 CET
+- Added an always-on LFO runtime loop in the control server so enabled LFO targets modulate continuously even when no action is currently triggered.
+- Prevented double-modulation by excluding mappings already owned by running actions from the always-on loop.
+- Kept action/action-group LFO enable APIs as the state controls, so actions can still trigger and change LFO enable state while continuous modulation remains active.
+
+## 2026-03-04 20:44 CET
+- Split LFO enable control paths: `POST /api/action-lfo/enabled` now remains the whole-LFO toggle, and new `POST /api/action-lfo/target-enabled` is dedicated to per-target enable state.
+- Updated Modulation Manager target toggle wiring to call the new per-target endpoint, so target On/Off no longer relies on the generic target config save path.
+
+## 2026-03-04 20:49 CET
+- Fixed object deletion persistence: removing an object now also strips references to that object from action tracks, action LFO targets, and parameter-ramp targets.
+- Prevented deleted/missing objects from being re-created by modulation runtime loops by skipping non-existent object targets in action and always-on LFO application.
+- Updated template `action-fly-in-2` LFO target from `obj.y` to `obj-1.y` to avoid ghost `obj` modulation on fresh loads.
+
+## 2026-03-04 20:48 CET
+- Compacted Action Setup into Basics/Rule/Routing sections and hide non-applicable rule attributes instead of greying them out (with empty-state notes when no targets exist).

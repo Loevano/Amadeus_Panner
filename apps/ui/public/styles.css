@@ -373,6 +373,14 @@ button:hover {
   align-items: start;
 }
 
+.object-manager-header-row {
+  margin-bottom: 4px;
+}
+
+.object-manager-header-row h2 {
+  margin: 0;
+}
+
 .object-manager-add-block {
   padding: 8px 9px;
 }
@@ -663,6 +671,117 @@ button:hover {
 .action-manager-panel .action-rule-relative-row {
   margin-top: -2px;
   margin-bottom: 8px;
+}
+
+.action-manager-setup-block .action-setup-section {
+  margin-bottom: 8px;
+  padding: 7px 8px;
+  border: 1px solid #dfe8f1;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.action-manager-setup-block .action-setup-section h4 {
+  margin: 0 0 5px;
+  font-size: 0.74rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #4f6575;
+}
+
+.action-manager-setup-block .action-setup-section-head {
+  margin-bottom: 5px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.action-manager-setup-block .action-setup-section-head h4 {
+  margin: 0;
+}
+
+.action-manager-setup-block .action-setup-compact-grid,
+.action-manager-setup-block .action-rule-compact-grid,
+.action-manager-setup-block .action-setup-routing-grid {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.action-manager-setup-block .compact-field {
+  grid-column: span 4;
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.action-manager-setup-block .compact-field-wide {
+  grid-column: span 6;
+}
+
+.action-manager-setup-block .action-rule-compact-grid .compact-field {
+  grid-column: span 3;
+}
+
+.action-manager-setup-block .action-rule-compact-grid .compact-field-wide {
+  grid-column: span 5;
+}
+
+.action-manager-setup-block .action-setup-routing-grid .compact-field {
+  grid-column: span 3;
+}
+
+.action-manager-setup-block .action-setup-routing-grid .compact-field-wide {
+  grid-column: span 3;
+}
+
+.action-manager-setup-block .compact-field label {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: #5b7180;
+  white-space: nowrap;
+}
+
+.action-manager-setup-block .compact-field input,
+.action-manager-setup-block .compact-field select {
+  min-height: 30px;
+  padding: 4px 6px;
+}
+
+.action-manager-setup-block .action-rule-value-wrap {
+  width: 100%;
+  display: grid;
+  gap: 4px;
+}
+
+.action-manager-setup-block .action-rule-value-wrap input,
+.action-manager-setup-block .action-rule-value-wrap select {
+  width: 100%;
+}
+
+.action-manager-setup-block .action-rule-empty-note {
+  margin: 4px 0 0;
+  font-size: 0.79rem;
+}
+
+.action-manager-setup-block .compact-inline-toggle {
+  margin: 0;
+  padding: 2px 8px;
+  border: 1px solid #d3dfe9;
+  border-radius: 999px;
+  background: #f7fbff;
+  font-size: 0.78rem;
+  white-space: nowrap;
+}
+
+.action-manager-setup-block .compact-inline-toggle input {
+  margin-right: 4px;
+}
+
+.action-manager-setup-block .action-setup-actions-row {
+  margin-top: 2px;
 }
 
 .action-group-select-row {
@@ -1270,6 +1389,27 @@ button:hover {
   .action-group-manager-panel .manager-field-grid,
   .modulation-manager-panel .manager-field-grid {
     grid-template-columns: 1fr 1fr;
+  }
+
+  .action-manager-setup-block .action-setup-section-head {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .action-manager-setup-block .action-setup-compact-grid,
+  .action-manager-setup-block .action-rule-compact-grid,
+  .action-manager-setup-block .action-setup-routing-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px 8px;
+  }
+
+  .action-manager-setup-block .compact-field,
+  .action-manager-setup-block .compact-field-wide,
+  .action-manager-setup-block .action-rule-compact-grid .compact-field,
+  .action-manager-setup-block .action-rule-compact-grid .compact-field-wide,
+  .action-manager-setup-block .action-setup-routing-grid .compact-field,
+  .action-manager-setup-block .action-setup-routing-grid .compact-field-wide {
+    grid-column: span 1;
   }
 
   .modulation-manager-panel .modulation-lfo-editor-grid {
