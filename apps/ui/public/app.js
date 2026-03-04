@@ -1028,9 +1028,10 @@ async function upsertActionLfoTargetMapping(actionId, selectorKey, objectId, par
 
   if (existingIndex >= 0) {
     const currentLfo = lfos[existingIndex] || {};
-    mappingPhaseDeg = hasPhaseInput
+    const basePhase = hasPhaseInput
       ? normalizedPhaseInput
       : parseFiniteNumber(currentLfo.mappingPhaseDeg, 0);
+    mappingPhaseDeg = normalizePhaseDegrees(basePhase, parseFiniteNumber(currentLfo.mappingPhaseDeg, 0));
     nextLfos = [...lfos];
     nextLfos[existingIndex] = {
       ...currentLfo,
@@ -1039,9 +1040,10 @@ async function upsertActionLfoTargetMapping(actionId, selectorKey, objectId, par
       mappingPhaseDeg
     };
   } else {
-    mappingPhaseDeg = hasPhaseInput
+    const basePhase = hasPhaseInput
       ? normalizedPhaseInput
       : parseFiniteNumber(sourceLfo.mappingPhaseDeg, 0);
+    mappingPhaseDeg = normalizePhaseDegrees(basePhase, parseFiniteNumber(sourceLfo.mappingPhaseDeg, 0));
     const linkedLfo = {
       ...(sourceLfo || {}),
       objectId: normalizedObjectId,
@@ -2048,6 +2050,15 @@ function parseFiniteNumber(value, fallback = 0) {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+function normalizePhaseDegrees(value, fallback = 0) {
+  const numeric = parseFiniteNumber(value, fallback);
+  const wrapped = ((numeric % 360) + 360) % 360;
+  if (!Number.isFinite(wrapped)) {
+    return parseFiniteNumber(fallback, 0);
+  }
+  return wrapped;
+}
+
 function formatMs(ms) {
   const numeric = Number(ms);
   if (!Number.isFinite(numeric) || numeric < 0) return "-";
@@ -2978,7 +2989,7 @@ async function actionManagerAddLfoTarget() {
   }
 }
 
-async function actionManagerUpdateLfoTargetPhase(index, mappingPhaseDeg) {
+async function actionManagerUpdateLfoTargetConfig(index, options = {}) {
   try {
     cancelActionLfoAutoApplyTimer();
     const actionId = selectedActionIdOrThrow();
@@ -3006,10 +3017,27 @@ async function actionManagerUpdateLfoTargetPhase(index, mappingPhaseDeg) {
       throw new Error("Target mapping is missing object/parameter");
     }
 
+    const nextPhaseDeg = normalizePhaseDegrees(
+      options.mappingPhaseDeg,
+      parseFiniteNumber(lfo.mappingPhaseDeg, 0)
+    );
+    const nextDepth = parseFiniteNumber(
+      options.depth,
+      parseFiniteNumber(lfo.depth, 0)
+    );
+    const nextOffset = parseFiniteNumber(
+      options.offset,
+      parseFiniteNumber(lfo.offset, 0)
+    );
+    const nextPolarity = normalizeLfoPolarity(options.polarity || lfo.polarity);
+
     const nextLfos = [...currentLfos];
     nextLfos[index] = {
       ...lfo,
-      mappingPhaseDeg: parseFiniteNumber(mappingPhaseDeg, parseFiniteNumber(lfo.mappingPhaseDeg, 0))
+      mappingPhaseDeg: nextPhaseDeg,
+      depth: nextDepth,
+      offset: nextOffset,
+      polarity: nextPolarity
     };
     await api(`/api/action/${encodeURIComponent(actionId)}/update`, "POST", { lfos: nextLfos });
     state.selectedActionLfoActionId = actionId;
@@ -3019,12 +3047,15 @@ async function actionManagerUpdateLfoTargetPhase(index, mappingPhaseDeg) {
     state.selectedActionLfoTargetIndex = index;
 
     const targetLabel = lfoTargetLabel(nextLfos[index]) || `target #${index + 1}`;
-    const nextPhaseDeg = parseFiniteNumber(nextLfos[index].mappingPhaseDeg, 0);
-    addLog(`action lfo target phase -> ${actionId} ${targetLabel} = ${nextPhaseDeg}°`);
+    addLog(`action lfo target update -> ${actionId} ${targetLabel} (phase ${nextPhaseDeg}°, depth ${nextDepth.toFixed(3)}, offset ${nextOffset.toFixed(3)}, ${nextPolarity})`);
     await refreshStatus();
   } catch (error) {
-    addLog(`action lfo target phase failed: ${error.message}`);
+    addLog(`action lfo target update failed: ${error.message}`);
   }
+}
+
+async function actionManagerUpdateLfoTargetPhase(index, mappingPhaseDeg) {
+  await actionManagerUpdateLfoTargetConfig(index, { mappingPhaseDeg });
 }
 
 async function actionManagerRemoveLfoTarget(index) {
@@ -3946,7 +3977,10 @@ function renderActionManager() {
         objectId,
         parameter,
         targetLabel: `${objectId}.${parameter}`,
-        mappingPhaseDeg: parseFiniteNumber(entry.mappingPhaseDeg, 0),
+        mappingPhaseDeg: normalizePhaseDegrees(entry.mappingPhaseDeg, 0),
+        depth: parseFiniteNumber(entry.depth, 0),
+        offset: parseFiniteNumber(entry.offset, 0),
+        polarity: normalizeLfoPolarity(entry.polarity),
         enabled: entry.enabled !== false
       });
     }
@@ -4112,15 +4146,15 @@ function renderActionManager() {
     els.actionManagerLfoTargetRows.innerHTML = "";
     if (!selectedAction) {
       const row = document.createElement("tr");
-      row.innerHTML = '<td class="muted" colspan="4">Select an action to manage targets.</td>';
+      row.innerHTML = '<td class="muted" colspan="7">Select an action to manage targets.</td>';
       els.actionManagerLfoTargetRows.appendChild(row);
     } else if (!hasSelectedLfo) {
       const row = document.createElement("tr");
-      row.innerHTML = '<td class="muted" colspan="4">Select an LFO to view targets.</td>';
+      row.innerHTML = '<td class="muted" colspan="7">Select an LFO to view targets.</td>';
       els.actionManagerLfoTargetRows.appendChild(row);
     } else if (!selectedTargetEntries.length) {
       const row = document.createElement("tr");
-      row.innerHTML = '<td class="muted" colspan="4">No targets assigned. Use Add Target above.</td>';
+      row.innerHTML = '<td class="muted" colspan="7">No targets assigned. Use Add Target above.</td>';
       els.actionManagerLfoTargetRows.appendChild(row);
     } else {
       for (const targetEntry of selectedTargetEntries) {
@@ -4145,6 +4179,36 @@ function renderActionManager() {
               aria-label="Mapping phase for ${escapeHtml(targetEntry.targetLabel)}"
             />
           </td>
+          <td>
+            <input
+              class="action-lfo-target-depth-input"
+              type="number"
+              step="0.1"
+              value="${escapeHtml(String(targetEntry.depth))}"
+              data-lfo-target-index="${targetEntry.entryIndex}"
+              aria-label="Depth for ${escapeHtml(targetEntry.targetLabel)}"
+            />
+          </td>
+          <td>
+            <input
+              class="action-lfo-target-offset-input"
+              type="number"
+              step="0.1"
+              value="${escapeHtml(String(targetEntry.offset))}"
+              data-lfo-target-index="${targetEntry.entryIndex}"
+              aria-label="Offset for ${escapeHtml(targetEntry.targetLabel)}"
+            />
+          </td>
+          <td>
+            <select
+              class="action-lfo-target-polarity-input"
+              data-lfo-target-index="${targetEntry.entryIndex}"
+              aria-label="Polarity for ${escapeHtml(targetEntry.targetLabel)}"
+            >
+              <option value="bipolar"${targetEntry.polarity === "bipolar" ? " selected" : ""}>Bipolar</option>
+              <option value="unipolar"${targetEntry.polarity === "unipolar" ? " selected" : ""}>Unipolar</option>
+            </select>
+          </td>
           <td>${targetEntry.enabled ? "On" : "Off"}</td>
           <td class="action-manager-row-actions-cell">
             <div class="action-manager-row-actions">
@@ -4155,21 +4219,59 @@ function renderActionManager() {
         `;
 
         const phaseInput = row.querySelector(".action-lfo-target-phase-input");
+        const depthInput = row.querySelector(".action-lfo-target-depth-input");
+        const offsetInput = row.querySelector(".action-lfo-target-offset-input");
+        const polarityInput = row.querySelector(".action-lfo-target-polarity-input");
         const saveBtn = row.querySelector('button[data-action-lfo-target-command="update"]');
         const removeBtn = row.querySelector('button[data-action-lfo-target-command="remove"]');
         const entryIndex = targetEntry.entryIndex;
+
+        const saveTargetConfig = () => {
+          const phaseValue = phaseInput instanceof HTMLInputElement
+            ? parseFiniteNumber(phaseInput.value, targetEntry.mappingPhaseDeg)
+            : targetEntry.mappingPhaseDeg;
+          const depthValue = depthInput instanceof HTMLInputElement
+            ? parseFiniteNumber(depthInput.value, targetEntry.depth)
+            : targetEntry.depth;
+          const offsetValue = offsetInput instanceof HTMLInputElement
+            ? parseFiniteNumber(offsetInput.value, targetEntry.offset)
+            : targetEntry.offset;
+          const polarityValue = polarityInput instanceof HTMLSelectElement
+            ? normalizeLfoPolarity(polarityInput.value)
+            : targetEntry.polarity;
+          void actionManagerUpdateLfoTargetConfig(entryIndex, {
+            mappingPhaseDeg: phaseValue,
+            depth: depthValue,
+            offset: offsetValue,
+            polarity: polarityValue
+          });
+        };
 
         if (phaseInput instanceof HTMLInputElement) {
           phaseInput.addEventListener("keydown", (event) => {
             if (event.key !== "Enter") return;
             event.preventDefault();
-            void actionManagerUpdateLfoTargetPhase(entryIndex, parseFiniteNumber(phaseInput.value, targetEntry.mappingPhaseDeg));
+            saveTargetConfig();
           });
         }
-        if (saveBtn instanceof HTMLButtonElement && phaseInput instanceof HTMLInputElement) {
+        for (const inputElement of [depthInput, offsetInput]) {
+          if (!(inputElement instanceof HTMLInputElement)) continue;
+          inputElement.addEventListener("keydown", (event) => {
+            if (event.key !== "Enter") return;
+            event.preventDefault();
+            saveTargetConfig();
+          });
+        }
+        if (polarityInput instanceof HTMLSelectElement) {
+          polarityInput.addEventListener("change", (event) => {
+            event.stopPropagation();
+            saveTargetConfig();
+          });
+        }
+        if (saveBtn instanceof HTMLButtonElement) {
           saveBtn.addEventListener("click", (event) => {
             event.stopPropagation();
-            void actionManagerUpdateLfoTargetPhase(entryIndex, parseFiniteNumber(phaseInput.value, targetEntry.mappingPhaseDeg));
+            saveTargetConfig();
           });
         }
         if (removeBtn instanceof HTMLButtonElement) {

@@ -742,7 +742,10 @@ button:hover {
   text-align: right;
 }
 
-.action-lfo-target-phase-input {
+.action-lfo-target-phase-input,
+.action-lfo-target-depth-input,
+.action-lfo-target-offset-input,
+.action-lfo-target-polarity-input {
   width: 88px;
   min-width: 72px;
   padding: 4px 6px;
