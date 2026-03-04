@@ -5986,7 +5986,6 @@ function setupHandlers() {
     closePannerContextMenu();
 
     const pt = toCanvasPoint(event);
-    const singleObjectOverride = event.ctrlKey && !event.metaKey;
     state.activePointerId = event.pointerId;
     state.lastPointer = pt;
     const hit = pickObject(pt);
@@ -5995,17 +5994,15 @@ function setupHandlers() {
     if (event.altKey) {
       state.orbiting = true;
       state.selectionBox.active = false;
-    } else if (hit && (singleObjectOverride || !event.metaKey)) {
-      if (!singleObjectOverride) {
-        if (!isObjectSelected(hit.obj.objectId)) {
-          setSingleSelection(hit.obj.objectId);
-        } else if (state.selectedObjectId !== hit.obj.objectId) {
-          state.selectedObjectId = hit.obj.objectId;
-        }
+    } else if (hit && !event.metaKey) {
+      if (!isObjectSelected(hit.obj.objectId)) {
+        setSingleSelection(hit.obj.objectId);
+      } else if (state.selectedObjectId !== hit.obj.objectId) {
+        state.selectedObjectId = hit.obj.objectId;
       }
       state.selectionBox.active = false;
       state.orbiting = false;
-      beginObjectDrag(hit.obj.objectId, pt, event.shiftKey, { singleObjectOnly: singleObjectOverride });
+      beginObjectDrag(hit.obj.objectId, pt, event.shiftKey, { singleObjectOnly: false });
       renderAll();
     } else {
       const additive = event.metaKey;
@@ -6099,7 +6096,20 @@ function setupHandlers() {
     } else if (state.selectionBox.active) {
       state.selectionBox.currentX = pt.x;
       state.selectionBox.currentY = pt.y;
-      if (Math.hypot(state.selectionBox.currentX - state.selectionBox.startX, state.selectionBox.currentY - state.selectionBox.startY) > 3) {
+      const selectionDragDistance = Math.hypot(
+        state.selectionBox.currentX - state.selectionBox.startX,
+        state.selectionBox.currentY - state.selectionBox.startY
+      );
+
+      if (event.metaKey && state.pointerDownHitObjectId && selectionDragDistance > 3) {
+        state.selectionBox.active = false;
+        beginObjectDrag(state.pointerDownHitObjectId, pt, event.shiftKey, { singleObjectOnly: true });
+        renderAll();
+        state.lastPointer = pt;
+        return;
+      }
+
+      if (selectionDragDistance > 3) {
         applySelectionBox(state.selectionBox.additive);
       }
       renderPanner();
