@@ -82,6 +82,8 @@ const state = {
   runtimeFrameNeedsInspector: false,
   runtimeFrameNeedsManager: false,
   runtimeFrameNeedsActionDebug: false,
+  groupManagerAutoSaveTimerId: null,
+  actionGroupAutoSaveTimerId: null,
   actionLfoAutoApplyTimerId: null,
   actionLfoAutoApplyInFlight: false,
   actionLfoAutoApplyQueued: false,
@@ -192,7 +194,6 @@ const els = {
   actionGroupManagerOscTriggerInput: document.getElementById("actionGroupManagerOscTriggerInput"),
   actionGroupManagerEnabledInput: document.getElementById("actionGroupManagerEnabledInput"),
   actionGroupManagerCreateBtn: document.getElementById("actionGroupManagerCreateBtn"),
-  actionGroupManagerSaveBtn: document.getElementById("actionGroupManagerSaveBtn"),
   actionGroupManagerDeleteBtn: document.getElementById("actionGroupManagerDeleteBtn"),
   actionGroupEntryTypeInput: document.getElementById("actionGroupEntryTypeInput"),
   actionGroupEntryActionSelect: document.getElementById("actionGroupEntryActionSelect"),
@@ -234,7 +235,6 @@ const els = {
   groupManagerMembersSummary: document.getElementById("groupManagerMembersSummary"),
   groupManagerEditSummary: document.getElementById("groupManagerEditSummary"),
   groupManagerCreateBtn: document.getElementById("groupManagerCreateBtn"),
-  groupManagerEditSaveBtn: document.getElementById("groupManagerEditSaveBtn"),
   groupManagerEditDeleteBtn: document.getElementById("groupManagerEditDeleteBtn"),
   toggleDebugEventsBtn: document.getElementById("toggleDebugEventsBtn"),
   debugEventsState: document.getElementById("debugEventsState"),
@@ -652,6 +652,42 @@ function scheduleStatusRefresh(delayMs = 0) {
   state.statusRefreshTimerId = setTimeout(() => {
     state.statusRefreshTimerId = null;
     void refreshStatus();
+  }, Math.max(0, Number(delayMs) || 0));
+}
+
+function cancelGroupManagerAutoSaveTimer() {
+  if (state.groupManagerAutoSaveTimerId !== null) {
+    clearTimeout(state.groupManagerAutoSaveTimerId);
+    state.groupManagerAutoSaveTimerId = null;
+  }
+}
+
+function scheduleGroupManagerAutoSave(delayMs = 450) {
+  const selectedGroup = getSelectedGroup();
+  const selectedGroupId = String(selectedGroup?.groupId || "").trim();
+  if (!selectedGroupId) return;
+  cancelGroupManagerAutoSaveTimer();
+  state.groupManagerAutoSaveTimerId = setTimeout(() => {
+    state.groupManagerAutoSaveTimerId = null;
+    void groupManagerSaveEditor({ auto: true, expectedGroupId: selectedGroupId });
+  }, Math.max(0, Number(delayMs) || 0));
+}
+
+function cancelActionGroupAutoSaveTimer() {
+  if (state.actionGroupAutoSaveTimerId !== null) {
+    clearTimeout(state.actionGroupAutoSaveTimerId);
+    state.actionGroupAutoSaveTimerId = null;
+  }
+}
+
+function scheduleActionGroupAutoSave(delayMs = 450) {
+  const selectedGroup = selectedActionGroupOrNull();
+  const selectedGroupId = String(selectedGroup?.groupId || "").trim();
+  if (!selectedGroupId) return;
+  cancelActionGroupAutoSaveTimer();
+  state.actionGroupAutoSaveTimerId = setTimeout(() => {
+    state.actionGroupAutoSaveTimerId = null;
+    void actionGroupManagerSave({ auto: true, expectedGroupId: selectedGroupId });
   }, Math.max(0, Number(delayMs) || 0));
 }
 
@@ -2641,6 +2677,7 @@ async function actionGroupManagerToggleEnabled(groupId, enabled) {
 
 async function actionGroupManagerCreate() {
   try {
+    cancelActionGroupAutoSaveTimer();
     const groupId = sanitizeActionGroupId("group", { allowAuto: true });
     const payload = {
       groupId,
@@ -2663,24 +2700,45 @@ async function actionGroupManagerCreate() {
   }
 }
 
-async function actionGroupManagerSave() {
+async function actionGroupManagerSave(options = {}) {
+  const { auto = false, expectedGroupId = "" } = options;
   try {
     const groupId = selectedActionGroupIdOrThrow();
+    if (expectedGroupId && String(expectedGroupId || "").trim() !== groupId) {
+      return false;
+    }
     const currentGroup = selectedActionGroupOrNull();
     if (!currentGroup) {
       throw new Error(`Action group not found: ${groupId}`);
     }
     const payload = actionGroupPayloadFromInputs(currentGroup, { fallbackGroupId: groupId, lockGroupId: true });
+    const currentName = String(currentGroup.name || groupId).trim() || groupId;
+    const currentEnabled = currentGroup.enabled !== false;
+    const currentTrigger = String(currentGroup.oscTriggers?.trigger || defaultActionGroupOscPath(groupId)).trim();
+    const nextTrigger = String(payload.oscTriggers?.trigger || defaultActionGroupOscPath(groupId)).trim();
+    const unchanged = payload.name === currentName
+      && payload.enabled === currentEnabled
+      && nextTrigger === currentTrigger;
+    if (auto && unchanged) {
+      return false;
+    }
     await api(`/api/action-group/${encodeURIComponent(groupId)}/update`, "POST", payload);
-    addLog(`action group save -> ${groupId}`);
+    if (!auto) {
+      addLog(`action group save -> ${groupId}`);
+    }
     await refreshStatus();
+    return true;
   } catch (error) {
-    addLog(`action group save failed: ${error.message}`);
+    if (!auto) {
+      addLog(`action group save failed: ${error.message}`);
+    }
+    return false;
   }
 }
 
 async function actionGroupManagerDelete() {
   try {
+    cancelActionGroupAutoSaveTimer();
     const groupId = selectedActionGroupIdOrThrow();
     if (!confirm(`Delete action group "${groupId}"?`)) {
       return;
@@ -3766,7 +3824,6 @@ function renderActionManager() {
   els.actionManagerSaveBtn.disabled = !selectedAction;
   els.actionManagerSaveAsBtn.disabled = !selectedAction;
   els.actionManagerDeleteBtn.disabled = !selectedAction;
-  els.actionGroupManagerSaveBtn.disabled = !selectedActionGroup;
   els.actionGroupManagerDeleteBtn.disabled = !selectedActionGroup;
   let entryPayloadValid = true;
   try {
@@ -4345,6 +4402,27 @@ function summarizeGroupItems(values, maxVisible = 4) {
   return { preview, full: normalized.join(", ") };
 }
 
+function normalizedStringSet(values) {
+  const unique = new Set(
+    (Array.isArray(values) ? values : [])
+      .map((value) => String(value || "").trim())
+      .filter(Boolean)
+  );
+  return [...unique].sort((a, b) => a.localeCompare(b));
+}
+
+function sameNormalizedStringSet(a, b) {
+  const left = normalizedStringSet(a);
+  const right = normalizedStringSet(b);
+  if (left.length !== right.length) return false;
+  for (let index = 0; index < left.length; index += 1) {
+    if (left[index] !== right[index]) {
+      return false;
+    }
+  }
+  return true;
+}
+
 function selectedGroupManagerLinkParams() {
   return els.groupManagerEditLinkInputs
     .filter((input) => input.checked)
@@ -4409,7 +4487,6 @@ function renderGroupManagerEditor(selectedGroup, objects) {
   const hasGroup = Boolean(selectedGroup);
   els.groupManagerEditName.disabled = !hasGroup;
   els.groupManagerEditColor.disabled = !hasGroup;
-  els.groupManagerEditSaveBtn.disabled = !hasGroup;
   els.groupManagerEditDeleteBtn.disabled = !hasGroup;
   for (const input of els.groupManagerEditLinkInputs) {
     input.disabled = !hasGroup;
@@ -4548,6 +4625,22 @@ function renderGroupManager() {
   }
 
   renderGroupManagerEditor(getSelectedGroup(), objects);
+}
+
+function selectGroupManagerGroup(nextGroupId) {
+  const normalizedNextGroupId = String(nextGroupId || "").trim() || null;
+  const currentGroupId = String(state.selectedGroupId || "").trim() || null;
+  if (normalizedNextGroupId === currentGroupId) {
+    state.selectedGroupId = normalizedNextGroupId;
+    renderGroupManager();
+    return;
+  }
+  cancelGroupManagerAutoSaveTimer();
+  if (currentGroupId) {
+    void groupManagerSaveEditor({ auto: true, expectedGroupId: currentGroupId });
+  }
+  state.selectedGroupId = normalizedNextGroupId;
+  renderGroupManager();
 }
 
 function renderManager() {
@@ -5186,6 +5279,7 @@ async function groupManagerDeleteById(groupId) {
   }
 
   try {
+    cancelGroupManagerAutoSaveTimer();
     await api(`/api/groups/${encodeURIComponent(normalizedGroupId)}/delete`, "POST", {});
     if (state.selectedGroupId === normalizedGroupId) {
       state.selectedGroupId = null;
@@ -5199,6 +5293,7 @@ async function groupManagerDeleteById(groupId) {
 
 async function groupManagerCreate() {
   try {
+    cancelGroupManagerAutoSaveTimer();
     const selectedGroup = getSelectedGroup();
     const memberIdsFromEditor = selectedGroup ? selectedGroupManagerMemberIds() : [];
     const fallbackSelection = selectedObjectTargets();
@@ -5233,16 +5328,24 @@ async function groupManagerCreate() {
   }
 }
 
-async function groupManagerSaveEditor() {
+async function groupManagerSaveEditor(options = {}) {
+  const { auto = false, expectedGroupId = "" } = options;
   const selectedGroup = getSelectedGroup();
   if (!selectedGroup) {
-    addLog("group update failed: No group selected");
-    return;
+    if (!auto) {
+      addLog("group update failed: No group selected");
+    }
+    return false;
   }
   const groupId = String(selectedGroup.groupId || "").trim();
+  if (expectedGroupId && String(expectedGroupId || "").trim() !== groupId) {
+    return false;
+  }
   if (!groupId) {
-    addLog("group update failed: Invalid group ID");
-    return;
+    if (!auto) {
+      addLog("group update failed: Invalid group ID");
+    }
+    return false;
   }
 
   try {
@@ -5250,6 +5353,15 @@ async function groupManagerSaveEditor() {
     const color = normalizeHexColor(els.groupManagerEditColor.value, DEFAULT_GROUP_COLOR);
     const linkParams = selectedGroupManagerLinkParams();
     const objectIds = selectedGroupManagerMemberIds();
+    const currentName = String(selectedGroup.name || groupId).trim() || groupId;
+    const currentColor = normalizeHexColor(selectedGroup.color, DEFAULT_GROUP_COLOR);
+    const unchanged = name === currentName
+      && color === currentColor
+      && sameNormalizedStringSet(linkParams, selectedGroup.linkParams)
+      && sameNormalizedStringSet(objectIds, selectedGroup.objectIds);
+    if (auto && unchanged) {
+      return false;
+    }
 
     await api(`/api/groups/${encodeURIComponent(groupId)}/update`, "POST", {
       name,
@@ -5258,10 +5370,16 @@ async function groupManagerSaveEditor() {
       objectIds
     });
     clearGroupManagerDraft();
-    addLog(`group updated -> ${groupId} (${objectIds.length} members)`);
+    if (!auto) {
+      addLog(`group updated -> ${groupId} (${objectIds.length} members)`);
+    }
     await refreshStatus();
+    return true;
   } catch (error) {
-    addLog(`group update failed (${groupId}): ${error.message}`);
+    if (!auto) {
+      addLog(`group update failed (${groupId}): ${error.message}`);
+    }
+    return false;
   }
 }
 
@@ -5392,6 +5510,7 @@ function setupHandlers() {
   });
 
   els.actionGroupManagerSelect.addEventListener("change", () => {
+    cancelActionGroupAutoSaveTimer();
     state.selectedActionGroupId = String(els.actionGroupManagerSelect.value || "").trim() || null;
     renderActionManager();
   });
@@ -5482,10 +5601,6 @@ function setupHandlers() {
     void actionGroupManagerCreate();
   });
 
-  els.actionGroupManagerSaveBtn.addEventListener("click", () => {
-    void actionGroupManagerSave();
-  });
-
   els.actionGroupManagerDeleteBtn.addEventListener("click", () => {
     void actionGroupManagerDelete();
   });
@@ -5542,7 +5657,10 @@ function setupHandlers() {
 
   els.actionGroupManagerNameInput.addEventListener("input", () => {
     const nameValue = String(els.actionGroupManagerNameInput.value || "").trim();
-    if (!nameValue) return;
+    if (!nameValue) {
+      scheduleActionGroupAutoSave();
+      return;
+    }
 
     const currentId = String(els.actionGroupManagerIdInput.value || "").trim();
     const suggestedId = String(state.draftSuggestedIds.actionGroup || "").trim();
@@ -5563,6 +5681,15 @@ function setupHandlers() {
     if (!currentTrigger || currentTrigger === defaultActionGroupOscPath(previousId)) {
       setInputValueIfIdle(els.actionGroupManagerOscTriggerInput, defaultActionGroupOscPath(derivedGroupId));
     }
+    scheduleActionGroupAutoSave();
+  });
+
+  els.actionGroupManagerOscTriggerInput.addEventListener("input", () => {
+    scheduleActionGroupAutoSave();
+  });
+
+  els.actionGroupManagerEnabledInput.addEventListener("change", () => {
+    scheduleActionGroupAutoSave(0);
   });
 
   els.actionGroupManagerIdInput.addEventListener("input", () => {
@@ -5685,7 +5812,7 @@ function setupHandlers() {
   });
 
   els.managerGroupSelect.addEventListener("change", () => {
-    state.selectedGroupId = els.managerGroupSelect.value || null;
+    selectGroupManagerGroup(els.managerGroupSelect.value || null);
     renderManager();
   });
 
@@ -5702,12 +5829,7 @@ function setupHandlers() {
   });
 
   els.groupManagerEditSelect.addEventListener("change", () => {
-    state.selectedGroupId = String(els.groupManagerEditSelect.value || "").trim() || null;
-    renderGroupManager();
-  });
-
-  els.groupManagerEditSaveBtn.addEventListener("click", () => {
-    void groupManagerSaveEditor();
+    selectGroupManagerGroup(String(els.groupManagerEditSelect.value || "").trim() || null);
   });
 
   els.groupManagerCreateBtn.addEventListener("click", () => {
@@ -5723,12 +5845,26 @@ function setupHandlers() {
   els.groupManagerEditMembers.addEventListener("change", () => {
     captureGroupManagerDraftFromEditor();
     renderGroupManagerDraftSummary();
+    scheduleGroupManagerAutoSave(100);
+  });
+
+  els.groupManagerEditName.addEventListener("input", () => {
+    scheduleGroupManagerAutoSave();
+  });
+
+  els.groupManagerEditColor.addEventListener("input", () => {
+    scheduleGroupManagerAutoSave();
+  });
+
+  els.groupManagerEditColor.addEventListener("change", () => {
+    scheduleGroupManagerAutoSave(0);
   });
 
   for (const input of els.groupManagerEditLinkInputs) {
     input.addEventListener("change", () => {
       captureGroupManagerDraftFromEditor();
       renderGroupManagerDraftSummary();
+      scheduleGroupManagerAutoSave(120);
     });
   }
 
@@ -5742,8 +5878,7 @@ function setupHandlers() {
     const enabledToggle = target.closest("button[data-group-toggle-enabled]");
     if (enabledToggle instanceof HTMLButtonElement) {
       const enabledNow = String(enabledToggle.dataset.groupToggleEnabled || "").toLowerCase() !== "false";
-      state.selectedGroupId = groupId;
-      renderGroupManager();
+      selectGroupManagerGroup(groupId);
       void setGroupEnabled(groupId, !enabledNow);
       return;
     }
@@ -5752,12 +5887,10 @@ function setupHandlers() {
       return;
     }
     if (target.closest(".group-manager-edit-btn")) {
-      state.selectedGroupId = groupId;
-      renderGroupManager();
+      selectGroupManagerGroup(groupId);
       return;
     }
-    state.selectedGroupId = groupId;
-    renderGroupManager();
+    selectGroupManagerGroup(groupId);
   });
 
   els.groupManagerRows.addEventListener("keydown", (event) => {
@@ -5770,8 +5903,7 @@ function setupHandlers() {
     const groupId = String(row.dataset.groupId || "").trim();
     if (!groupId) return;
     event.preventDefault();
-    state.selectedGroupId = groupId;
-    renderGroupManager();
+    selectGroupManagerGroup(groupId);
   });
 
   els.toggleDebugEventsBtn.addEventListener("click", () => {
