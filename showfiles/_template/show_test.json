@@ -17,6 +17,18 @@
       "file": "actions/action-fly-in.json"
     }
   ],
+  "global_lfos": [
+    {
+      "lfo_id": "lfo-1",
+      "enabled": true,
+      "wave": "sine",
+      "rate_hz": 0.25,
+      "depth": 20.0,
+      "offset": 0.0,
+      "phase_deg": 0.0,
+      "polarity": "bipolar"
+    }
+  ],
   "action_groups": [],
   "groups_enabled": true,
   "object_groups": [],

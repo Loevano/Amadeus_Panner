@@ -27,6 +27,7 @@ const SHOW_LIST_REFRESH_INTERVAL_MS = 10000;
 const DEBUG_LOG_NOISY_TYPES = new Set(["object", "osc_out", "osc_in"]);
 const DEBUG_LOG_NOISY_THROTTLE_MS = 250;
 const LFO_PARAM_OPTIONS = ["x", "y", "z", "size", "gain"];
+const LFO_POLARITIES = new Set(["bipolar", "unipolar"]);
 
 const state = {
   status: null,
@@ -38,6 +39,7 @@ const state = {
   selectedActionGroupId: null,
   selectedActionLfoIndex: null,
   selectedActionLfoActionId: null,
+  selectedActionLfoTargetIndex: null,
   currentPage: "panner",
   draggingObjectId: null,
   draggingObjectIds: [],
@@ -78,6 +80,9 @@ const state = {
   runtimeFrameNeedsInspector: false,
   runtimeFrameNeedsManager: false,
   runtimeFrameNeedsActionDebug: false,
+  actionLfoAutoApplyTimerId: null,
+  actionLfoAutoApplyInFlight: false,
+  actionLfoAutoApplyQueued: false,
   draftSuggestedIds: {
     action: "",
     actionGroup: "",
@@ -101,6 +106,7 @@ const els = {
   mainLayout: document.getElementById("mainLayout"),
   viewPannerBtn: document.getElementById("viewPannerBtn"),
   viewActionManagerBtn: document.getElementById("viewActionManagerBtn"),
+  viewActionGroupManagerBtn: document.getElementById("viewActionGroupManagerBtn"),
   viewModulationManagerBtn: document.getElementById("viewModulationManagerBtn"),
   viewObjectManagerBtn: document.getElementById("viewObjectManagerBtn"),
   viewGroupManagerBtn: document.getElementById("viewGroupManagerBtn"),
@@ -160,12 +166,6 @@ const els = {
   managerGroupLinkInputs: Array.from(document.querySelectorAll(".manager-group-link")),
   actionManagerSummary: document.getElementById("actionManagerSummary"),
   modulationManagerSummary: document.getElementById("modulationManagerSummary"),
-  modulationManagerActionSelect: document.getElementById("modulationManagerActionSelect"),
-  actionManagerSelect: document.getElementById("actionManagerSelect"),
-  actionManagerStartBtn: document.getElementById("actionManagerStartBtn"),
-  actionManagerStopBtn: document.getElementById("actionManagerStopBtn"),
-  actionManagerAbortBtn: document.getElementById("actionManagerAbortBtn"),
-  actionManagerLfosToggleBtn: document.getElementById("actionManagerLfosToggleBtn"),
   actionManagerRows: document.getElementById("actionManagerRows"),
   actionManagerIdInput: document.getElementById("actionManagerIdInput"),
   actionManagerNameInput: document.getElementById("actionManagerNameInput"),
@@ -187,27 +187,33 @@ const els = {
   actionGroupManagerCreateBtn: document.getElementById("actionGroupManagerCreateBtn"),
   actionGroupManagerSaveBtn: document.getElementById("actionGroupManagerSaveBtn"),
   actionGroupManagerDeleteBtn: document.getElementById("actionGroupManagerDeleteBtn"),
-  actionGroupManagerTriggerBtn: document.getElementById("actionGroupManagerTriggerBtn"),
   actionGroupEntryTypeInput: document.getElementById("actionGroupEntryTypeInput"),
   actionGroupEntryActionSelect: document.getElementById("actionGroupEntryActionSelect"),
   actionGroupEntryLfoSelect: document.getElementById("actionGroupEntryLfoSelect"),
   actionGroupEntryLfosEnabledInput: document.getElementById("actionGroupEntryLfosEnabledInput"),
+  actionGroupEntryNameInput: document.getElementById("actionGroupEntryNameInput"),
   actionGroupEntryAddBtn: document.getElementById("actionGroupEntryAddBtn"),
+  actionGroupEntryTriggerBtn: document.getElementById("actionGroupEntryTriggerBtn"),
   actionGroupEntryClearBtn: document.getElementById("actionGroupEntryClearBtn"),
   actionGroupEntryRows: document.getElementById("actionGroupEntryRows"),
-  actionManagerLfoObjectInput: document.getElementById("actionManagerLfoObjectInput"),
-  actionManagerLfoParamInput: document.getElementById("actionManagerLfoParamInput"),
+  actionGroupListSummary: document.getElementById("actionGroupListSummary"),
+  actionGroupListRows: document.getElementById("actionGroupListRows"),
+  actionManagerLfoIdInput: document.getElementById("actionManagerLfoIdInput"),
   actionManagerLfoWaveInput: document.getElementById("actionManagerLfoWaveInput"),
   actionManagerLfoRateInput: document.getElementById("actionManagerLfoRateInput"),
   actionManagerLfoDepthInput: document.getElementById("actionManagerLfoDepthInput"),
   actionManagerLfoOffsetInput: document.getElementById("actionManagerLfoOffsetInput"),
-  actionManagerLfoPhaseInput: document.getElementById("actionManagerLfoPhaseInput"),
-  actionManagerLfoMappingPhaseInput: document.getElementById("actionManagerLfoMappingPhaseInput"),
+  actionManagerLfoPolarityBtn: document.getElementById("actionManagerLfoPolarityBtn"),
   actionManagerLfoEnabledInput: document.getElementById("actionManagerLfoEnabledInput"),
   actionManagerLfoAddBtn: document.getElementById("actionManagerLfoAddBtn"),
-  actionManagerLfoUpdateBtn: document.getElementById("actionManagerLfoUpdateBtn"),
+  actionManagerLfoAddTargetBtn: document.getElementById("actionManagerLfoAddTargetBtn"),
   actionManagerLfoClearBtn: document.getElementById("actionManagerLfoClearBtn"),
   actionManagerSelectedLfoSummary: document.getElementById("actionManagerSelectedLfoSummary"),
+  actionManagerLfoTargetsSummary: document.getElementById("actionManagerLfoTargetsSummary"),
+  actionManagerLfoTargetObjectInput: document.getElementById("actionManagerLfoTargetObjectInput"),
+  actionManagerLfoTargetParamInput: document.getElementById("actionManagerLfoTargetParamInput"),
+  actionManagerLfoTargetPhaseInput: document.getElementById("actionManagerLfoTargetPhaseInput"),
+  actionManagerLfoTargetRows: document.getElementById("actionManagerLfoTargetRows"),
   actionManagerLfoRows: document.getElementById("actionManagerLfoRows"),
   actionManagerLfoDebugSummary: document.getElementById("actionManagerLfoDebugSummary"),
   actionManagerLfoDebugRows: document.getElementById("actionManagerLfoDebugRows"),
@@ -347,8 +353,22 @@ function nextNumericId(baseId, fallbackBase, existingIds) {
   throw new Error(`Could not generate a unique ${fallbackBase} ID`);
 }
 
+function normalizeObjectSeriesBase(baseId) {
+  const normalized = normalizeObjectId(baseId);
+  if (!normalized) return "";
+  if (!normalized.startsWith("obj-")) return normalized;
+  const numericTail = normalized.slice(4);
+  if (!/^\d+(?:-\d+)+$/.test(numericTail)) return normalized;
+  const firstPart = numericTail.split("-")[0] || "1";
+  return `obj-${firstPart}`;
+}
+
 function uniqueObjectId(baseId) {
-  return nextNumericId(baseId, "obj", getObjects().map((obj) => obj.objectId));
+  return nextNumericId(
+    normalizeObjectSeriesBase(baseId) || baseId,
+    "obj",
+    getObjects().map((obj) => obj.objectId)
+  );
 }
 
 function suggestObjectBaseFromType(typeValue) {
@@ -732,6 +752,11 @@ function getActionsById() {
   return actionsById && typeof actionsById === "object" ? actionsById : {};
 }
 
+function getGlobalLfosById() {
+  const globalLfosById = state.status?.show?.globalLfosById;
+  return globalLfosById && typeof globalLfosById === "object" ? globalLfosById : {};
+}
+
 function getActionById(actionId) {
   const normalized = String(actionId || "").trim();
   if (!normalized) return null;
@@ -812,6 +837,29 @@ async function toggleObjectGroupMembershipFromPanner(objectId, groupId) {
   }
 }
 
+function normalizeLfoPolarity(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (LFO_POLARITIES.has(normalized)) {
+    return normalized;
+  }
+  return "bipolar";
+}
+
+function lfoHasAssignedTarget(lfo) {
+  const objectId = String(lfo?.objectId || lfo?.object_id || "").trim();
+  const parameter = String(lfo?.parameter || "").trim();
+  return Boolean(objectId && LFO_PARAM_OPTIONS.includes(parameter));
+}
+
+function lfoTargetLabel(lfo) {
+  if (!lfoHasAssignedTarget(lfo)) {
+    return "";
+  }
+  const objectId = String(lfo?.objectId || lfo?.object_id || "").trim();
+  const parameter = String(lfo?.parameter || "").trim();
+  return `${objectId}.${parameter}`;
+}
+
 function lfoSignature(lfo) {
   const source = lfo && typeof lfo === "object" ? lfo : {};
   const wave = String(source.wave || "sine").trim().toLowerCase();
@@ -819,7 +867,8 @@ function lfoSignature(lfo) {
   const depth = parseFiniteNumber(source.depth, 0).toFixed(6);
   const offset = parseFiniteNumber(source.offset, 0).toFixed(6);
   const phaseDeg = parseFiniteNumber(source.phaseDeg, 0).toFixed(6);
-  return [wave, rateHz, depth, offset, phaseDeg].join("|");
+  const polarity = normalizeLfoPolarity(source.polarity);
+  return [wave, rateHz, depth, offset, phaseDeg, polarity].join("|");
 }
 
 function lfoDisplayId(lfo, fallback = "") {
@@ -834,101 +883,146 @@ function lfoSelectorKey(lfo, fallback = "") {
   return `sig:${lfoSignature(lfo)}`;
 }
 
-function promptMappingPhaseForTarget(actionId, objectId, parameter, defaultValue = 0) {
-  const fallback = parseFiniteNumber(defaultValue, 0);
-  const message = `Mapping phase offset (deg) for ${actionId} -> ${objectId}.${parameter}\nUse 180 for mirrored motion.`;
-  const raw = prompt(message, String(fallback));
-  if (raw === null) return null;
-  return parseFiniteNumber(raw, fallback);
+function updateLfoPolarityButton(polarity) {
+  if (!els.actionManagerLfoPolarityBtn) return;
+  const normalized = normalizeLfoPolarity(polarity);
+  els.actionManagerLfoPolarityBtn.dataset.polarity = normalized;
+  els.actionManagerLfoPolarityBtn.textContent = normalized === "unipolar" ? "Unipolar" : "Bipolar";
+  els.actionManagerLfoPolarityBtn.setAttribute("aria-pressed", normalized === "unipolar" ? "true" : "false");
 }
 
-async function linkActionLfoTargetFromPanner(actionId, selectorKey, objectId, parameter) {
-  try {
-    const normalizedActionId = String(actionId || "").trim();
-    const normalizedSelectorKey = String(selectorKey || "").trim();
-    const normalizedObjectId = String(objectId || "").trim();
-    const normalizedParam = String(parameter || "").trim();
-    if (!normalizedActionId || !normalizedSelectorKey || !normalizedObjectId || !LFO_PARAM_OPTIONS.includes(normalizedParam)) {
-      throw new Error("Invalid LFO mapping request");
-    }
-
-    const action = getActionById(normalizedActionId);
-    if (!action) {
-      throw new Error(`Action not found: ${normalizedActionId}`);
-    }
-    const lfos = Array.isArray(action.lfos) ? action.lfos : [];
-    const sourceIndex = lfos.findIndex((candidate, candidateIndex) => {
-      const fallbackId = `lfo-${candidateIndex + 1}`;
-      return lfoSelectorKey(candidate, fallbackId) === normalizedSelectorKey;
-    });
-    if (sourceIndex < 0) {
-      throw new Error(`LFO not found: ${normalizedActionId}`);
-    }
-    const sourceLfo = lfos[sourceIndex];
-
-    const existingIndex = lfos.findIndex((candidate, candidateIndex) => {
-      const fallbackId = `lfo-${candidateIndex + 1}`;
-      if (lfoSelectorKey(candidate, fallbackId) !== normalizedSelectorKey) return false;
-      const candidateObjectId = String(candidate?.objectId || "").trim();
-      const candidateParam = String(candidate?.parameter || "").trim();
-      return candidateObjectId === normalizedObjectId && candidateParam === normalizedParam;
-    });
-
-    if (existingIndex >= 0) {
-      const currentLfo = lfos[existingIndex] || {};
-      const mappingPhaseDeg = promptMappingPhaseForTarget(
-        normalizedActionId,
-        normalizedObjectId,
-        normalizedParam,
-        parseFiniteNumber(currentLfo.mappingPhaseDeg, 0)
-      );
-      if (mappingPhaseDeg === null) {
-        closePannerContextMenu();
-        return;
-      }
-
-      const nextLfos = [...lfos];
-      nextLfos[existingIndex] = {
-        ...currentLfo,
-        objectId: normalizedObjectId,
-        parameter: normalizedParam,
-        mappingPhaseDeg
+function collectLfoGroups(lfos = []) {
+  const groupsBySelector = new Map();
+  for (let index = 0; index < lfos.length; index += 1) {
+    const lfo = lfos[index] || {};
+    const fallbackId = `lfo-${index + 1}`;
+    const selector = lfoSelectorKey(lfo, fallbackId);
+    let group = groupsBySelector.get(selector);
+    if (!group) {
+      const lfoId = lfoDisplayId(lfo, fallbackId) || fallbackId;
+      group = {
+        selector,
+        lfoId,
+        representativeIndex: index,
+        lfo,
+        entryIndices: [],
+        targetLabels: [],
+        targetCount: 0
       };
-      await api(`/api/action/${encodeURIComponent(normalizedActionId)}/update`, "POST", { lfos: nextLfos });
-      state.selectedActionId = normalizedActionId;
-      state.selectedActionLfoActionId = normalizedActionId;
-      state.selectedActionLfoIndex = existingIndex;
-      addLog(`action lfo mapping phase -> ${normalizedActionId} ${normalizedObjectId}.${normalizedParam} = ${mappingPhaseDeg}°`);
-      closePannerContextMenu();
-      await refreshStatus();
-      return;
+      groupsBySelector.set(selector, group);
     }
-
-    const mappingPhaseDeg = promptMappingPhaseForTarget(
-      normalizedActionId,
-      normalizedObjectId,
-      normalizedParam,
-      parseFiniteNumber(sourceLfo.mappingPhaseDeg, 0)
-    );
-    if (mappingPhaseDeg === null) {
-      closePannerContextMenu();
-      return;
+    group.entryIndices.push(index);
+    const targetLabel = lfoTargetLabel(lfo);
+    if (targetLabel) {
+      group.targetCount += 1;
+      if (!group.targetLabels.includes(targetLabel)) {
+        group.targetLabels.push(targetLabel);
+      }
     }
+  }
+  return Array.from(groupsBySelector.values())
+    .sort((a, b) => a.lfoId.localeCompare(b.lfoId));
+}
 
+async function upsertActionLfoTargetMapping(actionId, selectorKey, objectId, parameter, options = {}) {
+  const normalizedActionId = String(actionId || "").trim();
+  const normalizedSelectorKey = String(selectorKey || "").trim();
+  const normalizedObjectId = String(objectId || "").trim();
+  const normalizedParam = String(parameter || "").trim();
+  const normalizedPhaseInput = parseFiniteNumber(options.mappingPhaseDeg, Number.NaN);
+  const hasPhaseInput = Number.isFinite(normalizedPhaseInput);
+
+  if (!normalizedActionId || !normalizedSelectorKey || !normalizedObjectId || !LFO_PARAM_OPTIONS.includes(normalizedParam)) {
+    throw new Error("Invalid LFO mapping request");
+  }
+
+  const action = getActionById(normalizedActionId);
+  if (!action) {
+    throw new Error(`Action not found: ${normalizedActionId}`);
+  }
+
+  const lfos = Array.isArray(action.lfos) ? action.lfos : [];
+  const sourceIndex = lfos.findIndex((candidate, candidateIndex) => {
+    const fallbackId = `lfo-${candidateIndex + 1}`;
+    return lfoSelectorKey(candidate, fallbackId) === normalizedSelectorKey;
+  });
+  if (sourceIndex < 0) {
+    throw new Error(`LFO not found: ${normalizedActionId}`);
+  }
+  const sourceLfo = lfos[sourceIndex] || {};
+
+  const existingIndex = lfos.findIndex((candidate, candidateIndex) => {
+    const fallbackId = `lfo-${candidateIndex + 1}`;
+    if (lfoSelectorKey(candidate, fallbackId) !== normalizedSelectorKey) return false;
+    const candidateObjectId = String(candidate?.objectId || "").trim();
+    const candidateParam = String(candidate?.parameter || "").trim();
+    return candidateObjectId === normalizedObjectId && candidateParam === normalizedParam;
+  });
+
+  let nextLfos = null;
+  let mappingPhaseDeg = 0;
+  let created = false;
+
+  if (existingIndex >= 0) {
+    const currentLfo = lfos[existingIndex] || {};
+    mappingPhaseDeg = hasPhaseInput
+      ? normalizedPhaseInput
+      : parseFiniteNumber(currentLfo.mappingPhaseDeg, 0);
+    nextLfos = [...lfos];
+    nextLfos[existingIndex] = {
+      ...currentLfo,
+      objectId: normalizedObjectId,
+      parameter: normalizedParam,
+      mappingPhaseDeg
+    };
+  } else {
+    mappingPhaseDeg = hasPhaseInput
+      ? normalizedPhaseInput
+      : parseFiniteNumber(sourceLfo.mappingPhaseDeg, 0);
     const linkedLfo = {
       ...(sourceLfo || {}),
       objectId: normalizedObjectId,
       parameter: normalizedParam,
       mappingPhaseDeg
     };
-    const nextLfos = [...lfos, linkedLfo];
+    nextLfos = [...lfos, linkedLfo];
+    created = true;
+  }
 
-    await api(`/api/action/${encodeURIComponent(normalizedActionId)}/update`, "POST", { lfos: nextLfos });
-    state.selectedActionId = normalizedActionId;
-    state.selectedActionLfoActionId = normalizedActionId;
-    state.selectedActionLfoIndex = nextLfos.length - 1;
-    addLog(`action lfo link -> ${normalizedActionId} ${normalizedObjectId}.${normalizedParam} (phase ${mappingPhaseDeg}°)`);
-    closePannerContextMenu();
+  await api(`/api/action/${encodeURIComponent(normalizedActionId)}/update`, "POST", { lfos: nextLfos });
+  state.selectedActionId = normalizedActionId;
+  state.selectedActionLfoActionId = normalizedActionId;
+  const nextGroups = collectLfoGroups(nextLfos);
+  const selectedGroup = nextGroups.find((group) => group.selector === normalizedSelectorKey) || null;
+  state.selectedActionLfoIndex = selectedGroup ? selectedGroup.representativeIndex : null;
+  const selectedTargetIndex = nextLfos.findIndex((candidate, candidateIndex) => {
+    const fallbackId = `lfo-${candidateIndex + 1}`;
+    if (lfoSelectorKey(candidate, fallbackId) !== normalizedSelectorKey) return false;
+    const candidateObjectId = String(candidate?.objectId || "").trim();
+    const candidateParam = String(candidate?.parameter || "").trim();
+    return candidateObjectId === normalizedObjectId && candidateParam === normalizedParam;
+  });
+  state.selectedActionLfoTargetIndex = selectedTargetIndex >= 0 ? selectedTargetIndex : null;
+  return {
+    actionId: normalizedActionId,
+    objectId: normalizedObjectId,
+    parameter: normalizedParam,
+    mappingPhaseDeg,
+    created
+  };
+}
+
+async function linkActionLfoTargetFromPanner(actionId, selectorKey, objectId, parameter, options = {}) {
+  try {
+    const result = await upsertActionLfoTargetMapping(actionId, selectorKey, objectId, parameter, options);
+    if (result.created) {
+      addLog(`action lfo link -> ${result.actionId} ${result.objectId}.${result.parameter} (phase ${result.mappingPhaseDeg}°)`);
+    } else {
+      addLog(`action lfo mapping phase -> ${result.actionId} ${result.objectId}.${result.parameter} = ${result.mappingPhaseDeg}°`);
+    }
+    if (options.closeContextMenu !== false) {
+      closePannerContextMenu();
+    }
     await refreshStatus();
   } catch (error) {
     addLog(`panner lfo link failed: ${error.message}`);
@@ -964,41 +1058,27 @@ function buildGroupContextSubmenu(objectId) {
 }
 
 function collectActionLfoEntries() {
-  const entriesByKey = new Map();
+  const entries = [];
   const actionsById = getActionsById();
   const actionIds = Object.keys(actionsById).sort((a, b) => a.localeCompare(b));
   for (const actionId of actionIds) {
     const action = actionsById[actionId] || {};
     const lfos = Array.isArray(action.lfos) ? action.lfos : [];
-    for (let index = 0; index < lfos.length; index += 1) {
-      const lfo = lfos[index];
-      const lfoId = lfoDisplayId(lfo, `lfo-${index + 1}`);
-      const selector = lfoSelectorKey(lfo, `lfo-${index + 1}`);
-      const key = `${actionId}::${selector}`;
-      const targetObjectId = String(lfo?.objectId || "-").trim() || "-";
-      const targetParam = String(lfo?.parameter || "-").trim() || "-";
-      const targetLabel = `${targetObjectId}.${targetParam}`;
-      const existing = entriesByKey.get(key);
-      if (!existing) {
-        entriesByKey.set(key, {
-          actionId,
-          index,
-          lfo,
-          selector,
-          lfoId,
-          targetCount: 1,
-          targets: [targetLabel],
-          action
-        });
-      } else {
-        existing.targetCount += 1;
-        if (!existing.targets.includes(targetLabel)) {
-          existing.targets.push(targetLabel);
-        }
-      }
+    const groups = collectLfoGroups(lfos);
+    for (const group of groups) {
+      entries.push({
+        actionId,
+        index: group.representativeIndex,
+        lfo: group.lfo,
+        selector: group.selector,
+        lfoId: group.lfoId,
+        targetCount: group.targetCount,
+        targets: group.targetLabels,
+        action
+      });
     }
   }
-  return Array.from(entriesByKey.values())
+  return entries
     .sort((a, b) => String(a.actionId || "").localeCompare(String(b.actionId || "")) || (a.index - b.index));
 }
 
@@ -1044,8 +1124,9 @@ function buildLfoContextSubmenu(objectId) {
     const rateHz = parseFiniteNumber(lfo.rateHz, 0).toFixed(3);
     const targetLabel = entry.targets.slice(0, 2).join(", ");
     const moreSuffix = entry.targetCount > 2 ? ` +${entry.targetCount - 2}` : "";
+    const targetSummary = entry.targetCount ? `${targetLabel}${moreSuffix}` : "no targets";
     const lfoId = String(entry.lfoId || `lfo-${entry.index + 1}`);
-    const label = `${entry.actionId} ${lfoId} (${wave} ${rateHz}Hz) [${targetLabel}${moreSuffix}]`;
+    const label = `${entry.actionId} ${lfoId} (${wave} ${rateHz}Hz) [${targetSummary}]`;
     submenu.appendChild(createPannerMenuItem(label, {
       submenu: buildLfoParamSubmenu(objectId, entry)
     }));
@@ -1384,11 +1465,13 @@ function setPage(nextPage) {
   els.mainLayout.dataset.page = nextPage;
   els.viewPannerBtn.classList.toggle("is-active", nextPage === "panner");
   els.viewActionManagerBtn.classList.toggle("is-active", nextPage === "action-manager");
+  els.viewActionGroupManagerBtn.classList.toggle("is-active", nextPage === "action-group-manager");
   els.viewModulationManagerBtn.classList.toggle("is-active", nextPage === "modulation-manager");
   els.viewObjectManagerBtn.classList.toggle("is-active", nextPage === "object-manager");
   els.viewGroupManagerBtn.classList.toggle("is-active", nextPage === "group-manager");
   els.viewPannerBtn.setAttribute("aria-selected", nextPage === "panner" ? "true" : "false");
   els.viewActionManagerBtn.setAttribute("aria-selected", nextPage === "action-manager" ? "true" : "false");
+  els.viewActionGroupManagerBtn.setAttribute("aria-selected", nextPage === "action-group-manager" ? "true" : "false");
   els.viewModulationManagerBtn.setAttribute("aria-selected", nextPage === "modulation-manager" ? "true" : "false");
   els.viewObjectManagerBtn.setAttribute("aria-selected", nextPage === "object-manager" ? "true" : "false");
   els.viewGroupManagerBtn.setAttribute("aria-selected", nextPage === "group-manager" ? "true" : "false");
@@ -1968,10 +2051,7 @@ function applyLfoDebugSamples(payload) {
 
 function selectedActionIdOrThrow() {
   const actionId = String(
-    state.selectedActionId
-    || els.modulationManagerActionSelect?.value
-    || els.actionManagerSelect.value
-    || ""
+    state.selectedActionId || ""
   ).trim();
   if (!actionId) {
     throw new Error("No action selected");
@@ -2007,9 +2087,134 @@ function selectedActionGroupOrNull() {
   return getActionGroupById(groupId);
 }
 
+function describeActionGroupEntry(entry) {
+  const source = entry && typeof entry === "object" ? entry : {};
+  const entryType = String(source.entryType || "").trim();
+  if (entryType === "lfosEnabled") {
+    const enabled = source.enabled !== false;
+    return {
+      name: enabled ? "Enable all LFOs" : "Disable all LFOs",
+      detail: enabled ? "Global LFO state -> enabled" : "Global LFO state -> disabled"
+    };
+  }
+  if (entryType === "actionLfoEnabled") {
+    const enabled = source.enabled !== false;
+    const actionId = String(source.actionId || "").trim() || "-";
+    const lfoId = String(source.lfoId || "").trim() || "-";
+    return {
+      name: `${enabled ? "Enable" : "Disable"} ${actionId}.${lfoId}`,
+      detail: `Global LFO ${enabled ? "enable" : "disable"} -> ${lfoId} (entry action: ${actionId})`
+    };
+  }
+  const actionId = String(source.actionId || "").trim() || "-";
+  const command = String(source.command || "start").trim().toLowerCase();
+  const commandLabel = command === "stop" ? "Stop" : (command === "abort" ? "Abort" : "Start");
+  return {
+    name: `${commandLabel} ${actionId}`,
+    detail: `Action ${command} -> ${actionId}`
+  };
+}
+
+function updateActionGroupEntryNamePreview() {
+  if (!els.actionGroupEntryNameInput) return;
+  try {
+    const entry = actionGroupEntryPayloadFromInputs();
+    const description = describeActionGroupEntry(entry);
+    els.actionGroupEntryNameInput.value = description.name;
+  } catch {
+    els.actionGroupEntryNameInput.value = "";
+  }
+}
+
+async function runActionGroupEntry(entry) {
+  const source = entry && typeof entry === "object" ? entry : {};
+  const entryType = String(source.entryType || "").trim();
+  if (entryType === "lfosEnabled") {
+    const enabled = source.enabled !== false;
+    await api("/api/lfos/enabled", "POST", { enabled });
+    return `lfos ${enabled ? "enabled" : "disabled"}`;
+  }
+  if (entryType === "actionLfoEnabled") {
+    const actionId = String(source.actionId || "").trim();
+    const lfoId = String(source.lfoId || "").trim();
+    if (!actionId || !lfoId) {
+      throw new Error("Action LFO entry requires action and LFO");
+    }
+    await api("/api/action-lfo/enabled", "POST", {
+      actionId,
+      lfoId,
+      enabled: source.enabled !== false
+    });
+    return `global lfo ${source.enabled !== false ? "enabled" : "disabled"} -> ${lfoId}`;
+  }
+  const actionId = String(source.actionId || "").trim();
+  if (!actionId) {
+    throw new Error("Action entry requires an action");
+  }
+  const command = String(source.command || "start").trim().toLowerCase();
+  if (command !== "start" && command !== "stop" && command !== "abort") {
+    throw new Error(`Unsupported action command: ${command}`);
+  }
+  await api(`/api/action/${encodeURIComponent(actionId)}/${command}`, "POST", {});
+  return `action ${command} -> ${actionId}`;
+}
+
+function actionIdsInGroup(group) {
+  const entries = Array.isArray(group?.entries) ? group.entries : [];
+  const actionIds = [];
+  for (const entry of entries) {
+    if (!entry || typeof entry !== "object") continue;
+    const entryType = String(entry.entryType || "").trim();
+    if (entryType !== "action" && entryType !== "actionLfoEnabled") continue;
+    const actionId = String(entry.actionId || "").trim();
+    if (actionId) {
+      actionIds.push(actionId);
+    }
+  }
+  return [...new Set(actionIds)];
+}
+
+async function triggerActionGroupById(groupId) {
+  const normalizedGroupId = String(groupId || "").trim();
+  if (!normalizedGroupId) {
+    throw new Error("No action group selected");
+  }
+  await api(`/api/action-group/${encodeURIComponent(normalizedGroupId)}/trigger`, "POST", {});
+  addLog(`action group trigger -> ${normalizedGroupId}`);
+}
+
+async function stopActionGroupById(groupId) {
+  const normalizedGroupId = String(groupId || "").trim();
+  if (!normalizedGroupId) {
+    throw new Error("No action group selected");
+  }
+  const group = getActionGroupById(normalizedGroupId);
+  if (!group) {
+    throw new Error(`Action group not found: ${normalizedGroupId}`);
+  }
+  const actionIds = actionIdsInGroup(group);
+  if (!actionIds.length) {
+    addLog(`action group stop -> ${normalizedGroupId} (no action entries)`);
+    return;
+  }
+  const failures = [];
+  for (const actionId of actionIds) {
+    try {
+      await api(`/api/action/${encodeURIComponent(actionId)}/stop`, "POST", {});
+    } catch (error) {
+      failures.push(`${actionId}: ${error.message}`);
+    }
+  }
+  if (failures.length) {
+    throw new Error(failures.join(" | "));
+  }
+  addLog(`action group stop -> ${normalizedGroupId} (${actionIds.join(", ")})`);
+}
+
 function actionGroupPayloadFromInputs(baseGroup = null, options = {}) {
   const base = baseGroup && typeof baseGroup === "object" ? baseGroup : {};
   const fallbackGroupId = String(options.fallbackGroupId || state.selectedActionGroupId || "group").trim() || "group";
+  const lockGroupId = Boolean(options.lockGroupId);
   const inputName = String(els.actionGroupManagerNameInput.value || "").trim();
   const rawGroupId = String(els.actionGroupManagerIdInput.value || "").trim();
   const selectedGroup = selectedActionGroupOrNull();
@@ -2031,10 +2236,12 @@ function actionGroupPayloadFromInputs(baseGroup = null, options = {}) {
       || deriveFromSelectedGroup
     )
   );
-  const groupIdSeed = shouldDeriveFromName
-    ? deriveIdBaseFromName(inputName, fallbackGroupId)
-    : (rawGroupId || fallbackGroupId);
-  const groupId = sanitizeActionGroupId(groupIdSeed, { allowAuto: true });
+  const groupIdSeed = lockGroupId
+    ? fallbackGroupId
+    : (shouldDeriveFromName
+      ? deriveIdBaseFromName(inputName, fallbackGroupId)
+      : (rawGroupId || fallbackGroupId));
+  const groupId = sanitizeActionGroupId(groupIdSeed, { allowAuto: !lockGroupId });
   const name = inputName || humanizeId(groupId) || groupId;
   const triggerPath = String(
     els.actionGroupManagerOscTriggerInput.value
@@ -2099,6 +2306,7 @@ function updateActionGroupEntryInputsState() {
   if (isGlobalLfoEntry && document.activeElement !== els.actionGroupEntryLfosEnabledInput) {
     els.actionGroupEntryLfosEnabledInput.value = entryType === "lfos-disable" ? "false" : "true";
   }
+  updateActionGroupEntryNamePreview();
 }
 
 function actionPayloadFromInputs(baseAction = null, options = {}) {
@@ -2152,51 +2360,83 @@ function actionPayloadFromInputs(baseAction = null, options = {}) {
   };
 }
 
-function lfoPayloadFromInputs(baseLfo = null) {
-  const base = baseLfo && typeof baseLfo === "object" ? baseLfo : {};
-  const objectId = sanitizeObjectId(els.actionManagerLfoObjectInput.value || "");
-  if (!objectId) {
-    throw new Error("Select an object for the LFO");
+function uniqueLfoId(baseId, existingLfos = [], skipSelector = "") {
+  const ids = [];
+  for (let index = 0; index < existingLfos.length; index += 1) {
+    const candidate = existingLfos[index] || {};
+    const selector = lfoSelectorKey(candidate, `lfo-${index + 1}`);
+    if (skipSelector && selector === skipSelector) {
+      continue;
+    }
+    const candidateId = lfoDisplayId(candidate, "");
+    if (candidateId) {
+      ids.push(candidateId);
+    }
   }
+  return nextNumericId(baseId, "lfo", ids);
+}
 
-  const parameter = String(els.actionManagerLfoParamInput.value || "").trim();
-  if (!parameter) {
-    throw new Error("LFO parameter is required");
-  }
-  const wave = String(els.actionManagerLfoWaveInput.value || "sine").trim();
+function lfoPayloadFromInputs(baseLfo = null, options = {}) {
+  const base = baseLfo && typeof baseLfo === "object" ? baseLfo : {};
+  const existingLfos = Array.isArray(options.existingLfos) ? options.existingLfos : [];
+  const selectedSelector = String(options.selectedSelector || "").trim();
+  const autoUniqueId = Boolean(options.autoUniqueId);
+  const wave = String(els.actionManagerLfoWaveInput.value || "sine").trim().toLowerCase();
   const rateHz = Math.max(0, parseFiniteNumber(els.actionManagerLfoRateInput.value, 0));
   const depth = parseFiniteNumber(els.actionManagerLfoDepthInput.value, 0);
   const offset = parseFiniteNumber(els.actionManagerLfoOffsetInput.value, 0);
-  const phaseDeg = parseFiniteNumber(els.actionManagerLfoPhaseInput.value, 0);
-  const mappingPhaseDeg = parseFiniteNumber(els.actionManagerLfoMappingPhaseInput.value, 0);
-  const enabledValue = String(els.actionManagerLfoEnabledInput.value || "true").trim().toLowerCase() !== "false";
-  const currentLfoId = sanitizeActionId(base.lfoId || base.lfo_id || "", { allowEmpty: true });
+  const phaseDeg = parseFiniteNumber(base.phaseDeg, 0);
+  const polarity = normalizeLfoPolarity(els.actionManagerLfoPolarityBtn?.dataset?.polarity || base.polarity);
+  const enabledValue = Boolean(els.actionManagerLfoEnabledInput?.checked);
+  const rawIdInput = String(els.actionManagerLfoIdInput.value || "").trim();
+  const baseLfoId = sanitizeActionId(base.lfoId || base.lfo_id || "", { allowEmpty: true });
+  const lfoIdSeed = rawIdInput || baseLfoId || "lfo";
+  let lfoId = rawIdInput
+    ? sanitizeActionId(rawIdInput)
+    : uniqueLfoId(lfoIdSeed, existingLfos, selectedSelector);
+
+  const existingIds = new Set();
+  for (let index = 0; index < existingLfos.length; index += 1) {
+    const candidate = existingLfos[index] || {};
+    const selector = lfoSelectorKey(candidate, `lfo-${index + 1}`);
+    if (selectedSelector && selector === selectedSelector) {
+      continue;
+    }
+    const candidateId = lfoDisplayId(candidate, "");
+    if (candidateId) {
+      existingIds.add(candidateId);
+    }
+  }
+  if (existingIds.has(lfoId)) {
+    if (!autoUniqueId) {
+      throw new Error(`LFO name already exists: ${lfoId}`);
+    }
+    lfoId = uniqueLfoId(lfoId, existingLfos, selectedSelector);
+  }
 
   return {
-    ...(currentLfoId ? { lfoId: currentLfoId } : {}),
-    objectId,
-    parameter,
+    lfoId,
     wave,
     rateHz,
     depth,
     offset,
     phaseDeg,
-    mappingPhaseDeg,
+    polarity,
     enabled: enabledValue
   };
 }
 
 function setLfoInputsFromModel(lfo) {
   if (!lfo || typeof lfo !== "object") return;
-  setInputValueIfIdle(els.actionManagerLfoObjectInput, String(lfo.objectId || lfo.object_id || ""));
-  setInputValueIfIdle(els.actionManagerLfoParamInput, String(lfo.parameter || "x"));
+  setInputValueIfIdle(els.actionManagerLfoIdInput, String(lfo.lfoId || lfo.lfo_id || ""));
   setInputValueIfIdle(els.actionManagerLfoWaveInput, String(lfo.wave || "sine"));
   setInputValueIfIdle(els.actionManagerLfoRateInput, String(parseFiniteNumber(lfo.rateHz, 0)));
   setInputValueIfIdle(els.actionManagerLfoDepthInput, String(parseFiniteNumber(lfo.depth, 0)));
   setInputValueIfIdle(els.actionManagerLfoOffsetInput, String(parseFiniteNumber(lfo.offset, 0)));
-  setInputValueIfIdle(els.actionManagerLfoPhaseInput, String(parseFiniteNumber(lfo.phaseDeg, 0)));
-  setInputValueIfIdle(els.actionManagerLfoMappingPhaseInput, String(parseFiniteNumber(lfo.mappingPhaseDeg, 0)));
-  setInputValueIfIdle(els.actionManagerLfoEnabledInput, lfo.enabled === false ? "false" : "true");
+  updateLfoPolarityButton(lfo.polarity);
+  if (!document.activeElement || document.activeElement !== els.actionManagerLfoEnabledInput) {
+    els.actionManagerLfoEnabledInput.checked = lfo.enabled !== false;
+  }
 }
 
 async function actionManagerCreate() {
@@ -2280,6 +2520,40 @@ async function actionManagerDelete() {
   }
 }
 
+async function actionManagerToggleEnabled(actionId, enabled) {
+  try {
+    const normalizedActionId = String(actionId || "").trim();
+    if (!normalizedActionId) {
+      throw new Error("No action selected");
+    }
+    await api(`/api/action/${encodeURIComponent(normalizedActionId)}/update`, "POST", {
+      enabled: Boolean(enabled)
+    });
+    addLog(`action ${enabled ? "enabled" : "disabled"} -> ${normalizedActionId}`);
+    await refreshStatus();
+  } catch (error) {
+    addLog(`action toggle failed: ${error.message}`);
+    await refreshStatus();
+  }
+}
+
+async function actionGroupManagerToggleEnabled(groupId, enabled) {
+  try {
+    const normalizedGroupId = String(groupId || "").trim();
+    if (!normalizedGroupId) {
+      throw new Error("No action group selected");
+    }
+    await api(`/api/action-group/${encodeURIComponent(normalizedGroupId)}/update`, "POST", {
+      enabled: Boolean(enabled)
+    });
+    addLog(`action group ${enabled ? "enabled" : "disabled"} -> ${normalizedGroupId}`);
+    await refreshStatus();
+  } catch (error) {
+    addLog(`action group toggle failed: ${error.message}`);
+    await refreshStatus();
+  }
+}
+
 async function actionGroupManagerCreate() {
   try {
     const payload = actionGroupPayloadFromInputs(null, { fallbackGroupId: "group", preferNameDerivedId: true });
@@ -2302,7 +2576,7 @@ async function actionGroupManagerSave() {
     if (!currentGroup) {
       throw new Error(`Action group not found: ${groupId}`);
     }
-    const payload = actionGroupPayloadFromInputs(currentGroup, { fallbackGroupId: groupId });
+    const payload = actionGroupPayloadFromInputs(currentGroup, { fallbackGroupId: groupId, lockGroupId: true });
     await api(`/api/action-group/${encodeURIComponent(groupId)}/update`, "POST", payload);
     addLog(`action group save -> ${groupId}`);
     await refreshStatus();
@@ -2328,14 +2602,59 @@ async function actionGroupManagerDelete() {
   }
 }
 
-async function actionGroupManagerTrigger() {
+async function actionGroupManagerTrigger(groupId = null) {
   try {
-    const groupId = selectedActionGroupIdOrThrow();
-    await api(`/api/action-group/${encodeURIComponent(groupId)}/trigger`, "POST", {});
-    addLog(`action group trigger -> ${groupId}`);
+    const targetGroupId = String(groupId || selectedActionGroupIdOrThrow()).trim();
+    await triggerActionGroupById(targetGroupId);
     await refreshStatus();
   } catch (error) {
     addLog(`action group trigger failed: ${error.message}`);
+  }
+}
+
+async function actionGroupManagerStop(groupId = null) {
+  try {
+    const targetGroupId = String(groupId || selectedActionGroupIdOrThrow()).trim();
+    await stopActionGroupById(targetGroupId);
+    await refreshStatus();
+  } catch (error) {
+    addLog(`action group stop failed: ${error.message}`);
+    await refreshStatus();
+  }
+}
+
+async function actionGroupEntryTrigger() {
+  try {
+    const entry = actionGroupEntryPayloadFromInputs();
+    const description = describeActionGroupEntry(entry);
+    await runActionGroupEntry(entry);
+    addLog(`action group entry trigger -> ${description.name}`);
+    await refreshStatus();
+  } catch (error) {
+    addLog(`action group entry trigger failed: ${error.message}`);
+    await refreshStatus();
+  }
+}
+
+async function actionGroupEntryTriggerByIndex(index) {
+  try {
+    const groupId = selectedActionGroupIdOrThrow();
+    const group = selectedActionGroupOrNull();
+    if (!group) {
+      throw new Error(`Action group not found: ${groupId}`);
+    }
+    const entries = Array.isArray(group.entries) ? group.entries : [];
+    if (!Number.isInteger(index) || index < 0 || index >= entries.length) {
+      throw new Error("Invalid action group entry index");
+    }
+    const entry = entries[index];
+    const description = describeActionGroupEntry(entry);
+    await runActionGroupEntry(entry);
+    addLog(`action group entry trigger -> ${groupId} #${index + 1} (${description.name})`);
+    await refreshStatus();
+  } catch (error) {
+    addLog(`action group entry trigger failed: ${error.message}`);
+    await refreshStatus();
   }
 }
 
@@ -2347,9 +2666,10 @@ async function actionGroupEntryAdd() {
       throw new Error(`Action group not found: ${groupId}`);
     }
     const entry = actionGroupEntryPayloadFromInputs();
+    const description = describeActionGroupEntry(entry);
     const entries = Array.isArray(group.entries) ? [...group.entries, entry] : [entry];
     await api(`/api/action-group/${encodeURIComponent(groupId)}/update`, "POST", { entries });
-    addLog(`action group entry add -> ${groupId}`);
+    addLog(`action group entry add -> ${groupId} (${description.name})`);
     await refreshStatus();
   } catch (error) {
     addLog(`action group entry add failed: ${error.message}`);
@@ -2398,26 +2718,206 @@ async function actionGroupEntryClear() {
 
 async function actionManagerAddLfo() {
   try {
+    cancelActionLfoAutoApplyTimer();
     const actionId = selectedActionIdOrThrow();
     const action = selectedActionOrNull();
     if (!action) {
       throw new Error(`Action not found: ${actionId}`);
     }
-    const lfo = lfoPayloadFromInputs();
     const currentLfos = Array.isArray(action.lfos) ? action.lfos : [];
+    const lfo = lfoPayloadFromInputs(null, { existingLfos: currentLfos, autoUniqueId: true });
     await api(`/api/action/${encodeURIComponent(actionId)}/update`, "POST", {
       lfos: [...currentLfos, lfo]
     });
     state.selectedActionLfoActionId = actionId;
     state.selectedActionLfoIndex = currentLfos.length;
-    addLog(`action lfo add -> ${actionId} (${lfo.objectId}.${lfo.parameter})`);
+    state.selectedActionLfoTargetIndex = null;
+    addLog(`action lfo add -> ${actionId} (${lfo.lfoId})`);
     await refreshStatus();
   } catch (error) {
     addLog(`action lfo add failed: ${error.message}`);
   }
 }
 
-async function actionManagerUpdateLfo() {
+async function actionManagerAddLfoTarget() {
+  try {
+    cancelActionLfoAutoApplyTimer();
+    const actionId = selectedActionIdOrThrow();
+    const action = selectedActionOrNull();
+    if (!action) {
+      throw new Error(`Action not found: ${actionId}`);
+    }
+    const currentLfos = Array.isArray(action.lfos) ? action.lfos : [];
+    const selectedIndex = Number.isInteger(state.selectedActionLfoIndex) ? state.selectedActionLfoIndex : -1;
+    const groups = collectLfoGroups(currentLfos);
+    const selectedGroup = groups.find((group) => group.representativeIndex === selectedIndex) || null;
+    if (!selectedGroup) {
+      throw new Error("Select an LFO row to add a target");
+    }
+
+    const objects = getObjects();
+    if (!objects.length) {
+      throw new Error("No objects available");
+    }
+    const selectedObjectId = String(els.actionManagerLfoTargetObjectInput?.value || "").trim();
+    const fallbackObjectId = String(state.selectedObjectId || objects[0]?.objectId || "").trim();
+    const objectId = sanitizeObjectId(selectedObjectId || fallbackObjectId);
+    if (!objectId) {
+      throw new Error("Target object ID is required");
+    }
+    const targetObject = objects.find((obj) => String(obj.objectId || "").trim() === objectId);
+    if (!targetObject) {
+      throw new Error(`Object not found: ${objectId}`);
+    }
+
+    const parameter = String(els.actionManagerLfoTargetParamInput?.value || "").trim().toLowerCase();
+    if (!LFO_PARAM_OPTIONS.includes(parameter)) {
+      throw new Error(`Invalid parameter: ${parameter}`);
+    }
+
+    const mappingPhaseDeg = parseFiniteNumber(els.actionManagerLfoTargetPhaseInput?.value, 0);
+    const result = await upsertActionLfoTargetMapping(actionId, selectedGroup.selector, objectId, parameter, {
+      mappingPhaseDeg
+    });
+    if (result.created) {
+      addLog(`action lfo target add -> ${result.actionId} ${result.objectId}.${result.parameter} (phase ${result.mappingPhaseDeg}°)`);
+    } else {
+      addLog(`action lfo target update -> ${result.actionId} ${result.objectId}.${result.parameter} (phase ${result.mappingPhaseDeg}°)`);
+    }
+    await refreshStatus();
+  } catch (error) {
+    addLog(`action lfo add target failed: ${error.message}`);
+  }
+}
+
+async function actionManagerUpdateLfoTargetPhase(index, mappingPhaseDeg) {
+  try {
+    cancelActionLfoAutoApplyTimer();
+    const actionId = selectedActionIdOrThrow();
+    const action = selectedActionOrNull();
+    if (!action) {
+      throw new Error(`Action not found: ${actionId}`);
+    }
+    const currentLfos = Array.isArray(action.lfos) ? action.lfos : [];
+    if (!Number.isInteger(index) || index < 0 || index >= currentLfos.length) {
+      throw new Error("Invalid LFO target index");
+    }
+
+    const selectedIndex = Number.isInteger(state.selectedActionLfoIndex) ? state.selectedActionLfoIndex : -1;
+    const groups = collectLfoGroups(currentLfos);
+    const selectedGroup = groups.find((group) => group.representativeIndex === selectedIndex) || null;
+    if (!selectedGroup) {
+      throw new Error("Select an LFO row to edit targets");
+    }
+    if (!selectedGroup.entryIndices.includes(index)) {
+      throw new Error("Target does not belong to selected LFO");
+    }
+
+    const lfo = currentLfos[index] || {};
+    if (!lfoHasAssignedTarget(lfo)) {
+      throw new Error("Target mapping is missing object/parameter");
+    }
+
+    const nextLfos = [...currentLfos];
+    nextLfos[index] = {
+      ...lfo,
+      mappingPhaseDeg: parseFiniteNumber(mappingPhaseDeg, parseFiniteNumber(lfo.mappingPhaseDeg, 0))
+    };
+    await api(`/api/action/${encodeURIComponent(actionId)}/update`, "POST", { lfos: nextLfos });
+    state.selectedActionLfoActionId = actionId;
+    const nextGroups = collectLfoGroups(nextLfos);
+    const nextSelectedGroup = nextGroups.find((group) => group.selector === selectedGroup.selector) || null;
+    state.selectedActionLfoIndex = nextSelectedGroup ? nextSelectedGroup.representativeIndex : null;
+    state.selectedActionLfoTargetIndex = index;
+
+    const targetLabel = lfoTargetLabel(nextLfos[index]) || `target #${index + 1}`;
+    const nextPhaseDeg = parseFiniteNumber(nextLfos[index].mappingPhaseDeg, 0);
+    addLog(`action lfo target phase -> ${actionId} ${targetLabel} = ${nextPhaseDeg}°`);
+    await refreshStatus();
+  } catch (error) {
+    addLog(`action lfo target phase failed: ${error.message}`);
+  }
+}
+
+async function actionManagerRemoveLfoTarget(index) {
+  try {
+    cancelActionLfoAutoApplyTimer();
+    const actionId = selectedActionIdOrThrow();
+    const action = selectedActionOrNull();
+    if (!action) {
+      throw new Error(`Action not found: ${actionId}`);
+    }
+    const currentLfos = Array.isArray(action.lfos) ? action.lfos : [];
+    if (!Number.isInteger(index) || index < 0 || index >= currentLfos.length) {
+      return;
+    }
+
+    const selectedIndex = Number.isInteger(state.selectedActionLfoIndex) ? state.selectedActionLfoIndex : -1;
+    const groups = collectLfoGroups(currentLfos);
+    const selectedGroup = groups.find((group) => group.representativeIndex === selectedIndex) || null;
+    if (!selectedGroup) {
+      throw new Error("Select an LFO row to remove targets");
+    }
+    if (!selectedGroup.entryIndices.includes(index)) {
+      return;
+    }
+
+    const removedLfo = currentLfos[index] || {};
+    const removedLabel = lfoTargetLabel(removedLfo) || `target #${index + 1}`;
+    const nextLfos = currentLfos.filter((_, entryIndex) => entryIndex !== index);
+    await api(`/api/action/${encodeURIComponent(actionId)}/update`, "POST", { lfos: nextLfos });
+    state.selectedActionLfoActionId = actionId;
+    const nextGroups = collectLfoGroups(nextLfos);
+    const nextSelectedGroup = nextGroups.find((group) => group.selector === selectedGroup.selector) || null;
+    state.selectedActionLfoIndex = nextSelectedGroup
+      ? nextSelectedGroup.representativeIndex
+      : (nextGroups[0]?.representativeIndex ?? null);
+    state.selectedActionLfoTargetIndex = null;
+    addLog(`action lfo target remove -> ${actionId} ${removedLabel}`);
+    await refreshStatus();
+  } catch (error) {
+    addLog(`action lfo target remove failed: ${error.message}`);
+  }
+}
+
+function cancelActionLfoAutoApplyTimer() {
+  if (state.actionLfoAutoApplyTimerId !== null) {
+    clearTimeout(state.actionLfoAutoApplyTimerId);
+    state.actionLfoAutoApplyTimerId = null;
+  }
+  state.actionLfoAutoApplyQueued = false;
+}
+
+async function flushActionLfoAutoApply() {
+  if (state.actionLfoAutoApplyInFlight) {
+    state.actionLfoAutoApplyQueued = true;
+    return;
+  }
+  state.actionLfoAutoApplyInFlight = true;
+  try {
+    await actionManagerUpdateLfo({ logSuccess: false, quietErrors: true, refreshOnError: false });
+  } finally {
+    state.actionLfoAutoApplyInFlight = false;
+    if (state.actionLfoAutoApplyQueued) {
+      state.actionLfoAutoApplyQueued = false;
+      await flushActionLfoAutoApply();
+    }
+  }
+}
+
+function scheduleActionLfoAutoApply(delayMs = 260) {
+  cancelActionLfoAutoApplyTimer();
+  const waitMs = Math.max(0, Math.round(parseFiniteNumber(delayMs, 0)));
+  state.actionLfoAutoApplyTimerId = setTimeout(() => {
+    state.actionLfoAutoApplyTimerId = null;
+    void flushActionLfoAutoApply();
+  }, waitMs);
+}
+
+async function actionManagerUpdateLfo(options = {}) {
+  const logSuccess = options.logSuccess !== false;
+  const quietErrors = Boolean(options.quietErrors);
+  const refreshOnError = options.refreshOnError !== false;
   try {
     const actionId = selectedActionIdOrThrow();
     const action = selectedActionOrNull();
@@ -2426,56 +2926,124 @@ async function actionManagerUpdateLfo() {
     }
     const currentLfos = Array.isArray(action.lfos) ? action.lfos : [];
     const selectedIndex = Number.isInteger(state.selectedActionLfoIndex) ? state.selectedActionLfoIndex : -1;
-    if (selectedIndex < 0 || selectedIndex >= currentLfos.length) {
+    const groups = collectLfoGroups(currentLfos);
+    const selectedGroup = groups.find((group) => group.representativeIndex === selectedIndex) || null;
+    if (!selectedGroup) {
       throw new Error("Select an LFO row to update");
     }
-    const updatedLfo = lfoPayloadFromInputs(currentLfos[selectedIndex]);
+    const updatedLfo = lfoPayloadFromInputs(selectedGroup.lfo, {
+      existingLfos: currentLfos,
+      selectedSelector: selectedGroup.selector
+    });
     const nextLfos = [...currentLfos];
-    nextLfos[selectedIndex] = updatedLfo;
+    for (const entryIndex of selectedGroup.entryIndices) {
+      const currentEntry = nextLfos[entryIndex] || {};
+      nextLfos[entryIndex] = {
+        ...currentEntry,
+        ...updatedLfo
+      };
+    }
     await api(`/api/action/${encodeURIComponent(actionId)}/update`, "POST", {
       lfos: nextLfos
     });
     state.selectedActionLfoActionId = actionId;
-    state.selectedActionLfoIndex = selectedIndex;
-    addLog(`action lfo update -> ${actionId} #${selectedIndex + 1} (${updatedLfo.objectId}.${updatedLfo.parameter})`);
+    state.selectedActionLfoIndex = selectedGroup.representativeIndex;
+    if (logSuccess) {
+      addLog(`action lfo update -> ${actionId} ${updatedLfo.lfoId} (targets: ${selectedGroup.targetCount})`);
+    }
     await refreshStatus();
+    return true;
   } catch (error) {
-    addLog(`action lfo update failed: ${error.message}`);
+    if (!quietErrors) {
+      addLog(`action lfo update failed: ${error.message}`);
+    }
+    if (refreshOnError) {
+      await refreshStatus();
+    }
+    return false;
   }
 }
 
 async function actionManagerRemoveLfo(index) {
   try {
+    cancelActionLfoAutoApplyTimer();
     const actionId = selectedActionIdOrThrow();
     const action = selectedActionOrNull();
     if (!action) {
       throw new Error(`Action not found: ${actionId}`);
     }
     const currentLfos = Array.isArray(action.lfos) ? action.lfos : [];
-    if (index < 0 || index >= currentLfos.length) {
+    const groups = collectLfoGroups(currentLfos);
+    const selectedGroup = groups.find((group) => group.representativeIndex === index) || null;
+    if (!selectedGroup) {
       return;
     }
-    const nextLfos = currentLfos.filter((_, lfoIndex) => lfoIndex !== index);
+    const removedIndices = [...selectedGroup.entryIndices].sort((a, b) => a - b);
+    const removedSet = new Set(removedIndices);
+    const nextLfos = currentLfos.filter((_, lfoIndex) => !removedSet.has(lfoIndex));
     await api(`/api/action/${encodeURIComponent(actionId)}/update`, "POST", {
       lfos: nextLfos
     });
     state.selectedActionLfoActionId = actionId;
+    state.selectedActionLfoTargetIndex = null;
     if (Number.isInteger(state.selectedActionLfoIndex)) {
-      if (state.selectedActionLfoIndex === index) {
+      if (removedSet.has(state.selectedActionLfoIndex)) {
         state.selectedActionLfoIndex = null;
-      } else if (state.selectedActionLfoIndex > index) {
-        state.selectedActionLfoIndex -= 1;
+      } else {
+        let removedBefore = 0;
+        for (const removedIndex of removedIndices) {
+          if (removedIndex < state.selectedActionLfoIndex) {
+            removedBefore += 1;
+          }
+        }
+        state.selectedActionLfoIndex -= removedBefore;
       }
     }
-    addLog(`action lfo remove -> ${actionId} #${index + 1}`);
+    addLog(`action lfo remove -> ${actionId} ${selectedGroup.lfoId}`);
     await refreshStatus();
   } catch (error) {
     addLog(`action lfo remove failed: ${error.message}`);
   }
 }
 
+async function actionManagerToggleLfoEnabled(index, enabled) {
+  try {
+    cancelActionLfoAutoApplyTimer();
+    const actionId = selectedActionIdOrThrow();
+    const action = selectedActionOrNull();
+    if (!action) {
+      throw new Error(`Action not found: ${actionId}`);
+    }
+    const currentLfos = Array.isArray(action.lfos) ? action.lfos : [];
+    const groups = collectLfoGroups(currentLfos);
+    const selectedGroup = groups.find((group) => group.representativeIndex === index) || null;
+    if (!selectedGroup) {
+      return;
+    }
+    const nextLfos = [...currentLfos];
+    for (const entryIndex of selectedGroup.entryIndices) {
+      const currentEntry = nextLfos[entryIndex] || {};
+      nextLfos[entryIndex] = {
+        ...currentEntry,
+        enabled: Boolean(enabled)
+      };
+    }
+    await api(`/api/action/${encodeURIComponent(actionId)}/update`, "POST", {
+      lfos: nextLfos
+    });
+    state.selectedActionLfoActionId = actionId;
+    state.selectedActionLfoIndex = selectedGroup.representativeIndex;
+    addLog(`action lfo ${enabled ? "enabled" : "disabled"} -> ${actionId} ${selectedGroup.lfoId}`);
+    await refreshStatus();
+  } catch (error) {
+    addLog(`action lfo toggle failed: ${error.message}`);
+    await refreshStatus();
+  }
+}
+
 async function actionManagerClearLfos() {
   try {
+    cancelActionLfoAutoApplyTimer();
     const actionId = selectedActionIdOrThrow();
     const action = selectedActionOrNull();
     if (!action) {
@@ -2491,6 +3059,7 @@ async function actionManagerClearLfos() {
     await api(`/api/action/${encodeURIComponent(actionId)}/update`, "POST", { lfos: [] });
     state.selectedActionLfoActionId = actionId;
     state.selectedActionLfoIndex = null;
+    state.selectedActionLfoTargetIndex = null;
     addLog(`action lfo clear -> ${actionId}`);
     await refreshStatus();
   } catch (error) {
@@ -2498,11 +3067,12 @@ async function actionManagerClearLfos() {
   }
 }
 
-function renderActionLfoDebug(selectedAction, isRunning) {
+function renderActionLfoDebug(selectedAction, selectedLfoGroup, isRunning) {
   if (!els.actionManagerLfoDebugRows || !els.actionManagerLfoDebugSummary) return;
 
   const actionId = String(selectedAction?.actionId || state.selectedActionId || "").trim();
   const lfos = Array.isArray(selectedAction?.lfos) ? selectedAction.lfos : [];
+  const selectedGroup = selectedLfoGroup && typeof selectedLfoGroup === "object" ? selectedLfoGroup : null;
   const lfosEnabled = areLfosEnabled();
   const detail = actionId ? state.status?.runningActionDetails?.[actionId] : null;
   const startedAtMs = Number(detail?.startedAtMs || 0);
@@ -2510,17 +3080,44 @@ function renderActionLfoDebug(selectedAction, isRunning) {
   const latestEvent = actionId ? state.lastLfoDebugEventByAction[actionId] : null;
 
   els.actionManagerLfoDebugRows.innerHTML = "";
-  if (!selectedAction || !lfos.length) {
+  if (!selectedAction) {
     const row = document.createElement("tr");
-    row.innerHTML = '<td class="muted" colspan="6">No LFO targets to monitor.</td>';
+    row.innerHTML = '<td class="muted" colspan="6">No action selected.</td>';
     els.actionManagerLfoDebugRows.appendChild(row);
     els.actionManagerLfoDebugSummary.textContent = "No LFO debug data.";
     return;
   }
 
+  if (!selectedGroup) {
+    const row = document.createElement("tr");
+    row.innerHTML = '<td class="muted" colspan="6">Select an LFO to monitor its targets.</td>';
+    els.actionManagerLfoDebugRows.appendChild(row);
+    els.actionManagerLfoDebugSummary.textContent = "No LFO selected.";
+    return;
+  }
+
+  const targetEntries = [];
+  const selectedEntryIndices = Array.isArray(selectedGroup.entryIndices) ? selectedGroup.entryIndices : [];
+  for (const entryIndex of selectedEntryIndices) {
+    if (!Number.isInteger(entryIndex) || entryIndex < 0 || entryIndex >= lfos.length) continue;
+    const lfo = lfos[entryIndex] || {};
+    if (!lfoHasAssignedTarget(lfo)) continue;
+    targetEntries.push({ lfo, index: entryIndex });
+  }
+
+  if (!targetEntries.length) {
+    const row = document.createElement("tr");
+    row.innerHTML = '<td class="muted" colspan="6">Selected LFO has no assigned targets.</td>';
+    els.actionManagerLfoDebugRows.appendChild(row);
+    const selectedLfoId = String(selectedGroup.lfoId || "").trim() || "lfo";
+    els.actionManagerLfoDebugSummary.textContent = `LFO ${selectedLfoId} has no target mappings.`;
+    return;
+  }
+
   let movingTargets = 0;
-  for (let index = 0; index < lfos.length; index += 1) {
-    const lfo = lfos[index] || {};
+  for (const targetEntry of targetEntries) {
+    const lfo = targetEntry.lfo || {};
+    const index = targetEntry.index;
     const objectId = String(lfo.objectId || lfo.object_id || "").trim();
     const parameter = String(lfo.parameter || "").trim();
     const targetLabel = objectId && parameter ? `${objectId}.${parameter}` : "-";
@@ -2561,18 +3158,24 @@ function renderActionLfoDebug(selectedAction, isRunning) {
     els.actionManagerLfoDebugRows.appendChild(row);
   }
 
+  const selectedLfoId = String(selectedGroup.lfoId || "").trim() || "lfo";
   const eventLabel = latestEvent
     ? ` | last frame: ${formatMs(Number(latestEvent.elapsedMs || 0))} (${Array.isArray(latestEvent.samples) ? latestEvent.samples.length : 0} samples)`
     : "";
-  els.actionManagerLfoDebugSummary.textContent = `${lfosEnabled ? (isRunning ? "Running" : "Idle") : "LFOs disabled"} | elapsed: ${formatMs(elapsedMs)} | moving targets: ${movingTargets}/${lfos.length}${eventLabel}`;
+  els.actionManagerLfoDebugSummary.textContent = `LFO ${selectedLfoId} | ${lfosEnabled ? (isRunning ? "running" : "idle") : "LFOs disabled"} | elapsed: ${formatMs(elapsedMs)} | moving targets: ${movingTargets}/${targetEntries.length}${eventLabel}`;
 }
 
 function renderSelectedActionLfoDebug() {
   const selectedAction = selectedActionOrNull();
+  const selectedLfos = Array.isArray(selectedAction?.lfos) ? selectedAction.lfos : [];
+  const selectedLfoGroups = collectLfoGroups(selectedLfos);
+  const selectedLfoGroup = Number.isInteger(state.selectedActionLfoIndex)
+    ? (selectedLfoGroups.find((group) => group.representativeIndex === state.selectedActionLfoIndex) || null)
+    : null;
   const runningActions = new Set(Array.isArray(state.status?.runningActions) ? state.status.runningActions : []);
   const runtimeActionId = String(selectedAction?.actionId || state.selectedActionId || "").trim();
   const isRunning = Boolean(runtimeActionId && runningActions.has(runtimeActionId));
-  renderActionLfoDebug(selectedAction, isRunning);
+  renderActionLfoDebug(selectedAction, selectedLfoGroup, isRunning);
 }
 
 function renderActionManager() {
@@ -2595,50 +3198,6 @@ function renderActionManager() {
     state.selectedActionGroupId = actionGroupIds[0];
   }
 
-  els.actionManagerSelect.innerHTML = "";
-  if (!actionIds.length) {
-    const emptyOption = document.createElement("option");
-    emptyOption.value = "";
-    emptyOption.textContent = "No actions";
-    emptyOption.disabled = true;
-    emptyOption.selected = true;
-    els.actionManagerSelect.appendChild(emptyOption);
-  } else {
-    for (const actionId of actionIds) {
-      const action = actionsById[actionId] || {};
-      const option = document.createElement("option");
-      option.value = actionId;
-      option.textContent = action.enabled === false ? `${actionId} [off]` : actionId;
-      if (actionId === state.selectedActionId) {
-        option.selected = true;
-      }
-      els.actionManagerSelect.appendChild(option);
-    }
-  }
-  els.actionManagerSelect.disabled = !actionIds.length;
-
-  els.modulationManagerActionSelect.innerHTML = "";
-  if (!actionIds.length) {
-    const emptyOption = document.createElement("option");
-    emptyOption.value = "";
-    emptyOption.textContent = "No actions";
-    emptyOption.disabled = true;
-    emptyOption.selected = true;
-    els.modulationManagerActionSelect.appendChild(emptyOption);
-  } else {
-    for (const actionId of actionIds) {
-      const action = actionsById[actionId] || {};
-      const option = document.createElement("option");
-      option.value = actionId;
-      option.textContent = action.enabled === false ? `${actionId} [off]` : actionId;
-      if (actionId === state.selectedActionId) {
-        option.selected = true;
-      }
-      els.modulationManagerActionSelect.appendChild(option);
-    }
-  }
-  els.modulationManagerActionSelect.disabled = !actionIds.length;
-
   els.actionGroupManagerSelect.innerHTML = "";
   if (!actionGroupIds.length) {
     const emptyOption = document.createElement("option");
@@ -2650,9 +3209,11 @@ function renderActionManager() {
   } else {
     for (const groupId of actionGroupIds) {
       const group = actionGroupsById[groupId] || {};
+      const groupName = String(group.name || groupId).trim();
+      const optionLabel = groupName && groupName !== groupId ? `${groupName} (${groupId})` : groupId;
       const option = document.createElement("option");
       option.value = groupId;
-      option.textContent = group.enabled === false ? `${groupId} [off]` : groupId;
+      option.textContent = group.enabled === false ? `${optionLabel} [off]` : optionLabel;
       if (groupId === state.selectedActionGroupId) {
         option.selected = true;
       }
@@ -2690,25 +3251,11 @@ function renderActionManager() {
   const entryActionId = String(els.actionGroupEntryActionSelect.value || "").trim();
   const entryAction = entryActionId ? actionsById[entryActionId] : null;
   const entryActionLfos = Array.isArray(entryAction?.lfos) ? entryAction.lfos : [];
-  const entryLfoSummariesById = new Map();
-  for (let index = 0; index < entryActionLfos.length; index += 1) {
-    const lfo = entryActionLfos[index];
-    const lfoId = lfoDisplayId(lfo, `lfo-${index + 1}`);
-    if (!lfoId) continue;
-    const summary = entryLfoSummariesById.get(lfoId) || {
-      count: 0,
-      targetLabels: []
-    };
-    summary.count += 1;
-    const targetLabel = `${String(lfo?.objectId || "-")}.${String(lfo?.parameter || "-")}`;
-    if (!summary.targetLabels.includes(targetLabel) && summary.targetLabels.length < 2) {
-      summary.targetLabels.push(targetLabel);
-    }
-    entryLfoSummariesById.set(lfoId, summary);
-  }
+  const globalLfosById = getGlobalLfosById();
+  const globalLfoIds = Object.keys(globalLfosById).sort((a, b) => a.localeCompare(b));
 
   els.actionGroupEntryLfoSelect.innerHTML = "";
-  if (!entryLfoSummariesById.size) {
+  if (!globalLfoIds.length) {
     const emptyOption = document.createElement("option");
     emptyOption.value = "";
     emptyOption.textContent = "No LFOs";
@@ -2716,50 +3263,54 @@ function renderActionManager() {
     emptyOption.selected = true;
     els.actionGroupEntryLfoSelect.appendChild(emptyOption);
   } else {
-    const sortedLfoIds = Array.from(entryLfoSummariesById.keys()).sort((a, b) => a.localeCompare(b));
-    for (const lfoId of sortedLfoIds) {
-      const summary = entryLfoSummariesById.get(lfoId) || { count: 0, targetLabels: [] };
+    for (const lfoId of globalLfoIds) {
+      const globalLfo = globalLfosById[lfoId] || {};
+      const mappedCount = entryActionLfos.reduce((count, lfo, index) => {
+        const candidateId = lfoDisplayId(lfo, `lfo-${index + 1}`);
+        return candidateId === lfoId ? count + 1 : count;
+      }, 0);
+      const wave = String(globalLfo.wave || "sine");
+      const rateHz = parseFiniteNumber(globalLfo.rateHz, 0).toFixed(3);
       const option = document.createElement("option");
       option.value = lfoId;
-      const targetsText = summary.targetLabels.join(", ");
-      const plusSuffix = summary.count > summary.targetLabels.length ? ` +${summary.count - summary.targetLabels.length}` : "";
-      option.textContent = targetsText ? `${lfoId} (${targetsText}${plusSuffix})` : lfoId;
+      option.textContent = `${lfoId} (${wave} ${rateHz}Hz${mappedCount ? `, mapped ${mappedCount}` : ", unmapped"})`;
       if (lfoId === currentEntryLfoId) {
         option.selected = true;
       }
       els.actionGroupEntryLfoSelect.appendChild(option);
     }
-    if (!currentEntryLfoId || !sortedLfoIds.includes(currentEntryLfoId)) {
-      els.actionGroupEntryLfoSelect.value = sortedLfoIds[0];
+    if (!currentEntryLfoId || !globalLfoIds.includes(currentEntryLfoId)) {
+      els.actionGroupEntryLfoSelect.value = globalLfoIds[0];
     }
   }
-  els.actionGroupEntryLfoSelect.disabled = !entryLfoSummariesById.size;
+  els.actionGroupEntryLfoSelect.disabled = !globalLfoIds.length;
 
   const selectedActionId = String(state.selectedActionId || "").trim();
   const selectedAction = selectedActionId ? actionsById[selectedActionId] : null;
   const selectedActionRuntimeId = String(selectedAction?.actionId || selectedActionId).trim();
   const isRunning = selectedActionRuntimeId ? runningActions.has(selectedActionRuntimeId) : false;
-  const lfosEnabled = areLfosEnabled();
   const runningList = [...runningActions].sort((a, b) => a.localeCompare(b));
   els.actionManagerSummary.textContent = `${actionIds.length} action${actionIds.length === 1 ? "" : "s"} | groups: ${actionGroupIds.length} | running: ${runningList.length ? runningList.join(", ") : "-"}`;
-  const selectedLfoCount = Array.isArray(selectedAction?.lfos) ? selectedAction.lfos.length : 0;
+  const selectedLfoCount = Array.isArray(selectedAction?.lfos) ? collectLfoGroups(selectedAction.lfos).length : 0;
   const selectedActionLabel = selectedActionId || "-";
   els.modulationManagerSummary.textContent = `Action: ${selectedActionLabel} | LFOs: ${selectedLfoCount} | running: ${isRunning ? "yes" : "no"}`;
-  els.actionManagerLfosToggleBtn.textContent = lfosEnabled ? "Disable LFOs" : "Enable LFOs";
-  els.actionManagerLfosToggleBtn.disabled = !state.status;
 
   els.actionManagerRows.innerHTML = "";
   if (!actionIds.length) {
     const row = document.createElement("tr");
-    row.innerHTML = '<td class="muted" colspan="7">No actions created yet.</td>';
+    row.innerHTML = '<td class="muted" colspan="8">No actions created yet.</td>';
     els.actionManagerRows.appendChild(row);
   } else {
     for (const actionId of actionIds) {
       const action = actionsById[actionId] || {};
       const runtimeActionId = String(action.actionId || actionId).trim() || actionId;
       const durationMs = Math.max(0, Math.round(parseFiniteNumber(action.durationMs, 0)));
-      const lfoCount = Array.isArray(action.lfos) ? action.lfos.length : 0;
+      const lfoCount = Array.isArray(action.lfos) ? collectLfoGroups(action.lfos).length : 0;
       const onEndActionId = String(action.onEndActionId || "").trim();
+      const actionIsRunning = runningActions.has(runtimeActionId);
+      const actionEnabled = action.enabled !== false;
+      const playDisabled = !actionEnabled || actionIsRunning;
+      const stopDisabled = !actionIsRunning;
       const row = document.createElement("tr");
       row.dataset.actionId = actionId;
       row.tabIndex = 0;
@@ -2767,13 +3318,26 @@ function renderActionManager() {
         row.classList.add("is-selected");
       }
       row.innerHTML = `
+        <td>
+          <button
+            type="button"
+            class="action-enabled-toggle${actionEnabled ? " is-on" : ""}"
+            data-action-toggle-enabled="${actionEnabled ? "true" : "false"}"
+            aria-pressed="${actionEnabled ? "true" : "false"}"
+          >${actionEnabled ? "On" : "Off"}</button>
+        </td>
         <td>${escapeHtml(actionId)}</td>
         <td>${escapeHtml(String(action.name || actionId))}</td>
         <td>${escapeHtml(String(durationMs))} ms</td>
-        <td>${action.enabled === false ? "Off" : "On"}</td>
-        <td>${runningActions.has(runtimeActionId) ? "Yes" : "No"}</td>
+        <td>${actionIsRunning ? "Yes" : "No"}</td>
         <td>${escapeHtml(String(lfoCount))}</td>
         <td>${onEndActionId ? escapeHtml(onEndActionId) : '<span class="muted">-</span>'}</td>
+        <td class="action-manager-row-actions-cell">
+          <div class="action-manager-row-actions">
+            <button type="button" data-action-command="start"${playDisabled ? " disabled" : ""}>Play</button>
+            <button type="button" data-action-command="stop"${stopDisabled ? " disabled" : ""}>Stop</button>
+          </div>
+        </td>
       `;
       els.actionManagerRows.appendChild(row);
     }
@@ -2796,32 +3360,6 @@ function renderActionManager() {
     }
     els.actionManagerOnEndInput.appendChild(option);
   }
-
-  const objects = getObjects().map((obj) => obj.objectId).sort((a, b) => a.localeCompare(b));
-  const currentLfoObject = String(els.actionManagerLfoObjectInput.value || "").trim();
-  els.actionManagerLfoObjectInput.innerHTML = "";
-  if (!objects.length) {
-    const emptyOption = document.createElement("option");
-    emptyOption.value = "";
-    emptyOption.textContent = "No objects";
-    emptyOption.selected = true;
-    emptyOption.disabled = true;
-    els.actionManagerLfoObjectInput.appendChild(emptyOption);
-  } else {
-    for (const objectId of objects) {
-      const option = document.createElement("option");
-      option.value = objectId;
-      option.textContent = objectId;
-      if (objectId === currentLfoObject) {
-        option.selected = true;
-      }
-      els.actionManagerLfoObjectInput.appendChild(option);
-    }
-    if (!currentLfoObject || !objects.includes(currentLfoObject)) {
-      els.actionManagerLfoObjectInput.value = objects[0];
-    }
-  }
-  els.actionManagerLfoObjectInput.disabled = !objects.length;
 
   if (selectedAction) {
     state.draftSuggestedIds.action = "";
@@ -2869,9 +3407,19 @@ function renderActionManager() {
   const selectedActionGroupId = String(state.selectedActionGroupId || "").trim();
   const selectedActionGroup = selectedActionGroupId ? actionGroupsById[selectedActionGroupId] : null;
   if (selectedActionGroup) {
-    state.draftSuggestedIds.actionGroup = "";
     const groupId = String(selectedActionGroup.groupId || selectedActionGroupId || "group");
-    setInputValueIfIdle(els.actionGroupManagerIdInput, groupId);
+    const draftGroupId = String(state.draftSuggestedIds.actionGroup || "").trim();
+    const keepDraftGroupId = Boolean(
+      document.activeElement === els.actionGroupManagerNameInput
+      && draftGroupId
+      && draftGroupId !== groupId
+    );
+    if (keepDraftGroupId) {
+      els.actionGroupManagerIdInput.value = draftGroupId;
+    } else {
+      state.draftSuggestedIds.actionGroup = "";
+      els.actionGroupManagerIdInput.value = groupId;
+    }
     setInputValueIfIdle(els.actionGroupManagerNameInput, String(selectedActionGroup.name || groupId));
     setInputValueIfIdle(
       els.actionGroupManagerOscTriggerInput,
@@ -2879,11 +3427,12 @@ function renderActionManager() {
     );
     els.actionGroupManagerEnabledInput.checked = selectedActionGroup.enabled !== false;
   } else {
-    const suggestedGroupId = sanitizeActionGroupId(String(els.actionGroupManagerIdInput.value || "group"), { allowAuto: true });
+    const suggestedGroupId = sanitizeActionGroupId(
+      deriveIdBaseFromName(String(els.actionGroupManagerNameInput.value || "").trim(), "group"),
+      { allowAuto: true }
+    );
     state.draftSuggestedIds.actionGroup = suggestedGroupId;
-    if (!String(els.actionGroupManagerIdInput.value || "").trim()) {
-      setInputValueIfIdle(els.actionGroupManagerIdInput, suggestedGroupId);
-    }
+    els.actionGroupManagerIdInput.value = suggestedGroupId;
     if (!String(els.actionGroupManagerNameInput.value || "").trim()) {
       setInputValueIfIdle(els.actionGroupManagerNameInput, humanizeId(suggestedGroupId) || suggestedGroupId);
     }
@@ -2897,120 +3446,410 @@ function renderActionManager() {
 
   const selectedGroupEntries = Array.isArray(selectedActionGroup?.entries) ? selectedActionGroup.entries : [];
   els.actionGroupEntryRows.innerHTML = "";
-  if (!selectedActionGroup || !selectedGroupEntries.length) {
-    const row = document.createElement("tr");
-    row.innerHTML = '<td class="muted" colspan="4">No entries configured.</td>';
-    els.actionGroupEntryRows.appendChild(row);
+  if (!selectedActionGroup) {
+    const empty = document.createElement("div");
+    empty.className = "muted action-group-entry-empty";
+    empty.textContent = "Select an action group to view entries.";
+    els.actionGroupEntryRows.appendChild(empty);
+  } else if (!selectedGroupEntries.length) {
+    const empty = document.createElement("div");
+    empty.className = "muted action-group-entry-empty";
+    empty.textContent = "No entries configured.";
+    els.actionGroupEntryRows.appendChild(empty);
   } else {
     selectedGroupEntries.forEach((entry, index) => {
-      const entryType = String(entry?.entryType || "");
-      let typeLabel = "Action";
-      let targetLabel = "-";
-      if (entryType === "lfosEnabled") {
-        typeLabel = "LFOs";
-        targetLabel = entry?.enabled === false ? "Disable" : "Enable";
-      } else if (entryType === "actionLfoEnabled") {
-        typeLabel = entry?.enabled === false ? "Action LFO Disable" : "Action LFO Enable";
-        targetLabel = `${String(entry?.actionId || "-")}.${String(entry?.lfoId || "-")}`;
-      } else {
-        const command = String(entry?.command || "start");
-        typeLabel = `Action ${command}`;
-        targetLabel = String(entry?.actionId || "-");
-      }
-      const row = document.createElement("tr");
-      row.innerHTML = `
-        <td>${index + 1}</td>
-        <td>${escapeHtml(typeLabel)}</td>
-        <td>${escapeHtml(targetLabel)}</td>
-        <td><button class="danger action-group-entry-remove-btn" data-index="${index}" type="button">Remove</button></td>
-      `;
-      const removeBtn = row.querySelector(".action-group-entry-remove-btn");
-      if (removeBtn) {
-        removeBtn.addEventListener("click", () => {
-          void actionGroupEntryRemove(index);
-        });
-      }
+      const description = describeActionGroupEntry(entry);
+      const row = document.createElement("div");
+      row.className = "action-group-entry-row";
+
+      const meta = document.createElement("div");
+      meta.className = "action-group-entry-meta";
+      const title = document.createElement("strong");
+      title.textContent = `${index + 1}. ${description.name}`;
+      const detail = document.createElement("span");
+      detail.className = "muted";
+      detail.textContent = description.detail;
+      meta.appendChild(title);
+      meta.appendChild(detail);
+      row.appendChild(meta);
+
+      const controls = document.createElement("div");
+      controls.className = "action-group-entry-controls";
+
+      const triggerBtn = document.createElement("button");
+      triggerBtn.type = "button";
+      triggerBtn.textContent = "Test";
+      triggerBtn.addEventListener("click", () => {
+        void actionGroupEntryTriggerByIndex(index);
+      });
+      controls.appendChild(triggerBtn);
+
+      const removeBtn = document.createElement("button");
+      removeBtn.className = "danger";
+      removeBtn.type = "button";
+      removeBtn.textContent = "Remove";
+      removeBtn.addEventListener("click", () => {
+        void actionGroupEntryRemove(index);
+      });
+      controls.appendChild(removeBtn);
+
+      row.appendChild(controls);
       els.actionGroupEntryRows.appendChild(row);
     });
+  }
+
+  els.actionGroupListRows.innerHTML = "";
+  if (!actionGroupIds.length) {
+    els.actionGroupListSummary.textContent = "No action groups.";
+    const row = document.createElement("tr");
+    row.className = "action-group-list-empty-row";
+    row.innerHTML = '<td class="muted action-group-list-empty" colspan="5">Create an action group to see it here.</td>';
+    els.actionGroupListRows.appendChild(row);
+  } else {
+    const selectedLabel = selectedActionGroupId || "-";
+    els.actionGroupListSummary.textContent = `${actionGroupIds.length} group${actionGroupIds.length === 1 ? "" : "s"} | selected: ${selectedLabel}`;
+    for (const groupId of actionGroupIds) {
+      const group = actionGroupsById[groupId] || {};
+      const enabled = group.enabled !== false;
+      const entryCount = Array.isArray(group.entries) ? group.entries.length : 0;
+      const actionIds = actionIdsInGroup(group);
+      const groupName = String(group.name || "").trim();
+      const displayName = groupName || humanizeId(groupId) || groupId;
+      const entryLabel = `${entryCount} entr${entryCount === 1 ? "y" : "ies"}`;
+
+      const row = document.createElement("tr");
+      row.className = "action-group-list-row";
+      row.dataset.groupId = groupId;
+      row.tabIndex = 0;
+      if (groupId === selectedActionGroupId) {
+        row.classList.add("is-selected");
+      }
+      if (!enabled) {
+        row.classList.add("is-disabled");
+      }
+      row.innerHTML = `
+        <td class="action-group-enabled-cell">
+          <button
+            type="button"
+            class="action-enabled-toggle action-group-enabled-toggle${enabled ? " is-on" : ""}"
+            data-action-group-toggle-enabled="${enabled ? "true" : "false"}"
+            aria-pressed="${enabled ? "true" : "false"}"
+          >${enabled ? "On" : "Off"}</button>
+        </td>
+        <td>${escapeHtml(groupId)}</td>
+        <td class="action-group-list-name-cell">${escapeHtml(displayName)}</td>
+        <td>${escapeHtml(entryLabel)}</td>
+        <td class="action-manager-row-actions-cell">
+          <div class="action-manager-row-actions">
+            <button type="button" data-action-group-command="play"${enabled ? "" : " disabled"}>Play</button>
+            <button type="button" data-action-group-command="stop"${actionIds.length ? "" : " disabled"}>Stop</button>
+          </div>
+        </td>
+      `;
+
+      const selectGroup = () => {
+        state.selectedActionGroupId = groupId;
+        renderActionManager();
+      };
+      row.addEventListener("click", (event) => {
+        const target = event.target;
+        const enabledToggle = target instanceof Element
+          ? target.closest("button[data-action-group-toggle-enabled]")
+          : null;
+        if (enabledToggle instanceof HTMLButtonElement) {
+          const enabledNow = String(enabledToggle.dataset.actionGroupToggleEnabled || "").toLowerCase() !== "false";
+          state.selectedActionGroupId = groupId;
+          renderActionManager();
+          void actionGroupManagerToggleEnabled(groupId, !enabledNow);
+          return;
+        }
+        if (target instanceof Element && target.closest("button")) {
+          return;
+        }
+        selectGroup();
+      });
+      row.addEventListener("keydown", (event) => {
+        const target = event.target;
+        if (target instanceof Element && target.closest("button")) {
+          return;
+        }
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        selectGroup();
+      });
+
+      const playBtn = row.querySelector('button[data-action-group-command="play"]');
+      if (playBtn instanceof HTMLButtonElement) {
+        playBtn.addEventListener("click", (event) => {
+          event.stopPropagation();
+          state.selectedActionGroupId = groupId;
+          renderActionManager();
+          void actionGroupManagerTrigger(groupId);
+        });
+      }
+      const stopBtn = row.querySelector('button[data-action-group-command="stop"]');
+      if (stopBtn instanceof HTMLButtonElement) {
+        stopBtn.addEventListener("click", (event) => {
+          event.stopPropagation();
+          state.selectedActionGroupId = groupId;
+          renderActionManager();
+          void actionGroupManagerStop(groupId);
+        });
+      }
+
+      els.actionGroupListRows.appendChild(row);
+    }
   }
   updateActionGroupEntryInputsState();
 
   if (!selectedAction) {
     state.selectedActionLfoActionId = null;
     state.selectedActionLfoIndex = null;
+    state.selectedActionLfoTargetIndex = null;
   } else if (state.selectedActionLfoActionId !== selectedActionRuntimeId) {
     state.selectedActionLfoActionId = selectedActionRuntimeId;
     state.selectedActionLfoIndex = null;
+    state.selectedActionLfoTargetIndex = null;
   }
 
-  els.actionManagerStartBtn.disabled = !selectedAction || selectedAction.enabled === false || isRunning;
-  els.actionManagerStopBtn.disabled = !selectedAction || !isRunning;
-  els.actionManagerAbortBtn.disabled = !selectedAction || !isRunning;
   els.actionManagerSaveBtn.disabled = !selectedAction;
   els.actionManagerSaveAsBtn.disabled = !selectedAction;
   els.actionManagerDeleteBtn.disabled = !selectedAction;
   els.actionGroupManagerSaveBtn.disabled = !selectedActionGroup;
   els.actionGroupManagerDeleteBtn.disabled = !selectedActionGroup;
-  els.actionGroupManagerTriggerBtn.disabled = !selectedActionGroup || selectedActionGroup.enabled === false;
-  const entryType = String(els.actionGroupEntryTypeInput.value || "action-start").trim();
-  const requiresActionLfo = entryType === "action-lfo-enable" || entryType === "action-lfo-disable";
-  const hasEntryLfo = String(els.actionGroupEntryLfoSelect.value || "").trim().length > 0;
-  els.actionGroupEntryAddBtn.disabled = !selectedActionGroup || (requiresActionLfo && !hasEntryLfo);
-  els.actionGroupEntryClearBtn.disabled = !selectedActionGroup || !selectedGroupEntries.length;
-  els.actionManagerLfoAddBtn.disabled = !selectedAction || !objects.length;
-  const selectedLfos = Array.isArray(selectedAction?.lfos) ? selectedAction.lfos : [];
-  if (Number.isInteger(state.selectedActionLfoIndex) && (state.selectedActionLfoIndex < 0 || state.selectedActionLfoIndex >= selectedLfos.length)) {
-    state.selectedActionLfoIndex = null;
+  let entryPayloadValid = true;
+  try {
+    actionGroupEntryPayloadFromInputs();
+  } catch {
+    entryPayloadValid = false;
   }
-  const hasSelectedLfo = Number.isInteger(state.selectedActionLfoIndex);
-  els.actionManagerLfoUpdateBtn.disabled = !selectedAction || !hasSelectedLfo;
+  els.actionGroupEntryAddBtn.disabled = !selectedActionGroup || !entryPayloadValid;
+  els.actionGroupEntryTriggerBtn.disabled = !entryPayloadValid;
+  els.actionGroupEntryClearBtn.disabled = !selectedActionGroup || !selectedGroupEntries.length;
+  els.actionManagerLfoAddBtn.disabled = !selectedAction;
+  const selectedLfos = Array.isArray(selectedAction?.lfos) ? selectedAction.lfos : [];
+  const selectedLfoGroups = collectLfoGroups(selectedLfos);
+  if (Number.isInteger(state.selectedActionLfoIndex)) {
+    const hasMatchingGroup = selectedLfoGroups.some((group) => group.representativeIndex === state.selectedActionLfoIndex);
+    if (!hasMatchingGroup) {
+      state.selectedActionLfoIndex = null;
+      state.selectedActionLfoTargetIndex = null;
+    }
+  }
+  const selectedLfoGroup = Number.isInteger(state.selectedActionLfoIndex)
+    ? (selectedLfoGroups.find((group) => group.representativeIndex === state.selectedActionLfoIndex) || null)
+    : null;
+  const hasSelectedLfo = Boolean(selectedLfoGroup);
+  if (!hasSelectedLfo) {
+    cancelActionLfoAutoApplyTimer();
+    state.selectedActionLfoTargetIndex = null;
+  }
+  const objects = [...getObjects()]
+    .sort((a, b) => String(a.objectId || "").localeCompare(String(b.objectId || "")));
+  const hasObjects = objects.length > 0;
+  const canEditLfoTargets = Boolean(selectedAction && hasSelectedLfo && hasObjects);
+  els.actionManagerLfoAddTargetBtn.disabled = !canEditLfoTargets;
   els.actionManagerLfoClearBtn.disabled = !selectedAction || !selectedLfos.length;
+  if (els.actionManagerLfoTargetObjectInput) {
+    const previousObjectId = String(els.actionManagerLfoTargetObjectInput.value || "").trim();
+    const preferredObjectId = objects.some((obj) => String(obj.objectId || "").trim() === previousObjectId)
+      ? previousObjectId
+      : String(state.selectedObjectId || objects[0]?.objectId || "").trim();
+    els.actionManagerLfoTargetObjectInput.innerHTML = "";
+    if (!objects.length) {
+      const option = document.createElement("option");
+      option.value = "";
+      option.textContent = "No objects";
+      option.disabled = true;
+      option.selected = true;
+      els.actionManagerLfoTargetObjectInput.appendChild(option);
+    } else {
+      for (const obj of objects) {
+        const objectId = String(obj.objectId || "").trim();
+        if (!objectId) continue;
+        const option = document.createElement("option");
+        option.value = objectId;
+        option.textContent = objectId;
+        if (objectId === preferredObjectId) {
+          option.selected = true;
+        }
+        els.actionManagerLfoTargetObjectInput.appendChild(option);
+      }
+      if (!String(els.actionManagerLfoTargetObjectInput.value || "").trim() && preferredObjectId) {
+        els.actionManagerLfoTargetObjectInput.value = preferredObjectId;
+      }
+    }
+    els.actionManagerLfoTargetObjectInput.disabled = !canEditLfoTargets;
+  }
+  if (els.actionManagerLfoTargetParamInput) {
+    const currentParam = String(els.actionManagerLfoTargetParamInput.value || "").trim().toLowerCase();
+    if (!LFO_PARAM_OPTIONS.includes(currentParam)) {
+      let fallbackParam = "y";
+      const firstTargetLabel = selectedLfoGroup?.targetLabels?.find(Boolean) || "";
+      if (firstTargetLabel.includes(".")) {
+        const candidateParam = firstTargetLabel.split(".").pop() || "";
+        if (LFO_PARAM_OPTIONS.includes(candidateParam)) {
+          fallbackParam = candidateParam;
+        }
+      }
+      els.actionManagerLfoTargetParamInput.value = fallbackParam;
+    }
+    els.actionManagerLfoTargetParamInput.disabled = !canEditLfoTargets;
+  }
+  if (els.actionManagerLfoTargetPhaseInput) {
+    const currentPhase = parseFiniteNumber(els.actionManagerLfoTargetPhaseInput.value, Number.NaN);
+    if (!Number.isFinite(currentPhase)) {
+      els.actionManagerLfoTargetPhaseInput.value = "0";
+    }
+    els.actionManagerLfoTargetPhaseInput.disabled = !canEditLfoTargets;
+  }
+
+  const selectedTargetEntries = [];
+  if (selectedLfoGroup) {
+    for (const entryIndex of selectedLfoGroup.entryIndices) {
+      if (!Number.isInteger(entryIndex) || entryIndex < 0 || entryIndex >= selectedLfos.length) continue;
+      const entry = selectedLfos[entryIndex] || {};
+      if (!lfoHasAssignedTarget(entry)) continue;
+      const objectId = String(entry.objectId || entry.object_id || "").trim();
+      const parameter = String(entry.parameter || "").trim();
+      selectedTargetEntries.push({
+        entryIndex,
+        lfo: entry,
+        objectId,
+        parameter,
+        targetLabel: `${objectId}.${parameter}`,
+        mappingPhaseDeg: parseFiniteNumber(entry.mappingPhaseDeg, 0),
+        enabled: entry.enabled !== false
+      });
+    }
+  }
+  if (!selectedAction || !hasSelectedLfo) {
+    state.selectedActionLfoTargetIndex = null;
+  } else if (Number.isInteger(state.selectedActionLfoTargetIndex)) {
+    const hasMatchingTarget = selectedTargetEntries.some((entry) => entry.entryIndex === state.selectedActionLfoTargetIndex);
+    if (!hasMatchingTarget) {
+      state.selectedActionLfoTargetIndex = null;
+    }
+  }
+  if (!Number.isInteger(state.selectedActionLfoTargetIndex) && selectedTargetEntries.length) {
+    state.selectedActionLfoTargetIndex = selectedTargetEntries[0].entryIndex;
+  }
+  const selectedTargetEntry = Number.isInteger(state.selectedActionLfoTargetIndex)
+    ? (selectedTargetEntries.find((entry) => entry.entryIndex === state.selectedActionLfoTargetIndex) || null)
+    : null;
+  if (selectedTargetEntry) {
+    if (els.actionManagerLfoTargetObjectInput) {
+      const selectedObjectId = selectedTargetEntry.objectId;
+      const hasSelectedObjectOption = Array.from(els.actionManagerLfoTargetObjectInput.options)
+        .some((option) => String(option.value || "").trim() === selectedObjectId);
+      if (hasSelectedObjectOption) {
+        setInputValueIfIdle(els.actionManagerLfoTargetObjectInput, selectedObjectId);
+      }
+    }
+    if (els.actionManagerLfoTargetParamInput && LFO_PARAM_OPTIONS.includes(selectedTargetEntry.parameter)) {
+      setInputValueIfIdle(els.actionManagerLfoTargetParamInput, selectedTargetEntry.parameter);
+    }
+    if (els.actionManagerLfoTargetPhaseInput) {
+      setInputValueIfIdle(els.actionManagerLfoTargetPhaseInput, String(selectedTargetEntry.mappingPhaseDeg));
+    }
+  }
+
+  if (els.actionManagerLfoTargetsSummary) {
+    if (!selectedAction) {
+      els.actionManagerLfoTargetsSummary.textContent = "Select an action to manage LFO targets.";
+    } else if (!hasSelectedLfo) {
+      els.actionManagerLfoTargetsSummary.textContent = "Select an LFO to manage targets.";
+    } else if (!selectedTargetEntries.length) {
+      const lfoId = String(selectedLfoGroup?.lfoId || "").trim() || "lfo";
+      els.actionManagerLfoTargetsSummary.textContent = `LFO ${lfoId} has no targets yet.`;
+    } else {
+      const lfoId = String(selectedLfoGroup?.lfoId || "").trim() || "lfo";
+      const selectedTargetLabel = selectedTargetEntry ? selectedTargetEntry.targetLabel : "-";
+      els.actionManagerLfoTargetsSummary.textContent = `LFO ${lfoId} targets: ${selectedTargetEntries.length} | selected: ${selectedTargetLabel}`;
+    }
+  }
+
   if (!selectedAction || !hasSelectedLfo) {
     els.actionManagerSelectedLfoSummary.textContent = "Selected LFO: none";
+    if (selectedAction && !String(els.actionManagerLfoIdInput.value || "").trim()) {
+      setInputValueIfIdle(els.actionManagerLfoIdInput, uniqueLfoId("lfo", selectedLfos));
+    }
+    updateLfoPolarityButton(els.actionManagerLfoPolarityBtn?.dataset?.polarity || "bipolar");
+    if (!document.activeElement || document.activeElement !== els.actionManagerLfoEnabledInput) {
+      els.actionManagerLfoEnabledInput.checked = true;
+    }
   } else {
-    const selectedLfo = selectedLfos[state.selectedActionLfoIndex];
-    if (selectedLfo) {
+    const selectedLfo = selectedLfoGroup.lfo;
+    if (selectedLfo && typeof selectedLfo === "object") {
       setLfoInputsFromModel(selectedLfo);
-      const lfoId = lfoDisplayId(selectedLfo, `lfo-${state.selectedActionLfoIndex + 1}`);
-      const objectId = String(selectedLfo.objectId || "-");
-      const parameter = String(selectedLfo.parameter || "-");
+      const lfoId = selectedLfoGroup.lfoId;
       const wave = String(selectedLfo.wave || "sine");
       const rateHz = parseFiniteNumber(selectedLfo.rateHz, 0);
+      const polarityLabel = normalizeLfoPolarity(selectedLfo.polarity) === "unipolar" ? "unipolar" : "bipolar";
       const enabledLabel = selectedLfo.enabled === false ? "off" : "on";
-      els.actionManagerSelectedLfoSummary.textContent = `Selected LFO: ${lfoId} ${objectId}.${parameter} (${wave}, ${rateHz.toFixed(3)} Hz, ${enabledLabel})`;
+      const targetSummary = selectedLfoGroup.targetCount ? `${selectedLfoGroup.targetCount}` : "0";
+      els.actionManagerSelectedLfoSummary.textContent = `Selected LFO: ${lfoId} (${wave}, ${rateHz.toFixed(3)} Hz, ${polarityLabel}, ${enabledLabel}) | targets: ${targetSummary}`;
     } else {
       els.actionManagerSelectedLfoSummary.textContent = "Selected LFO: none";
     }
   }
 
   els.actionManagerLfoRows.innerHTML = "";
-  if (!selectedAction || !selectedLfos.length) {
+  if (!selectedAction || !selectedLfoGroups.length) {
     const row = document.createElement("tr");
-    row.innerHTML = '<td class="muted" colspan="11">No LFOs configured.</td>';
+    row.innerHTML = '<td class="muted" colspan="9">No LFOs configured.</td>';
     els.actionManagerLfoRows.appendChild(row);
   } else {
-    selectedLfos.forEach((lfo, index) => {
+    selectedLfoGroups.forEach((group) => {
+      const lfo = group.lfo && typeof group.lfo === "object" ? group.lfo : {};
+      const index = group.representativeIndex;
       const row = document.createElement("tr");
       row.dataset.lfoIndex = String(index);
       row.tabIndex = 0;
       if (index === state.selectedActionLfoIndex) {
         row.classList.add("is-selected");
       }
-      const lfoId = lfoDisplayId(lfo, `lfo-${index + 1}`);
-      const enabledLabel = lfo.enabled === false ? "Off" : "On";
+      const lfoId = group.lfoId || lfoDisplayId(lfo, `lfo-${index + 1}`);
+      const polarity = normalizeLfoPolarity(lfo.polarity);
+      const polarityLabel = polarity === "unipolar" ? "Unipolar" : "Bipolar";
+      const targetText = group.targetLabels.slice(0, 2).join(", ");
+      const moreSuffix = group.targetCount > 2 ? ` +${group.targetCount - 2}` : "";
+      const targetSummary = group.targetCount ? `${targetText}${moreSuffix}` : "No targets";
+      const lfoEnabled = lfo.enabled !== false;
+      if (!lfoEnabled) {
+        row.classList.add("is-disabled");
+      }
       row.innerHTML = `
+        <td class="action-lfo-enabled-cell">
+          <button
+            type="button"
+            class="action-enabled-toggle action-lfo-enabled-toggle ${lfoEnabled ? "is-on" : ""}"
+            data-action-lfo-toggle-enabled="${lfoEnabled ? "true" : "false"}"
+            data-index="${index}"
+            aria-pressed="${lfoEnabled ? "true" : "false"}"
+          >${lfoEnabled ? "On" : "Off"}</button>
+        </td>
         <td>${escapeHtml(lfoId)}</td>
-        <td>${escapeHtml(String(lfo.objectId || "-"))}</td>
-        <td>${escapeHtml(String(lfo.parameter || "-"))}</td>
         <td>${escapeHtml(String(lfo.wave || "sine"))}</td>
         <td>${escapeHtml(String(parseFiniteNumber(lfo.rateHz, 0).toFixed(3)))}</td>
         <td>${escapeHtml(String(parseFiniteNumber(lfo.depth, 0).toFixed(3)))}</td>
         <td>${escapeHtml(String(parseFiniteNumber(lfo.offset, 0).toFixed(3)))}</td>
-        <td>${escapeHtml(String(parseFiniteNumber(lfo.phaseDeg, 0).toFixed(2)))}</td>
-        <td>${escapeHtml(String(parseFiniteNumber(lfo.mappingPhaseDeg, 0).toFixed(2)))}</td>
-        <td>${escapeHtml(enabledLabel)}</td>
-        <td><button class="danger action-lfo-remove-btn" data-index="${index}" type="button">Remove</button></td>
+        <td>${escapeHtml(polarityLabel)}</td>
+        <td>${escapeHtml(targetSummary)}</td>
+        <td class="action-manager-row-actions-cell">
+          <div class="action-manager-row-actions">
+            <button class="danger action-lfo-remove-btn" data-index="${index}" type="button">Remove</button>
+          </div>
+        </td>
       `;
+      const toggleBtn = row.querySelector(".action-lfo-enabled-toggle");
+      if (toggleBtn instanceof HTMLButtonElement) {
+        toggleBtn.addEventListener("click", (event) => {
+          event.stopPropagation();
+          const enabledNow = String(toggleBtn.dataset.actionLfoToggleEnabled || "").toLowerCase() !== "false";
+          void actionManagerToggleLfoEnabled(index, !enabledNow);
+        });
+      }
       const removeBtn = row.querySelector(".action-lfo-remove-btn");
       if (removeBtn) {
         removeBtn.addEventListener("click", (event) => {
@@ -3021,6 +3860,7 @@ function renderActionManager() {
       const selectLfo = () => {
         state.selectedActionLfoActionId = selectedActionRuntimeId;
         state.selectedActionLfoIndex = index;
+        state.selectedActionLfoTargetIndex = null;
         setLfoInputsFromModel(lfo);
         renderActionManager();
       };
@@ -3028,6 +3868,10 @@ function renderActionManager() {
         selectLfo();
       });
       row.addEventListener("keydown", (event) => {
+        const target = event.target;
+        if (target instanceof Element && target.closest("button, input, select, textarea, a")) {
+          return;
+        }
         if (event.key !== "Enter" && event.key !== " ") return;
         event.preventDefault();
         selectLfo();
@@ -3036,7 +3880,103 @@ function renderActionManager() {
     });
   }
 
-  renderActionLfoDebug(selectedAction, isRunning);
+  if (els.actionManagerLfoTargetRows) {
+    els.actionManagerLfoTargetRows.innerHTML = "";
+    if (!selectedAction) {
+      const row = document.createElement("tr");
+      row.innerHTML = '<td class="muted" colspan="4">Select an action to manage targets.</td>';
+      els.actionManagerLfoTargetRows.appendChild(row);
+    } else if (!hasSelectedLfo) {
+      const row = document.createElement("tr");
+      row.innerHTML = '<td class="muted" colspan="4">Select an LFO to view targets.</td>';
+      els.actionManagerLfoTargetRows.appendChild(row);
+    } else if (!selectedTargetEntries.length) {
+      const row = document.createElement("tr");
+      row.innerHTML = '<td class="muted" colspan="4">No targets assigned. Use Add Target above.</td>';
+      els.actionManagerLfoTargetRows.appendChild(row);
+    } else {
+      for (const targetEntry of selectedTargetEntries) {
+        const row = document.createElement("tr");
+        row.dataset.lfoTargetIndex = String(targetEntry.entryIndex);
+        row.tabIndex = 0;
+        if (targetEntry.entryIndex === state.selectedActionLfoTargetIndex) {
+          row.classList.add("is-selected");
+        }
+        if (targetEntry.enabled === false) {
+          row.classList.add("is-disabled");
+        }
+        row.innerHTML = `
+          <td>${escapeHtml(targetEntry.targetLabel)}</td>
+          <td>
+            <input
+              class="action-lfo-target-phase-input"
+              type="number"
+              step="1"
+              value="${escapeHtml(String(targetEntry.mappingPhaseDeg))}"
+              data-lfo-target-index="${targetEntry.entryIndex}"
+              aria-label="Mapping phase for ${escapeHtml(targetEntry.targetLabel)}"
+            />
+          </td>
+          <td>${targetEntry.enabled ? "On" : "Off"}</td>
+          <td class="action-manager-row-actions-cell">
+            <div class="action-manager-row-actions">
+              <button type="button" data-action-lfo-target-command="update" data-index="${targetEntry.entryIndex}">Save</button>
+              <button class="danger" type="button" data-action-lfo-target-command="remove" data-index="${targetEntry.entryIndex}">Remove</button>
+            </div>
+          </td>
+        `;
+
+        const phaseInput = row.querySelector(".action-lfo-target-phase-input");
+        const saveBtn = row.querySelector('button[data-action-lfo-target-command="update"]');
+        const removeBtn = row.querySelector('button[data-action-lfo-target-command="remove"]');
+        const entryIndex = targetEntry.entryIndex;
+
+        if (phaseInput instanceof HTMLInputElement) {
+          phaseInput.addEventListener("keydown", (event) => {
+            if (event.key !== "Enter") return;
+            event.preventDefault();
+            void actionManagerUpdateLfoTargetPhase(entryIndex, parseFiniteNumber(phaseInput.value, targetEntry.mappingPhaseDeg));
+          });
+        }
+        if (saveBtn instanceof HTMLButtonElement && phaseInput instanceof HTMLInputElement) {
+          saveBtn.addEventListener("click", (event) => {
+            event.stopPropagation();
+            void actionManagerUpdateLfoTargetPhase(entryIndex, parseFiniteNumber(phaseInput.value, targetEntry.mappingPhaseDeg));
+          });
+        }
+        if (removeBtn instanceof HTMLButtonElement) {
+          removeBtn.addEventListener("click", (event) => {
+            event.stopPropagation();
+            void actionManagerRemoveLfoTarget(entryIndex);
+          });
+        }
+        const selectTarget = () => {
+          state.selectedActionLfoTargetIndex = entryIndex;
+          renderActionManager();
+        };
+        row.addEventListener("click", (event) => {
+          const target = event.target;
+          if (target instanceof Element && target.closest("button, input, select, textarea, a")) {
+            return;
+          }
+          selectTarget();
+        });
+        row.addEventListener("keydown", (event) => {
+          const target = event.target;
+          if (target instanceof Element && target.closest("button, input, select, textarea, a")) {
+            return;
+          }
+          if (event.key !== "Enter" && event.key !== " ") return;
+          event.preventDefault();
+          selectTarget();
+        });
+
+        els.actionManagerLfoTargetRows.appendChild(row);
+      }
+    }
+  }
+
+  renderActionLfoDebug(selectedAction, selectedLfoGroup, isRunning);
 }
 
 function renderObjectSelect() {
@@ -3234,7 +4174,7 @@ function renderGroupsManager() {
       const groupName = humanizeId(String(els.managerGroupId.value || suggestedId));
       setInputValueIfIdle(els.managerGroupName, groupName || String(els.managerGroupId.value || suggestedId));
     }
-    els.managerGroupSummary.textContent = `${groups.length} group${groups.length === 1 ? "" : "s"} total. Create/Update uses current selection (${selectedObjectIds.length}).`;
+    els.managerGroupSummary.textContent = `${groups.length} group${groups.length === 1 ? "" : "s"} total. Create can be empty; Update uses current selection (${selectedObjectIds.length}).`;
   }
 
   els.managerGroupUpdateBtn.disabled = !state.selectedGroupId;
@@ -3384,25 +4324,38 @@ function renderGroupManager() {
     const groupId = String(group.groupId || "").trim();
     const groupName = String(group.name || groupId).trim() || groupId;
     const groupColor = normalizeHexColor(group.color, DEFAULT_GROUP_COLOR);
-    const enabledText = isGroupEnabled(group) ? "On" : "Off";
+    const groupEnabled = isGroupEnabled(group);
     const memberSummary = summarizeGroupItems(group.objectIds, 3);
     const linkSummary = summarizeGroupItems(group.linkParams, 4);
 
     const row = document.createElement("tr");
     row.dataset.groupId = groupId;
+    row.tabIndex = 0;
     if (groupId === state.selectedGroupId) {
       row.classList.add("is-selected");
     }
+    if (!groupEnabled) {
+      row.classList.add("is-disabled");
+    }
     row.innerHTML = `
+      <td class="group-manager-enabled-cell">
+        <button
+          type="button"
+          class="action-enabled-toggle group-manager-enabled-toggle ${groupEnabled ? "is-on" : ""}"
+          data-group-toggle-enabled="${groupEnabled ? "true" : "false"}"
+          aria-pressed="${groupEnabled ? "true" : "false"}"
+        >${groupEnabled ? "On" : "Off"}</button>
+      </td>
       <td>${escapeHtml(groupId)}</td>
       <td>${escapeHtml(groupName)}</td>
       <td><span class="color-chip" style="background:${escapeHtml(groupColor)}"></span>${escapeHtml(groupColor)}</td>
-      <td class="group-manager-enabled-cell">${escapeHtml(enabledText)}</td>
       <td title="${escapeHtml(memberSummary.full)}">${escapeHtml(memberSummary.preview)}</td>
       <td title="${escapeHtml(linkSummary.full)}">${escapeHtml(linkSummary.preview)}</td>
-      <td class="group-manager-actions">
-        <button class="group-manager-edit-btn" type="button">Edit</button>
-        <button class="group-manager-delete-btn danger" type="button">Delete</button>
+      <td class="group-manager-actions action-manager-row-actions-cell">
+        <div class="action-manager-row-actions">
+          <button class="group-manager-edit-btn" type="button">Edit</button>
+          <button class="group-manager-delete-btn danger" type="button">Delete</button>
+        </div>
       </td>
     `;
     els.groupManagerRows.appendChild(row);
@@ -3456,9 +4409,11 @@ function renderManager() {
   els.managerObjectRows.innerHTML = "";
   for (const obj of objects) {
     const row = document.createElement("tr");
-    const rowIsSelected = isObjectSelected(obj.objectId);
+    const rowIsSelected = obj.objectId === state.selectedObjectId;
     if (rowIsSelected) row.classList.add("is-selected");
     if (obj.objectId === state.selectedObjectId) row.classList.add("is-primary");
+    row.dataset.objectId = obj.objectId;
+    row.tabIndex = 0;
 
     const positionText = `${Number(obj.x).toFixed(1)}, ${Number(obj.y).toFixed(1)}, ${Number(obj.z).toFixed(1)}`;
     const objectColor = normalizeHexColor(obj.color, DEFAULT_OBJECT_COLOR);
@@ -3475,7 +4430,6 @@ function renderManager() {
     const excludeFromAll = Boolean(obj.excludeFromAll);
 
     row.innerHTML = `
-      <td class="sel-cell"><input class="row-select-toggle" type="checkbox" ${rowIsSelected ? "checked" : ""} aria-label="Select ${escapeHtml(obj.objectId)}" /></td>
       <td>${escapeHtml(obj.objectId)}</td>
       <td>${escapeHtml(String(obj.type || DEFAULT_OBJECT_TYPE))}</td>
       <td><span class="color-chip" style="background:${escapeHtml(color)}"></span>${escapeHtml(color)}${escapeHtml(colorSuffix)}</td>
@@ -3483,17 +4437,6 @@ function renderManager() {
       <td class="groups-cell">${escapeHtml(groupText)}</td>
       <td class="all-exclude-cell"><input class="row-exclude-all-toggle" type="checkbox" ${excludeFromAll ? "checked" : ""} aria-label="Exclude ${escapeHtml(obj.objectId)} from All" /></td>
     `;
-
-    const checkbox = row.querySelector(".row-select-toggle");
-    if (checkbox) {
-      checkbox.addEventListener("click", (event) => {
-        event.stopPropagation();
-      });
-      checkbox.addEventListener("change", () => {
-        toggleSelection(obj.objectId);
-        renderAll();
-      });
-    }
 
     const excludeToggle = row.querySelector(".row-exclude-all-toggle");
     if (excludeToggle) {
@@ -3513,11 +4456,21 @@ function renderManager() {
     }
 
     row.addEventListener("click", (event) => {
-      if (event.metaKey || event.ctrlKey) {
-        toggleSelection(obj.objectId);
-      } else {
-        setSingleSelection(obj.objectId);
+      const target = event.target;
+      if (target instanceof Element && target.closest("button, input, select, textarea, a")) {
+        return;
       }
+      setSingleSelection(obj.objectId);
+      renderAll();
+    });
+
+    row.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+      if (target.closest("button, input, select, textarea, a")) return;
+      event.preventDefault();
+      setSingleSelection(obj.objectId);
       renderAll();
     });
 
@@ -3902,9 +4855,6 @@ async function managerClearAll() {
 async function managerCreateGroup() {
   try {
     const selectedObjectIds = selectedObjectTargets();
-    if (!selectedObjectIds.length) {
-      throw new Error("Select one or more objects before creating a group");
-    }
     const inputName = String(els.managerGroupName.value || "").trim();
     const rawGroupId = String(els.managerGroupId.value || "").trim();
     const selectedGroup = getSelectedGroup();
@@ -4027,9 +4977,6 @@ async function groupManagerCreate() {
     const memberIdsFromEditor = selectedGroup ? selectedGroupManagerMemberIds() : [];
     const fallbackSelection = selectedObjectTargets();
     const objectIds = memberIdsFromEditor.length ? memberIdsFromEditor : fallbackSelection;
-    if (!objectIds.length) {
-      throw new Error("Select one or more objects before creating a group");
-    }
 
     const inputName = String(els.groupManagerEditName.value || "").trim();
     const fallbackBaseId = selectedGroup
@@ -4062,7 +5009,7 @@ async function groupManagerCreate() {
       addLog(`group id normalized -> ${groupId}`);
     }
     state.selectedGroupId = groupId;
-    addLog(`group created -> ${groupId} (${objectIds.length} members)`);
+    addLog(`group create -> ${groupId} (${objectIds.length} members)`);
     await refreshStatus();
   } catch (error) {
     addLog(`group create failed: ${error.message}`);
@@ -4177,6 +5124,10 @@ function setupHandlers() {
     setPage("action-manager");
   });
 
+  els.viewActionGroupManagerBtn.addEventListener("click", () => {
+    setPage("action-group-manager");
+  });
+
   els.viewModulationManagerBtn.addEventListener("click", () => {
     setPage("modulation-manager");
   });
@@ -4222,32 +5173,55 @@ function setupHandlers() {
     void runSceneSaveAs();
   });
 
-  els.actionManagerSelect.addEventListener("change", () => {
-    state.selectedActionId = String(els.actionManagerSelect.value || "").trim() || null;
-    renderActionManager();
-  });
-
-  els.modulationManagerActionSelect.addEventListener("change", () => {
-    state.selectedActionId = String(els.modulationManagerActionSelect.value || "").trim() || null;
-    renderActionManager();
-  });
-
   els.actionGroupManagerSelect.addEventListener("change", () => {
     state.selectedActionGroupId = String(els.actionGroupManagerSelect.value || "").trim() || null;
     renderActionManager();
   });
 
   els.actionGroupEntryTypeInput.addEventListener("change", () => {
-    updateActionGroupEntryInputsState();
+    renderActionManager();
   });
 
   els.actionGroupEntryActionSelect.addEventListener("change", () => {
     renderActionManager();
   });
 
+  els.actionGroupEntryLfoSelect.addEventListener("change", () => {
+    renderActionManager();
+  });
+
+  els.actionGroupEntryLfosEnabledInput.addEventListener("change", () => {
+    renderActionManager();
+  });
+
   els.actionManagerRows.addEventListener("click", (event) => {
     const target = event.target;
     if (!(target instanceof Element)) return;
+    const enabledToggle = target.closest("button[data-action-toggle-enabled]");
+    if (enabledToggle instanceof HTMLButtonElement) {
+      const row = enabledToggle.closest("tr");
+      if (!row) return;
+      const actionId = String(row.dataset.actionId || "").trim();
+      if (!actionId) return;
+      const isEnabledNow = String(enabledToggle.dataset.actionToggleEnabled || "").trim().toLowerCase() === "true";
+      event.preventDefault();
+      state.selectedActionId = actionId;
+      void actionManagerToggleEnabled(actionId, !isEnabledNow);
+      return;
+    }
+    const commandButton = target.closest("button[data-action-command]");
+    if (commandButton instanceof HTMLButtonElement) {
+      const command = String(commandButton.dataset.actionCommand || "").trim().toLowerCase();
+      if (command !== "start" && command !== "stop") return;
+      const row = commandButton.closest("tr");
+      if (!row) return;
+      const actionId = String(row.dataset.actionId || "").trim();
+      if (!actionId) return;
+      event.preventDefault();
+      state.selectedActionId = actionId;
+      void runAction(actionId, command);
+      return;
+    }
     const row = target.closest("tr");
     if (!row) return;
     const actionId = String(row.dataset.actionId || "").trim();
@@ -4260,6 +5234,7 @@ function setupHandlers() {
     if (event.key !== "Enter" && event.key !== " ") return;
     const target = event.target;
     if (!(target instanceof Element)) return;
+    if (target.closest("button, input, select, textarea, a")) return;
     const row = target.closest("tr");
     if (!row) return;
     const actionId = String(row.dataset.actionId || "").trim();
@@ -4267,28 +5242,6 @@ function setupHandlers() {
     event.preventDefault();
     state.selectedActionId = actionId;
     renderActionManager();
-  });
-
-  els.actionManagerStartBtn.addEventListener("click", () => {
-    const actionId = String(state.selectedActionId || els.actionManagerSelect.value || "").trim();
-    if (!actionId) return;
-    void runAction(actionId, "start");
-  });
-
-  els.actionManagerStopBtn.addEventListener("click", () => {
-    const actionId = String(state.selectedActionId || els.actionManagerSelect.value || "").trim();
-    if (!actionId) return;
-    void runAction(actionId, "stop");
-  });
-
-  els.actionManagerAbortBtn.addEventListener("click", () => {
-    const actionId = String(state.selectedActionId || els.actionManagerSelect.value || "").trim();
-    if (!actionId) return;
-    void runAction(actionId, "abort");
-  });
-
-  els.actionManagerLfosToggleBtn.addEventListener("click", () => {
-    void setLfosEnabled(!areLfosEnabled());
   });
 
   els.actionManagerCreateBtn.addEventListener("click", () => {
@@ -4319,12 +5272,12 @@ function setupHandlers() {
     void actionGroupManagerDelete();
   });
 
-  els.actionGroupManagerTriggerBtn.addEventListener("click", () => {
-    void actionGroupManagerTrigger();
-  });
-
   els.actionGroupEntryAddBtn.addEventListener("click", () => {
     void actionGroupEntryAdd();
+  });
+
+  els.actionGroupEntryTriggerBtn.addEventListener("click", () => {
+    void actionGroupEntryTrigger();
   });
 
   els.actionGroupEntryClearBtn.addEventListener("click", () => {
@@ -4373,12 +5326,7 @@ function setupHandlers() {
     const nameValue = String(els.actionGroupManagerNameInput.value || "").trim();
     if (!nameValue) return;
 
-    const selectedActionGroup = selectedActionGroupOrNull();
     const currentId = String(els.actionGroupManagerIdInput.value || "").trim();
-    if (selectedActionGroup && currentId === String(selectedActionGroup.groupId || "").trim()) {
-      return;
-    }
-
     const suggestedId = String(state.draftSuggestedIds.actionGroup || "").trim();
     if (currentId && suggestedId && currentId !== suggestedId) {
       return;
@@ -4390,7 +5338,7 @@ function setupHandlers() {
       return;
     }
 
-    setInputValueIfIdle(els.actionGroupManagerIdInput, derivedGroupId);
+    els.actionGroupManagerIdInput.value = derivedGroupId;
     state.draftSuggestedIds.actionGroup = derivedGroupId;
 
     const currentTrigger = String(els.actionGroupManagerOscTriggerInput.value || "").trim();
@@ -4440,13 +5388,30 @@ function setupHandlers() {
     void actionManagerAddLfo();
   });
 
-  els.actionManagerLfoUpdateBtn.addEventListener("click", () => {
-    void actionManagerUpdateLfo();
+  els.actionManagerLfoAddTargetBtn.addEventListener("click", () => {
+    void actionManagerAddLfoTarget();
   });
 
   els.actionManagerLfoClearBtn.addEventListener("click", () => {
     void actionManagerClearLfos();
   });
+
+  const scheduleSelectedLfoAutoApply = () => {
+    scheduleActionLfoAutoApply();
+  };
+  els.actionManagerLfoWaveInput.addEventListener("change", scheduleSelectedLfoAutoApply);
+  els.actionManagerLfoRateInput.addEventListener("input", scheduleSelectedLfoAutoApply);
+  els.actionManagerLfoDepthInput.addEventListener("input", scheduleSelectedLfoAutoApply);
+  els.actionManagerLfoOffsetInput.addEventListener("input", scheduleSelectedLfoAutoApply);
+  els.actionManagerLfoEnabledInput.addEventListener("change", scheduleSelectedLfoAutoApply);
+
+  if (els.actionManagerLfoPolarityBtn) {
+    els.actionManagerLfoPolarityBtn.addEventListener("click", () => {
+      const current = normalizeLfoPolarity(els.actionManagerLfoPolarityBtn.dataset.polarity);
+      updateLfoPolarityButton(current === "unipolar" ? "bipolar" : "unipolar");
+      scheduleSelectedLfoAutoApply();
+    });
+  }
 
   els.enableGroupsToggle.addEventListener("change", () => {
     void setGroupsEnabled(els.enableGroupsToggle.checked);
@@ -4554,8 +5519,21 @@ function setupHandlers() {
     if (!row) return;
     const groupId = String(row.dataset.groupId || "").trim();
     if (!groupId) return;
+    const enabledToggle = target.closest("button[data-group-toggle-enabled]");
+    if (enabledToggle instanceof HTMLButtonElement) {
+      const enabledNow = String(enabledToggle.dataset.groupToggleEnabled || "").toLowerCase() !== "false";
+      state.selectedGroupId = groupId;
+      renderGroupManager();
+      void setGroupEnabled(groupId, !enabledNow);
+      return;
+    }
     if (target.closest(".group-manager-delete-btn")) {
       void groupManagerDeleteById(groupId);
+      return;
+    }
+    if (target.closest(".group-manager-edit-btn")) {
+      state.selectedGroupId = groupId;
+      renderGroupManager();
       return;
     }
     state.selectedGroupId = groupId;
@@ -4563,9 +5541,10 @@ function setupHandlers() {
   });
 
   els.groupManagerRows.addEventListener("keydown", (event) => {
-    if (event.key !== "Enter") return;
+    if (event.key !== "Enter" && event.key !== " ") return;
     const target = event.target;
     if (!(target instanceof Element)) return;
+    if (target.closest("button, input, select, textarea, a")) return;
     const row = target.closest("tr");
     if (!row) return;
     const groupId = String(row.dataset.groupId || "").trim();
@@ -4884,6 +5863,7 @@ function setupEventStream() {
 
 async function start() {
   setUiStatus("Connecting...");
+  updateLfoPolarityButton("bipolar");
   syncCameraInputs();
   setPage("panner");
   setupHandlers();

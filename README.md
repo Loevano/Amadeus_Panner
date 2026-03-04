@@ -36,13 +36,13 @@ HOST=0.0.0.0 HTTP_PORT=8787 OSC_OUT_HOST=10.0.0.50 OSC_OUT_PORT=9000 OSC_IN_PORT
 
 ## What Is Implemented
 - Web UI with:
-  - View tabs for `Panner`, `Action Manager`, `Modulation Manager`, `Object Manager`, and `Group Manager`.
+  - View tabs for `Panner`, `Action Manager`, `Modulation Manager`, `Object Manager`, and `Object Group Manager`.
   - Interactive perspective 3D panner with camera zoom, Option-drag orbit, drag marquee multi-select, Cmd/Ctrl-click additive selection, and right-click quick mapping menu.
   - Object inspector (x/y/z/size/gain/mute/algorithm) with simultaneous apply to selected objects.
   - Object Manager with add/rename/type/color/remove/clear, list-based selection, and per-object `Exclude From All`.
-  - Group Manager with list + editor workflow (name/color/linked params/members), inline save/delete, and `Create Group`.
+  - Object Group Manager with list + editor workflow (name/color/linked params/members), inline save/delete, and `Create Group`.
   - Action Manager with list + setup workflow, create/save/save-as/delete, enable/disable, start/stop/abort, on-end chaining, and Action Groups.
-  - Modulation Manager with per-action LFO mapping (ID/object/param/wave/rate/depth/offset/phase/map-phase/enabled), global LFO toggle, and LFO debug table.
+  - Modulation Manager with per-action LFO editor (ID/wave/rate/depth/offset/polarity/enabled), panner target mapping, global LFO toggle, and LFO debug table.
   - Show Control with show load/save/save-as/new and scene load/save/save-as.
   - Live debug event log (OSC in/out + system/runtime events).
 - Control server with:

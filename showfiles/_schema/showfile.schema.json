@@ -61,6 +61,24 @@
         "additionalProperties": false
       }
     },
+    "global_lfos": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["lfo_id", "wave", "rate_hz", "depth", "offset"],
+        "properties": {
+          "lfo_id": { "type": "string" },
+          "enabled": { "type": "boolean", "default": true },
+          "wave": { "type": "string", "enum": ["sine", "triangle", "square", "saw"] },
+          "rate_hz": { "type": "number", "minimum": 0 },
+          "depth": { "type": "number" },
+          "offset": { "type": "number" },
+          "phase_deg": { "type": "number" },
+          "polarity": { "type": "string", "enum": ["bipolar", "unipolar"] }
+        },
+        "additionalProperties": false
+      }
+    },
     "action_groups": {
       "type": "array",
       "items": {

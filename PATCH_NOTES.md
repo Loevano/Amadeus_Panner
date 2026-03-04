@@ -2,12 +2,42 @@
 
 Release-facing summary for operators and production notes.
 
+## v0.1.12 - 2026-03-04 - Action Group Flow And LFO Editor Streamlining
+
+### Added
+- Action Group editor now includes:
+  - selector with adjacent read-only auto-derived group ID
+  - auto-derived entry name preview while authoring group entries
+  - `Trigger Entry` button to test a single entry without triggering the full group
+- Dedicated Action Group list block below the editor with click-to-select rows and inline `Play`/`Stop` controls.
+
+### Changed
+- Action Manager removed the legacy top action select + transport row (`Start`, `Stop`, `Abort`); transport is now handled inline in list contexts.
+- Action enabled-state cell now behaves as a direct toggle.
+- Modulation Manager LFO editor block is now more compact and LFO Debug is placed at the bottom of the page.
+- LFO Debug rows now represent the targets for the currently selected LFO grouping.
+- Selected-LFO form changes now auto-apply to runtime working state; the explicit `Update LFO` button was removed.
+
+### Fixed
+- Aligned LFO editing UX with show save semantics: edits apply immediately in session, but disk persistence still requires `Save Show` or `Save Show As`.
+
+### Known Issues
+- JavaScript syntax checks still cannot be run in this environment because `node` is unavailable.
+
+## v0.1.11 - 2026-03-03 - Cleaner Object ID Iteration
+
+### Changed
+- Object auto-ID generation now keeps IDs in a cleaner numeric progression when previous IDs contain nested numeric suffixes.
+
+### Fixed
+- Prevented repeated object creation from drifting into chained IDs like `obj-2-2-3`; new IDs now continue in a readable sequence.
+
 ## v0.1.10 - 2026-03-03 - Name-Derived IDs For Faster Programming
 
 ### Added
 - New actions, action groups, and object groups now auto-derive IDs from the entered name.
 - ID derivation uses short lowercase slugs and appends simple numeric suffixes (`-2`, `-3`, ...) only when needed.
-- Action `Save As` and Group Manager `Create Group` now suggest IDs from the current name context.
+- Action `Save As` and Object Group Manager `Create Group` now suggest IDs from the current name context.
 
 ### Changed
 - Draft forms now keep ID and name in sync for new entries, while preserving manual ID edits.
@@ -15,13 +45,13 @@ Release-facing summary for operators and production notes.
 ### Fixed
 - Action group draft ID generation now checks uniqueness against existing action groups (not action IDs).
 
-## v0.1.9 - 2026-03-03 - Group Manager Create Shortcut
+## v0.1.9 - 2026-03-03 - Object Group Manager Create Shortcut
 
 ### Added
-- `Create Group` button in the Group Manager edit toolbar.
+- `Create Group` button in the Object Group Manager edit toolbar.
 
 ### Changed
-- Group creation from Group Manager now supports:
+- Group creation from Object Group Manager now supports:
   - member IDs from the editor member checklist (when editing a group)
   - fallback to current object selection when no editor members are available
   - prompted group ID entry with existing ID normalization/uniqueness logic.

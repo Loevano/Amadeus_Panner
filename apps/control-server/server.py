@@ -50,6 +50,7 @@ LINKABLE_GROUP_PARAMS = {"x", "y", "z", "size", "gain", "mute", "algorithm", "ty
 RELATIVE_GROUP_PARAMS = {"x", "y", "z"}
 LFO_PARAMS = {"x", "y", "z", "size", "gain"}
 LFO_WAVES = {"sine", "triangle", "square", "saw"}
+LFO_POLARITIES = {"bipolar", "unipolar"}
 ACTION_TICK_SEC = 1.0 / 60.0
 ACTION_GROUP_ACTION_COMMANDS = {"start", "stop", "abort"}
 
@@ -99,6 +100,20 @@ def normalize_lfo_id(value: Any) -> str:
     if not OBJECT_ID_PATTERN.fullmatch(lfo_id):
         raise ValueError("lfoId must use only letters, numbers, dot, underscore, dash (max 64 chars)")
     return lfo_id
+
+
+def normalize_lfo_polarity(value: Any) -> str:
+    polarity = str(value or "bipolar").strip().lower()
+    if polarity not in LFO_POLARITIES:
+        raise ValueError(f"LFO polarity must be one of: {', '.join(sorted(LFO_POLARITIES))}")
+    return polarity
+
+
+def coerce_lfo_polarity(value: Any) -> str:
+    polarity = str(value or "").strip().lower()
+    if polarity in LFO_POLARITIES:
+        return polarity
+    return "bipolar"
 
 
 def normalize_action_group_id(value: Any) -> str:
@@ -231,12 +246,7 @@ def normalize_object(input_obj: Dict[str, Any], fallback_id: str) -> Dict[str, A
     }
 
 
-def normalize_action_lfo(raw_lfo: Dict[str, Any], fallback_lfo_id: str = "lfo") -> Dict[str, Any]:
-    object_id = normalize_object_id(raw_lfo.get("object_id") if "object_id" in raw_lfo else raw_lfo.get("objectId"))
-    parameter = str(raw_lfo.get("parameter") or "").strip()
-    if parameter not in LFO_PARAMS:
-        raise ValueError(f"LFO parameter must be one of: {', '.join(sorted(LFO_PARAMS))}")
-
+def normalize_lfo_definition(raw_lfo: Dict[str, Any], fallback_lfo_id: str = "lfo") -> Dict[str, Any]:
     wave = str(raw_lfo.get("wave") or "sine").strip().lower()
     if wave not in LFO_WAVES:
         raise ValueError(f"LFO wave must be one of: {', '.join(sorted(LFO_WAVES))}")
@@ -245,6 +255,36 @@ def normalize_action_lfo(raw_lfo: Dict[str, Any], fallback_lfo_id: str = "lfo") 
     depth = to_float(raw_lfo.get("depth"), 0.0)
     offset = to_float(raw_lfo.get("offset"), 0.0)
     phase_deg = to_float(raw_lfo.get("phase_deg") if "phase_deg" in raw_lfo else raw_lfo.get("phaseDeg"), 0.0)
+    polarity = normalize_lfo_polarity(raw_lfo.get("polarity"))
+    raw_lfo_id = raw_lfo.get("lfo_id") if "lfo_id" in raw_lfo else raw_lfo.get("lfoId")
+    lfo_id = normalize_lfo_id(raw_lfo_id or fallback_lfo_id)
+
+    return {
+        "lfoId": lfo_id,
+        "enabled": bool(raw_lfo.get("enabled", True)),
+        "wave": wave,
+        "rateHz": rate_hz,
+        "depth": depth,
+        "offset": offset,
+        "phaseDeg": phase_deg,
+        "polarity": polarity,
+    }
+
+
+def normalize_action_lfo_mapping(raw_lfo: Dict[str, Any], fallback_lfo_id: str = "lfo") -> Dict[str, Any]:
+    raw_object_id = raw_lfo.get("object_id") if "object_id" in raw_lfo else raw_lfo.get("objectId")
+    object_id_text = str(raw_object_id or "").strip()
+    parameter = str(raw_lfo.get("parameter") or "").strip()
+    if object_id_text and parameter:
+        object_id = normalize_object_id(object_id_text)
+        if parameter not in LFO_PARAMS:
+            raise ValueError(f"LFO parameter must be one of: {', '.join(sorted(LFO_PARAMS))}")
+    elif not object_id_text and not parameter:
+        object_id = ""
+        parameter = ""
+    else:
+        raise ValueError("LFO objectId and parameter must be set together")
+
     mapping_phase_deg = to_float(
         raw_lfo.get("mapping_phase_deg") if "mapping_phase_deg" in raw_lfo else raw_lfo.get("mappingPhaseDeg"),
         0.0,
@@ -254,16 +294,106 @@ def normalize_action_lfo(raw_lfo: Dict[str, Any], fallback_lfo_id: str = "lfo") 
 
     return {
         "lfoId": lfo_id,
-        "enabled": bool(raw_lfo.get("enabled", True)),
         "objectId": object_id,
         "parameter": parameter,
-        "wave": wave,
-        "rateHz": rate_hz,
-        "depth": depth,
-        "offset": offset,
-        "phaseDeg": phase_deg,
         "mappingPhaseDeg": mapping_phase_deg,
     }
+
+
+def merge_lfo_definition_into_mapping(mapping: Dict[str, Any], definition: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "lfoId": normalize_lfo_id(mapping.get("lfoId") or definition.get("lfoId") or "lfo"),
+        "enabled": bool(definition.get("enabled", True)),
+        "objectId": str(mapping.get("objectId") or ""),
+        "parameter": str(mapping.get("parameter") or ""),
+        "wave": str(definition.get("wave") or "sine"),
+        "rateHz": max(0.0, to_float(definition.get("rateHz"), 0.0)),
+        "depth": to_float(definition.get("depth"), 0.0),
+        "offset": to_float(definition.get("offset"), 0.0),
+        "phaseDeg": to_float(definition.get("phaseDeg"), 0.0),
+        "mappingPhaseDeg": to_float(mapping.get("mappingPhaseDeg"), 0.0),
+        "polarity": coerce_lfo_polarity(definition.get("polarity")),
+    }
+
+
+def normalize_action_lfo(raw_lfo: Dict[str, Any], fallback_lfo_id: str = "lfo") -> Dict[str, Any]:
+    definition = normalize_lfo_definition(raw_lfo, fallback_lfo_id)
+    mapping = normalize_action_lfo_mapping(raw_lfo, definition["lfoId"])
+    return merge_lfo_definition_into_mapping(mapping, definition)
+
+
+def normalize_global_lfos(raw_lfos: Any) -> Dict[str, Dict[str, Any]]:
+    if isinstance(raw_lfos, dict):
+        candidate_values = list(raw_lfos.values())
+    elif isinstance(raw_lfos, list):
+        candidate_values = raw_lfos
+    else:
+        candidate_values = []
+
+    normalized: Dict[str, Dict[str, Any]] = {}
+    generated_index = 1
+    for item in candidate_values:
+        if not isinstance(item, dict):
+            continue
+        raw_lfo_id = str(item.get("lfo_id") if "lfo_id" in item else item.get("lfoId") or "").strip()
+        fallback_lfo_id = raw_lfo_id
+        if not fallback_lfo_id:
+            fallback_lfo_id = f"lfo-{generated_index}"
+            generated_index += 1
+        definition = normalize_lfo_definition(item, fallback_lfo_id)
+        normalized[definition["lfoId"]] = definition
+    return normalized
+
+
+def collect_global_lfos_from_actions(actions_by_id: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    collected: Dict[str, Dict[str, Any]] = {}
+    for action in actions_by_id.values():
+        lfos = action.get("lfos")
+        if not isinstance(lfos, list):
+            continue
+        for lfo in lfos:
+            if not isinstance(lfo, dict):
+                continue
+            raw_lfo_id = str(lfo.get("lfoId") or lfo.get("lfo_id") or "").strip()
+            if not raw_lfo_id:
+                continue
+            definition = normalize_lfo_definition(lfo, raw_lfo_id)
+            collected[definition["lfoId"]] = definition
+    return collected
+
+
+def sync_action_lfo_snapshots_with_global(
+    actions_by_id: Dict[str, Dict[str, Any]],
+    global_lfos_by_id: Dict[str, Dict[str, Any]],
+) -> Dict[str, Dict[str, Any]]:
+    next_global = dict(global_lfos_by_id) if isinstance(global_lfos_by_id, dict) else {}
+    if not next_global:
+        next_global = collect_global_lfos_from_actions(actions_by_id)
+
+    for action_id, action in actions_by_id.items():
+        action_lfos = action.get("lfos")
+        if not isinstance(action_lfos, list):
+            action["lfos"] = []
+            continue
+
+        next_lfos: List[Dict[str, Any]] = []
+        for index, raw_lfo in enumerate(action_lfos):
+            if not isinstance(raw_lfo, dict):
+                continue
+            fallback_lfo_id = str(raw_lfo.get("lfoId") or raw_lfo.get("lfo_id") or "").strip() or f"lfo-{index + 1}"
+            normalized_mapping = normalize_action_lfo_mapping(raw_lfo, fallback_lfo_id)
+            lfo_id = normalized_mapping["lfoId"]
+            definition = next_global.get(lfo_id)
+            if not isinstance(definition, dict):
+                definition = normalize_lfo_definition(raw_lfo, lfo_id)
+                next_global[lfo_id] = definition
+            else:
+                definition = normalize_lfo_definition(definition, lfo_id)
+                next_global[lfo_id] = definition
+            next_lfos.append(merge_lfo_definition_into_mapping(normalized_mapping, definition))
+        action["lfos"] = next_lfos
+        actions_by_id[action_id] = action
+    return next_global
 
 
 def normalize_action(raw_action: Dict[str, Any], fallback_id: str) -> Dict[str, Any]:
@@ -327,17 +457,35 @@ def normalize_action(raw_action: Dict[str, Any], fallback_id: str) -> Dict[str, 
 
 
 def lfo_to_raw(lfo: Dict[str, Any]) -> Dict[str, Any]:
-    return {
+    object_id = str(lfo.get("objectId") or "").strip()
+    parameter = str(lfo.get("parameter") or "").strip()
+    raw = {
         "lfo_id": normalize_lfo_id(lfo.get("lfoId") or "lfo-1"),
         "enabled": bool(lfo.get("enabled", True)),
-        "object_id": normalize_object_id(lfo.get("objectId")),
-        "parameter": str(lfo.get("parameter") or ""),
         "wave": str(lfo.get("wave") or "sine"),
         "rate_hz": to_float(lfo.get("rateHz"), 0.0),
         "depth": to_float(lfo.get("depth"), 0.0),
         "offset": to_float(lfo.get("offset"), 0.0),
         "phase_deg": to_float(lfo.get("phaseDeg"), 0.0),
         "mapping_phase_deg": to_float(lfo.get("mappingPhaseDeg"), 0.0),
+        "polarity": coerce_lfo_polarity(lfo.get("polarity")),
+    }
+    if object_id and parameter in LFO_PARAMS:
+        raw["object_id"] = normalize_object_id(object_id)
+        raw["parameter"] = parameter
+    return raw
+
+
+def lfo_definition_to_raw(lfo: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "lfo_id": normalize_lfo_id(lfo.get("lfoId") or "lfo-1"),
+        "enabled": bool(lfo.get("enabled", True)),
+        "wave": str(lfo.get("wave") or "sine"),
+        "rate_hz": to_float(lfo.get("rateHz"), 0.0),
+        "depth": to_float(lfo.get("depth"), 0.0),
+        "offset": to_float(lfo.get("offset"), 0.0),
+        "phase_deg": to_float(lfo.get("phaseDeg"), 0.0),
+        "polarity": coerce_lfo_polarity(lfo.get("polarity")),
     }
 
 
@@ -630,6 +778,9 @@ class Runtime:
         with self.lock:
             show_payload = None
             if self.show:
+                global_lfos_by_id = self.show.get("globalLfosById")
+                if not isinstance(global_lfos_by_id, dict):
+                    global_lfos_by_id = {}
                 show_payload = {
                     "path": self.show["path"],
                     "showId": self.show["showId"],
@@ -640,6 +791,8 @@ class Runtime:
                     "sceneIds": sorted(self.show["scenesById"].keys()),
                     "actionIds": sorted(self.show["actionsById"].keys()),
                     "actionsById": json.loads(json.dumps(self.show["actionsById"])),
+                    "globalLfoIds": sorted(global_lfos_by_id.keys()),
+                    "globalLfosById": json.loads(json.dumps(global_lfos_by_id)),
                     "actionGroupIds": sorted(self.show["actionGroupsById"].keys()),
                     "actionGroupsById": json.loads(json.dumps(self.show["actionGroupsById"])),
                 }
@@ -849,6 +1002,7 @@ class Runtime:
             "default_scene_id": scene_id,
             "scenes": [{"scene_id": scene_id, "file": scene_file}],
             "actions": [],
+            "global_lfos": [],
             "action_groups": [],
             "groups_enabled": True,
             "object_groups": [],
@@ -911,6 +1065,9 @@ class Runtime:
         input_actions = show_snapshot.get("actionsById")
         if not isinstance(input_actions, dict):
             input_actions = {}
+        input_global_lfos = show_snapshot.get("globalLfosById")
+        if not isinstance(input_global_lfos, dict):
+            input_global_lfos = show_snapshot.get("globalLfos")
         input_action_groups = show_snapshot.get("actionGroupsById")
         if not isinstance(input_action_groups, dict):
             input_action_groups = {}
@@ -948,6 +1105,8 @@ class Runtime:
                 continue
             normalized = normalize_action(raw_action_input, action_id)
             normalized_actions[normalized["actionId"]] = normalized
+        normalized_global_lfos = normalize_global_lfos(input_global_lfos)
+        normalized_global_lfos = sync_action_lfo_snapshots_with_global(normalized_actions, normalized_global_lfos)
 
         self._sanitize_action_links(normalized_actions)
 
@@ -1055,6 +1214,7 @@ class Runtime:
             updated_action_files[action_id] = action_file
 
             normalized_actions[action_id] = normalize_action(action_payload, action_id)
+        normalized_global_lfos = sync_action_lfo_snapshots_with_global(normalized_actions, normalized_global_lfos)
 
         show_payload = {
             "show_id": show_id,
@@ -1065,6 +1225,10 @@ class Runtime:
             "default_scene_id": default_scene_id,
             "scenes": scene_refs,
             "actions": action_refs,
+            "global_lfos": [
+                lfo_definition_to_raw(normalized_global_lfos[lfo_id])
+                for lfo_id in sorted(normalized_global_lfos.keys())
+            ],
             "action_groups": [
                 action_group_to_raw(normalized_action_groups[group_id])
                 for group_id in sorted(normalized_action_groups.keys())
@@ -1090,6 +1254,7 @@ class Runtime:
             self.show["defaultSceneId"] = default_scene_id
             self.show["scenesById"] = normalized_scenes
             self.show["actionsById"] = normalized_actions
+            self.show["globalLfosById"] = normalized_global_lfos
             self.show["actionGroupsById"] = normalized_action_groups
             self.show["sceneFiles"] = updated_scene_files
             self.show["actionFiles"] = updated_action_files
@@ -1107,6 +1272,7 @@ class Runtime:
                 "setAsCurrent": bool(set_as_current),
                 "scenes": len(scene_refs),
                 "actions": len(action_refs),
+                "globalLfos": len(normalized_global_lfos),
                 "actionGroups": len(normalized_action_groups),
                 "objectGroups": len(normalized_object_groups),
             },
@@ -1145,6 +1311,11 @@ class Runtime:
         actions_by_id: Dict[str, Dict[str, Any]] = {}
         for action_id, raw_action in bundle.actions_by_id.items():
             actions_by_id[action_id] = normalize_action(raw_action, action_id)
+        raw_global_lfos = raw_show.get("global_lfos")
+        if raw_global_lfos is None:
+            raw_global_lfos = raw_show.get("globalLfos")
+        global_lfos_by_id = normalize_global_lfos(raw_global_lfos)
+        global_lfos_by_id = sync_action_lfo_snapshots_with_global(actions_by_id, global_lfos_by_id)
         self._sanitize_action_links(actions_by_id)
 
         action_groups_by_id: Dict[str, Dict[str, Any]] = {}
@@ -1203,6 +1374,7 @@ class Runtime:
                 "defaultSceneId": str(raw_show.get("default_scene_id", "")),
                 "scenesById": scenes_by_id,
                 "actionsById": actions_by_id,
+                "globalLfosById": global_lfos_by_id,
                 "actionGroupsById": action_groups_by_id,
                 "sceneFiles": scene_files,
                 "actionFiles": action_files,
@@ -1221,6 +1393,7 @@ class Runtime:
                 "path": self.show["path"],
                 "scenes": len(scenes_by_id),
                 "actions": len(actions_by_id),
+                "globalLfos": len(global_lfos_by_id),
                 "actionGroups": len(action_groups_by_id),
                 "objectGroups": len(object_groups_by_id),
                 "groupsEnabled": groups_enabled,
@@ -1382,6 +1555,7 @@ class Runtime:
         normalized_lfo_id = normalize_lfo_id(lfo_id)
         next_enabled = bool(enabled)
         changed_count = 0
+        changed_count_in_action = 0
 
         with self.lock:
             if not self.show:
@@ -1396,52 +1570,72 @@ class Runtime:
             lfos = action.get("lfos")
             if not isinstance(lfos, list):
                 lfos = []
-
-            next_lfos: List[Dict[str, Any]] = []
-            for lfo in lfos:
-                if not isinstance(lfo, dict):
-                    continue
-                lfo_copy = dict(lfo)
-                current_lfo_id = str(lfo_copy.get("lfoId") or lfo_copy.get("lfo_id") or "").strip()
-                if current_lfo_id == normalized_lfo_id:
-                    lfo_copy["enabled"] = next_enabled
-                    changed_count += 1
-                next_lfos.append(lfo_copy)
-
-            if changed_count <= 0:
+            changed_count_in_action = sum(
+                1
+                for lfo in lfos
+                if isinstance(lfo, dict) and str(lfo.get("lfoId") or lfo.get("lfo_id") or "").strip() == normalized_lfo_id
+            )
+            if changed_count_in_action <= 0:
                 raise ValueError(f"LFO not found in action: {normalized_action_id}.{normalized_lfo_id}")
 
-            updated_action = dict(action)
-            updated_action["lfos"] = next_lfos
-            next_actions_by_id = dict(actions_by_id)
-            next_actions_by_id[normalized_action_id] = updated_action
-            self.show["actionsById"] = next_actions_by_id
+            global_lfos_by_id = self.show.get("globalLfosById")
+            if not isinstance(global_lfos_by_id, dict):
+                global_lfos_by_id = {}
+            next_global_lfos_by_id = dict(global_lfos_by_id)
 
-            running = self.running_actions.get(normalized_action_id)
-            if isinstance(running, dict):
+            existing_definition = next_global_lfos_by_id.get(normalized_lfo_id)
+            if not isinstance(existing_definition, dict):
+                existing_definition = None
+                for lfo in lfos:
+                    if not isinstance(lfo, dict):
+                        continue
+                    current_lfo_id = str(lfo.get("lfoId") or lfo.get("lfo_id") or "").strip()
+                    if current_lfo_id != normalized_lfo_id:
+                        continue
+                    existing_definition = normalize_lfo_definition(lfo, normalized_lfo_id)
+                    break
+            if not isinstance(existing_definition, dict):
+                raise ValueError(f"LFO definition not found: {normalized_lfo_id}")
+
+            next_global_lfos_by_id[normalized_lfo_id] = normalize_lfo_definition(
+                {
+                    **existing_definition,
+                    "lfoId": normalized_lfo_id,
+                    "enabled": next_enabled,
+                },
+                normalized_lfo_id,
+            )
+
+            synced_global_lfos_by_id = sync_action_lfo_snapshots_with_global(actions_by_id, next_global_lfos_by_id)
+            self.show["actionsById"] = actions_by_id
+            self.show["globalLfosById"] = synced_global_lfos_by_id
+            for candidate_action in actions_by_id.values():
+                action_lfos = candidate_action.get("lfos")
+                if not isinstance(action_lfos, list):
+                    continue
+                for lfo in action_lfos:
+                    if not isinstance(lfo, dict):
+                        continue
+                    if str(lfo.get("lfoId") or lfo.get("lfo_id") or "").strip() == normalized_lfo_id:
+                        changed_count += 1
+
+            for running_action_id, running in self.running_actions.items():
+                if not isinstance(running, dict):
+                    continue
                 running_action = running.get("action")
-                if isinstance(running_action, dict):
-                    running_lfos = running_action.get("lfos")
-                    if not isinstance(running_lfos, list):
-                        running_lfos = []
-                    next_running_lfos: List[Dict[str, Any]] = []
-                    for lfo in running_lfos:
-                        if not isinstance(lfo, dict):
-                            continue
-                        lfo_copy = dict(lfo)
-                        current_lfo_id = str(lfo_copy.get("lfoId") or lfo_copy.get("lfo_id") or "").strip()
-                        if current_lfo_id == normalized_lfo_id:
-                            lfo_copy["enabled"] = next_enabled
-                        next_running_lfos.append(lfo_copy)
-                    running_action["lfos"] = next_running_lfos
-                    running["action"] = running_action
-                    self.running_actions[normalized_action_id] = running
+                if not isinstance(running_action, dict):
+                    continue
+                snapshot_map = {running_action_id: dict(running_action)}
+                sync_action_lfo_snapshots_with_global(snapshot_map, synced_global_lfos_by_id)
+                running["action"] = snapshot_map[running_action_id]
+                self.running_actions[running_action_id] = running
 
         payload = {
             "actionId": normalized_action_id,
             "lfoId": normalized_lfo_id,
             "enabled": next_enabled,
             "changedMappings": changed_count,
+            "changedMappingsInAction": changed_count_in_action,
             "source": source,
         }
         self.emit_event("action_lfo", payload)
@@ -1862,8 +2056,14 @@ class Runtime:
             created = normalize_action({**patch_input, "actionId": normalized_action_id}, normalized_action_id)
             actions_by_id = dict(self.show["actionsById"])
             actions_by_id[normalized_action_id] = created
+            global_lfos_by_id = self.show.get("globalLfosById")
+            if not isinstance(global_lfos_by_id, dict):
+                global_lfos_by_id = {}
+            global_lfos_by_id = sync_action_lfo_snapshots_with_global(actions_by_id, global_lfos_by_id)
+            created = actions_by_id.get(normalized_action_id, created)
             self._sanitize_action_links(actions_by_id)
             self.show["actionsById"] = actions_by_id
+            self.show["globalLfosById"] = global_lfos_by_id
             action_groups_by_id = self.show.get("actionGroupsById")
             if isinstance(action_groups_by_id, dict):
                 next_groups_by_id = dict(action_groups_by_id)
@@ -1904,8 +2104,14 @@ class Runtime:
 
             actions_by_id = dict(self.show["actionsById"])
             actions_by_id[normalized_action_id] = updated
+            global_lfos_by_id = self.show.get("globalLfosById")
+            if not isinstance(global_lfos_by_id, dict):
+                global_lfos_by_id = {}
+            global_lfos_by_id = sync_action_lfo_snapshots_with_global(actions_by_id, global_lfos_by_id)
+            updated = actions_by_id.get(normalized_action_id, updated)
             self._sanitize_action_links(actions_by_id)
             self.show["actionsById"] = actions_by_id
+            self.show["globalLfosById"] = global_lfos_by_id
             action_groups_by_id = self.show.get("actionGroupsById")
             if isinstance(action_groups_by_id, dict):
                 next_groups_by_id = dict(action_groups_by_id)
@@ -1955,8 +2161,14 @@ class Runtime:
             copied = normalize_action(merged, normalized_new_action_id)
             actions_by_id = dict(self.show["actionsById"])
             actions_by_id[normalized_new_action_id] = copied
+            global_lfos_by_id = self.show.get("globalLfosById")
+            if not isinstance(global_lfos_by_id, dict):
+                global_lfos_by_id = {}
+            global_lfos_by_id = sync_action_lfo_snapshots_with_global(actions_by_id, global_lfos_by_id)
+            copied = actions_by_id.get(normalized_new_action_id, copied)
             self._sanitize_action_links(actions_by_id)
             self.show["actionsById"] = actions_by_id
+            self.show["globalLfosById"] = global_lfos_by_id
             action_groups_by_id = self.show.get("actionGroupsById")
             if isinstance(action_groups_by_id, dict):
                 next_groups_by_id = dict(action_groups_by_id)
@@ -2276,9 +2488,12 @@ class Runtime:
             offset = to_float(lfo.get("offset"), 0.0)
             phase_deg = to_float(lfo.get("phaseDeg"), 0.0)
             mapping_phase_deg = to_float(lfo.get("mappingPhaseDeg"), 0.0)
+            polarity = coerce_lfo_polarity(lfo.get("polarity"))
 
             phase_cycles = (elapsed_ms / 1000.0) * rate_hz + ((phase_deg + mapping_phase_deg) / 360.0)
             sample = self._lfo_sample(wave, phase_cycles)
+            if polarity == "unipolar":
+                sample = (sample + 1.0) * 0.5
             total += offset + (depth * sample)
             matched = True
 
@@ -2399,9 +2614,12 @@ class Runtime:
                 offset = to_float(lfo.get("offset"), 0.0)
                 phase_deg = to_float(lfo.get("phaseDeg"), 0.0)
                 mapping_phase_deg = to_float(lfo.get("mappingPhaseDeg"), 0.0)
+                polarity = coerce_lfo_polarity(lfo.get("polarity"))
 
                 phase_cycles = (elapsed_ms / 1000.0) * rate_hz + ((phase_deg + mapping_phase_deg) / 360.0)
                 sample = self._lfo_sample(wave, phase_cycles)
+                if polarity == "unipolar":
+                    sample = (sample + 1.0) * 0.5
                 contribution = offset + (depth * sample)
                 accumulator["totalMod"] = to_float(accumulator.get("totalMod"), 0.0) + contribution
 
@@ -2421,6 +2639,7 @@ class Runtime:
                         "offset": offset,
                         "phaseDeg": phase_deg,
                         "mappingPhaseDeg": mapping_phase_deg,
+                        "polarity": polarity,
                     }
                 )
 
@@ -2938,6 +3157,15 @@ class Handler(BaseHTTPRequestHandler):
                 enabled = bool(body.get("enabled", True))
                 RUNTIME.set_lfos_enabled(enabled, source="api")
                 self._send_json(HTTPStatus.OK, {"ok": True, "enabled": enabled, "status": RUNTIME.status()})
+                return
+
+            if path_name == "/api/action-lfo/enabled":
+                body = self._read_json_body()
+                action_id = normalize_action_id(body.get("actionId") or body.get("action_id"))
+                lfo_id = normalize_lfo_id(body.get("lfoId") or body.get("lfo_id"))
+                enabled = bool(body.get("enabled", True))
+                result = RUNTIME.set_action_lfo_enabled(action_id, lfo_id, enabled, source="api")
+                self._send_json(HTTPStatus.OK, {"ok": True, **result, "status": RUNTIME.status()})
                 return
 
             if path_name.startswith("/api/groups/") and path_name.endswith("/update"):

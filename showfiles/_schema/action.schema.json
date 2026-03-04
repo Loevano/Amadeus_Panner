@@ -39,7 +39,7 @@
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["object_id", "parameter", "wave", "rate_hz", "depth", "offset", "phase_deg"],
+        "required": ["wave", "rate_hz", "depth", "offset"],
         "properties": {
           "lfo_id": { "type": "string" },
           "enabled": { "type": "boolean", "default": true },
@@ -50,7 +50,8 @@
           "depth": { "type": "number" },
           "offset": { "type": "number" },
           "phase_deg": { "type": "number" },
-          "mapping_phase_deg": { "type": "number" }
+          "mapping_phase_deg": { "type": "number" },
+          "polarity": { "type": "string", "enum": ["bipolar", "unipolar"] }
         },
         "additionalProperties": false
       }

@@ -1,12 +1,55 @@
 # Changelog
 
+## 2026-03-04 11:12 CET
+- Reworked Action Group editor flow:
+  - kept group `Create`, `Save`, and `Delete` controls
+  - moved to selector + adjacent auto-derived read-only group ID
+  - retained editable group name and OSC trigger fields
+- Reworked Action Group entries:
+  - added auto-derived entry name preview from the entry payload
+  - added `Trigger Entry` button for one-off entry testing
+  - switched entries from a select/table pattern to a direct clickable entry list
+- Added dedicated Action Group list block below the editor:
+  - click row to select a group
+  - added inline `Play` and `Stop` controls per group row
+- Removed legacy Action Manager top action select + `Start`/`Stop`/`Abort` control row.
+- Converted action enabled-state table cell (`On`) to a direct toggle interaction.
+- Updated Modulation Manager layout:
+  - compacted LFO edit controls
+  - moved `LFO Debug` block to the bottom of the page
+  - LFO debug rows now reflect targets of the selected LFO grouping
+- Removed explicit `Update LFO` action in the editor and aligned LFO edits with working-session save logic:
+  - selected-LFO field changes auto-apply to runtime session state
+  - persistence to disk still only occurs through `Save Show` or `Save Show As`
+
+## 2026-03-04 10:47 CET
+- Added inline per-row `Play` and `Stop` buttons in the Action Manager action table.
+- Added Action Manager table `Actions` column and compact row-action button styling.
+- Updated action table row click/keyboard handlers so row action buttons trigger commands cleanly without conflicting with row-selection keyboard behavior.
+
+## 2026-03-03 23:18 CET
+- Reworked Modulation Manager LFO editor to match modulator-first workflow:
+  - editor now targets one LFO ID/signature at a time (not per-target row)
+  - added editable LFO `Name`, `Wave`, `Rate`, `Depth`, `Offset`, `Polarity`, and compact `Enabled` toggle
+  - added `New LFO` flow without requiring immediate target assignment
+  - table now shows grouped targets per LFO ID and update/remove operations apply across all mappings for that LFO
+- Removed direct object/parameter authoring from the LFO editor form; target assignment remains in the panner LFO context menu.
+- Added backend/runtime support for optional unassigned LFO targets (`object_id`/`parameter` optional when both omitted).
+- Added LFO polarity support end-to-end (`bipolar`/`unipolar`) in normalization, runtime modulation math, debug payloads, UI editing, and showfile schema/template examples.
+- Updated LFO counts in Action/Modulation summaries to report grouped modulators (unique LFOs) rather than raw target rows.
+
+## 2026-03-03 22:52 CET
+- Improved object auto-ID iteration for nested legacy IDs:
+  - object add flow now normalizes `obj-N-M...` drafts to the base `obj-N` series before generating the next unique ID
+  - prevents chained suffix growth like `obj-2-2-3` and keeps progression readable (`obj-3`, `obj-4`, ...)
+
 ## 2026-03-03 22:48 CET
 - Added name-derived ID generation for create flows so new IDs default from typed names (lowercase slug + short numeric suffix when needed).
 - Applied name-derived ID behavior across:
   - Action creation (`Action Setup`)
   - Action Group creation (`Action Groups`)
   - Object Group creation (`Object Groups` in Object Manager)
-  - Group Manager `Create Group` prompt suggestion
+  - Object Group Manager `Create Group` prompt suggestion
   - Action `Save As` prompt suggestion
 - Added live draft sync from `Name` -> `ID` for new Action, Action Group, and Object Group entries while preserving manual ID overrides.
 - Fixed Action Group draft ID uniqueness source to use existing action-group IDs (not action IDs).
@@ -21,12 +64,12 @@
   - control server maintains in-memory working state with explicit save-to-disk flow
 
 ## 2026-03-03 22:37 CET
-- Added `Create Group` button directly in Group Manager editor toolbar.
-- Wired Group Manager create flow to:
+- Added `Create Group` button directly in Object Group Manager editor toolbar.
+- Wired Object Group Manager create flow to:
   - use editor member selection when editing a group
   - fall back to currently selected objects when no editor members are available
   - prompt for a new group ID with auto-normalization
-- Group Manager creation now applies current editor name/color/link settings when available.
+- Object Group Manager creation now applies current editor name/color/link settings when available.
 
 ## 2026-03-03 22:35 CET
 - Added per-action LFO identity and enable state in runtime/action serialization (`lfoId` / `lfo_id`, `enabled`) with backward-compatible auto-ID generation for existing actions.
@@ -239,10 +282,17 @@
 - Extended action schema (`showfiles/_schema/action.schema.json`) to validate `enabled`, `on_end_action_id`, and `lfos`.
 
 ## 2026-03-03 19:31 CET
-- Added Group Manager page with full group overview table, inline name/color/enabled editing, and direct delete actions wired to existing group update/delete APIs.
+- Added Object Group Manager page with full group overview table, inline name/color/enabled editing, and direct delete actions wired to existing group update/delete APIs.
 
 ## 2026-03-03 19:42 CET
-- Added Group Manager editor panel with editable Name, Color, Linked Params, and Members, plus save/delete wiring in the Group Manager tab.
+- Added Object Group Manager editor panel with editable Name, Color, Linked Params, and Members, plus save/delete wiring in the Object Group Manager tab.
 
 ## 2026-03-03 19:46 CET
-- Compacted Group Manager editor layout: moved save/delete to top row, tightened field/link density, and made members section collapsible with live member/link counts.
+- Compacted Object Group Manager editor layout: moved save/delete to top row, tightened field/link density, and made members section collapsible with live member/link counts.
+
+## 2026-03-04 10:35 CET
+- Added global LFO registry support (`show.global_lfos` / `show.globalLfosById`) and surfaced it in runtime status payload.
+- Updated action LFO handling so `lfoId` is system-wide authoritative: editing an LFO in one action now syncs shared settings across all actions that reference the same `lfoId`.
+- Added API endpoint `POST /api/action-lfo/enabled` and switched action-group entry preview execution to use it.
+- Updated Action Group LFO entry selector to use global LFO IDs rather than only the selected action’s local list.
+- Extended showfile schema/templates with optional `global_lfos` definitions.
