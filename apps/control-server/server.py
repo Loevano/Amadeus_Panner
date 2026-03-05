@@ -62,6 +62,10 @@ VIRTUAL_ALL_GROUP_ID = "all"
 LINKABLE_GROUP_PARAMS = {"x", "y", "z", "size", "gain", "mute", "algorithm", "type", "color"}
 RELATIVE_GROUP_PARAMS = {"x", "y", "z"}
 LFO_PARAMS = {"x", "y", "z", "size", "gain"}
+LFO_TARGET_PARAMS = ("x", "y", "z", "size", "gain")
+LFO_TARGET_PARAM_ALL = "all"
+LFO_TARGET_SCOPE_OBJECT = "object"
+LFO_TARGET_SCOPE_GROUP = "group"
 LFO_WAVES = {"sine", "triangle", "square", "saw"}
 LFO_POLARITIES = {"bipolar", "unipolar"}
 ACTION_TICK_SEC = 1.0 / 60.0
@@ -202,6 +206,117 @@ def normalize_osc_runtime_config(raw_config: Any, fallback: Dict[str, Any], part
     if has_action_group_prefix or not partial:
         normalized["actionGroupPathPrefix"] = normalize_osc_path_prefix(raw_action_group_prefix, str(fallback.get("actionGroupPathPrefix") or DEFAULT_OSC_ACTION_GROUP_PATH_PREFIX))
     return normalized
+
+
+def normalize_lfo_target_scope(raw_scope: Any = LFO_TARGET_SCOPE_OBJECT) -> str:
+    normalized = str(raw_scope or LFO_TARGET_SCOPE_OBJECT).strip().lower()
+    if normalized == LFO_TARGET_SCOPE_GROUP:
+        return LFO_TARGET_SCOPE_GROUP
+    return LFO_TARGET_SCOPE_OBJECT
+
+
+def is_lfo_target_parameter(parameter: Any, scope: Any = LFO_TARGET_SCOPE_OBJECT) -> bool:
+    target_scope = normalize_lfo_target_scope(scope)
+    normalized_parameter = str(parameter or "").strip().lower()
+    if normalized_parameter == LFO_TARGET_PARAM_ALL:
+        return target_scope == LFO_TARGET_SCOPE_GROUP
+    return normalized_parameter in LFO_PARAMS
+
+
+def mapping_distributes_phase_over_members(mapping: Dict[str, Any]) -> bool:
+    if "distributePhaseOverMembers" in mapping:
+        return bool(mapping.get("distributePhaseOverMembers"))
+    return bool(mapping.get("distribute_phase_over_members", False))
+
+
+def lfo_member_phase_offset_deg(mapping: Dict[str, Any], member_index: int, member_count: int) -> float:
+    if member_count <= 1:
+        return 0.0
+    if not mapping_distributes_phase_over_members(mapping):
+        return 0.0
+    safe_index = max(0, min(member_index, member_count - 1))
+    return (360.0 * float(safe_index)) / float(member_count)
+
+
+def iter_lfo_target_entries(
+    mapping: Dict[str, Any],
+    object_groups_by_id: Dict[str, Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    target_scope = normalize_lfo_target_scope(mapping.get("targetScope", mapping.get("target_scope")))
+    raw_parameter = str(mapping.get("parameter") or "").strip().lower()
+    if not is_lfo_target_parameter(raw_parameter, target_scope):
+        return []
+
+    if target_scope == LFO_TARGET_SCOPE_OBJECT:
+        raw_object_id = str(mapping.get("objectId") or mapping.get("object_id") or "").strip()
+        if not raw_object_id:
+            return []
+        try:
+            return [
+                {
+                    "objectId": normalize_object_id(raw_object_id),
+                    "parameter": raw_parameter,
+                    "memberIndex": 0,
+                    "memberCount": 1,
+                    "phaseOffsetDeg": 0.0,
+                }
+            ]
+        except Exception:
+            return []
+
+    raw_group_id = str(mapping.get("groupId") or mapping.get("group_id") or "").strip()
+    if not raw_group_id:
+        return []
+
+    try:
+        normalized_group_id = normalize_object_id(raw_group_id)
+    except Exception:
+        return []
+    group = object_groups_by_id.get(normalized_group_id)
+    if not isinstance(group, dict):
+        return []
+    object_ids = group.get("objectIds")
+    if not isinstance(object_ids, list):
+        return []
+
+    normalized_member_ids: List[str] = []
+    for raw_object_id in object_ids:
+        if not isinstance(raw_object_id, str):
+            continue
+        try:
+            normalized_member_ids.append(normalize_object_id(raw_object_id))
+        except Exception:
+            continue
+
+    member_count = len(normalized_member_ids)
+    if member_count <= 0:
+        return []
+
+    parameters = LFO_TARGET_PARAMS if raw_parameter == LFO_TARGET_PARAM_ALL else (raw_parameter,)
+    entries: List[Dict[str, Any]] = []
+    for member_index, normalized_object_id in enumerate(normalized_member_ids):
+        phase_offset_deg = lfo_member_phase_offset_deg(mapping, member_index, member_count)
+        for target_parameter in parameters:
+            entries.append(
+                {
+                    "objectId": normalized_object_id,
+                    "parameter": target_parameter,
+                    "memberIndex": member_index,
+                    "memberCount": member_count,
+                    "phaseOffsetDeg": phase_offset_deg,
+                }
+            )
+    return entries
+
+
+def iter_lfo_target_pairs(
+    mapping: Dict[str, Any],
+    object_groups_by_id: Dict[str, Dict[str, Any]],
+) -> List[Tuple[str, str]]:
+    return [
+        (str(entry.get("objectId") or ""), str(entry.get("parameter") or ""))
+        for entry in iter_lfo_target_entries(mapping, object_groups_by_id)
+    ]
 
 
 def apply_runtime_osc_config(config_values: Dict[str, Any]) -> None:
@@ -569,44 +684,94 @@ def normalize_lfo_definition(raw_lfo: Dict[str, Any], fallback_lfo_id: str = "lf
 
 
 def normalize_action_lfo_mapping(raw_lfo: Dict[str, Any], fallback_lfo_id: str = "lfo") -> Dict[str, Any]:
+    target_scope = normalize_lfo_target_scope(raw_lfo.get("targetScope", raw_lfo.get("target_scope")))
     raw_object_id = raw_lfo.get("object_id") if "object_id" in raw_lfo else raw_lfo.get("objectId")
+    raw_group_id = raw_lfo.get("group_id") if "group_id" in raw_lfo else raw_lfo.get("groupId")
     object_id_text = str(raw_object_id or "").strip()
-    parameter = str(raw_lfo.get("parameter") or "").strip()
-    if object_id_text and parameter:
-        object_id = normalize_object_id(object_id_text)
-        if parameter not in LFO_PARAMS:
+    group_id_text = str(raw_group_id or "").strip()
+    parameter = str(raw_lfo.get("parameter") or "").strip().lower()
+
+    # Backward compatibility: infer group scope when only a group target is present.
+    if target_scope == LFO_TARGET_SCOPE_OBJECT and group_id_text and not object_id_text:
+        target_scope = LFO_TARGET_SCOPE_GROUP
+
+    if target_scope == LFO_TARGET_SCOPE_GROUP:
+        if not group_id_text and not parameter and not object_id_text:
+            object_id = ""
+            group_id = ""
+        else:
+            if not group_id_text:
+                raise ValueError("LFO group target requires groupId")
+            if parameter not in LFO_PARAMS and parameter != LFO_TARGET_PARAM_ALL:
+                raise ValueError(f"LFO parameter must be one of: all, {', '.join(sorted(LFO_PARAMS))}")
+            group_id = normalize_object_id(group_id_text)
+            object_id = ""
+    elif object_id_text and parameter:
+        if not is_lfo_target_parameter(parameter, target_scope):
             raise ValueError(f"LFO parameter must be one of: {', '.join(sorted(LFO_PARAMS))}")
-    elif not object_id_text and not parameter:
+        object_id = normalize_object_id(object_id_text)
+        group_id = ""
+    elif not object_id_text and not group_id_text and not parameter:
+        # Allow unassigned mappings so LFO definitions can exist before targets are configured.
         object_id = ""
-        parameter = ""
+        group_id = ""
     else:
-        raise ValueError("LFO objectId and parameter must be set together")
+        if not is_lfo_target_parameter(parameter, target_scope):
+            raise ValueError(f"LFO parameter must be one of: {', '.join(sorted(LFO_PARAMS))}")
+        raise ValueError("LFO target requires objectId and parameter (or groupId and parameter with targetScope=group)")
 
     mapping_phase_deg = to_float(
         raw_lfo.get("mapping_phase_deg") if "mapping_phase_deg" in raw_lfo else raw_lfo.get("mappingPhaseDeg"),
         0.0,
     )
     phase_flip = bool(raw_lfo.get("phase_flip") if "phase_flip" in raw_lfo else raw_lfo.get("phaseFlip", False))
+    distribute_phase_over_members = bool(
+        raw_lfo.get("distribute_phase_over_members")
+        if "distribute_phase_over_members" in raw_lfo
+        else raw_lfo.get("distributePhaseOverMembers", False)
+    ) and target_scope == LFO_TARGET_SCOPE_GROUP
     target_enabled = bool(raw_lfo.get("target_enabled") if "target_enabled" in raw_lfo else raw_lfo.get("targetEnabled", True))
     raw_lfo_id = raw_lfo.get("lfo_id") if "lfo_id" in raw_lfo else raw_lfo.get("lfoId")
     lfo_id = normalize_lfo_id(raw_lfo_id or fallback_lfo_id)
 
     return {
         "lfoId": lfo_id,
+        "targetScope": target_scope,
         "objectId": object_id,
+        "groupId": group_id,
         "parameter": parameter,
         "mappingPhaseDeg": mapping_phase_deg,
         "phaseFlip": phase_flip,
+        "distributePhaseOverMembers": distribute_phase_over_members,
         "targetEnabled": target_enabled,
     }
 
 
 def merge_lfo_definition_into_mapping(mapping: Dict[str, Any], definition: Dict[str, Any]) -> Dict[str, Any]:
+    target_scope = normalize_lfo_target_scope(mapping.get("targetScope", mapping.get("target_scope", LFO_TARGET_SCOPE_OBJECT)))
+    object_id = ""
+    group_id = ""
+    if target_scope == LFO_TARGET_SCOPE_GROUP:
+        raw_group_id = str(mapping.get("groupId") or mapping.get("group_id") or "").strip()
+        if raw_group_id:
+            try:
+                group_id = normalize_object_id(raw_group_id)
+            except Exception:
+                group_id = ""
+    else:
+        raw_object_id = str(mapping.get("objectId") or mapping.get("object_id") or "").strip()
+        if raw_object_id:
+            try:
+                object_id = normalize_object_id(raw_object_id)
+            except Exception:
+                object_id = ""
     return {
         "lfoId": normalize_lfo_id(mapping.get("lfoId") or definition.get("lfoId") or "lfo"),
         "enabled": bool(definition.get("enabled", True)),
         "targetEnabled": bool(mapping.get("targetEnabled", True)),
-        "objectId": str(mapping.get("objectId") or ""),
+        "targetScope": target_scope,
+        "objectId": object_id,
+        "groupId": group_id,
         "parameter": str(mapping.get("parameter") or ""),
         "wave": str(definition.get("wave") or "sine"),
         "rateHz": max(0.0, to_float(definition.get("rateHz"), 0.0)),
@@ -615,6 +780,7 @@ def merge_lfo_definition_into_mapping(mapping: Dict[str, Any], definition: Dict[
         "phaseDeg": to_float(definition.get("phaseDeg"), 0.0),
         "mappingPhaseDeg": to_float(mapping.get("mappingPhaseDeg"), 0.0),
         "phaseFlip": bool(mapping.get("phaseFlip", False)),
+        "distributePhaseOverMembers": bool(mapping.get("distributePhaseOverMembers", False)),
         "polarity": coerce_lfo_polarity(definition.get("polarity")),
     }
 
@@ -764,6 +930,8 @@ def normalize_action(raw_action: Dict[str, Any], fallback_id: str) -> Dict[str, 
 
 def lfo_to_raw(lfo: Dict[str, Any]) -> Dict[str, Any]:
     object_id = str(lfo.get("objectId") or "").strip()
+    group_id = str(lfo.get("groupId") or "").strip()
+    target_scope = normalize_lfo_target_scope(lfo.get("targetScope", lfo.get("target_scope", "")))
     parameter = str(lfo.get("parameter") or "").strip()
     raw = {
         "lfo_id": normalize_lfo_id(lfo.get("lfoId") or "lfo-1"),
@@ -775,11 +943,17 @@ def lfo_to_raw(lfo: Dict[str, Any]) -> Dict[str, Any]:
         "phase_deg": to_float(lfo.get("phaseDeg"), 0.0),
         "mapping_phase_deg": to_float(lfo.get("mappingPhaseDeg"), 0.0),
         "phase_flip": bool(lfo.get("phaseFlip", False)),
+        "distribute_phase_over_members": bool(lfo.get("distributePhaseOverMembers", False)),
         "target_enabled": bool(lfo.get("targetEnabled", True)),
         "polarity": coerce_lfo_polarity(lfo.get("polarity")),
     }
-    if object_id and parameter in LFO_PARAMS:
+    if target_scope == LFO_TARGET_SCOPE_OBJECT and object_id and is_lfo_target_parameter(parameter, target_scope):
         raw["object_id"] = normalize_object_id(object_id)
+        raw["target_scope"] = LFO_TARGET_SCOPE_OBJECT
+        raw["parameter"] = parameter
+    elif target_scope == LFO_TARGET_SCOPE_GROUP and group_id and is_lfo_target_parameter(parameter, target_scope):
+        raw["group_id"] = normalize_object_id(group_id)
+        raw["target_scope"] = LFO_TARGET_SCOPE_GROUP
         raw["parameter"] = parameter
     return raw
 
@@ -2040,17 +2214,25 @@ class Runtime:
         self,
         action_id: str,
         lfo_id: str,
+        target_scope: str,
         object_id: str,
+        group_id: str,
         parameter: str,
         enabled: bool,
         source: str = "api",
     ) -> Dict[str, Any]:
         normalized_action_id = normalize_action_id(action_id)
         normalized_lfo_id = normalize_lfo_id(lfo_id)
-        normalized_object_id = normalize_object_id(object_id)
+        normalized_target_scope = normalize_lfo_target_scope(target_scope)
+        normalized_object_id = str(object_id or "").strip() if normalized_target_scope == LFO_TARGET_SCOPE_OBJECT else ""
+        normalized_group_id = str(group_id or "").strip() if normalized_target_scope == LFO_TARGET_SCOPE_GROUP else ""
         normalized_parameter = str(parameter or "").strip().lower()
-        if normalized_parameter not in LFO_PARAMS:
-            raise ValueError(f"LFO parameter must be one of: {', '.join(sorted(LFO_PARAMS))}")
+        if not is_lfo_target_parameter(normalized_parameter, normalized_target_scope):
+            raise ValueError(
+                f"LFO parameter must be one of: {', '.join(sorted(LFO_PARAMS))}"
+                if normalized_target_scope == LFO_TARGET_SCOPE_OBJECT
+                else f"LFO parameter must be one of: all, {', '.join(sorted(LFO_PARAMS))}"
+            )
 
         next_enabled = bool(enabled)
         changed_count = 0
@@ -2076,11 +2258,15 @@ class Runtime:
                     continue
                 next_lfo = dict(lfo)
                 current_lfo_id = str(next_lfo.get("lfoId") or next_lfo.get("lfo_id") or "").strip()
+                current_target_scope = normalize_lfo_target_scope(next_lfo.get("targetScope", next_lfo.get("target_scope")))
                 current_object_id = str(next_lfo.get("objectId") or next_lfo.get("object_id") or "").strip()
+                current_group_id = str(next_lfo.get("groupId") or next_lfo.get("group_id") or "").strip()
                 current_parameter = str(next_lfo.get("parameter") or "").strip().lower()
                 if (
                     current_lfo_id == normalized_lfo_id
+                    and current_target_scope == normalized_target_scope
                     and current_object_id == normalized_object_id
+                    and current_group_id == normalized_group_id
                     and current_parameter == normalized_parameter
                 ):
                     changed_count_in_action += 1
@@ -2092,7 +2278,8 @@ class Runtime:
 
             if changed_count_in_action <= 0:
                 raise ValueError(
-                    f"LFO target not found in action: {normalized_action_id}.{normalized_lfo_id}.{normalized_object_id}.{normalized_parameter}"
+                    f"LFO target not found in action: {normalized_action_id}.{normalized_lfo_id}."
+                    f"{normalized_object_id if normalized_target_scope == LFO_TARGET_SCOPE_OBJECT else normalized_group_id}.{normalized_parameter}"
                 )
 
             next_action = dict(action)
@@ -2118,6 +2305,8 @@ class Runtime:
             "actionId": normalized_action_id,
             "lfoId": normalized_lfo_id,
             "objectId": normalized_object_id,
+            "groupId": normalized_group_id,
+            "targetScope": normalized_target_scope,
             "parameter": normalized_parameter,
             "enabled": next_enabled,
             "changedMappings": changed_count,
@@ -3275,93 +3464,97 @@ class Runtime:
     def _collect_always_lfo_mappings(self) -> Tuple[List[Dict[str, Any]], Dict[str, float]]:
         mappings: List[Dict[str, Any]] = []
         live_values_by_target: Dict[str, float] = {}
-
         with self.lock:
             if not self.show or not self.lfos_enabled:
                 return (mappings, live_values_by_target)
             actions_by_id = self.show.get("actionsById")
             if not isinstance(actions_by_id, dict):
                 return (mappings, live_values_by_target)
+            object_groups_by_id = {group_id: dict(group) for group_id, group in self.object_groups.items()}
 
-            running_mapping_keys: set[Tuple[str, str, str]] = set()
-            for running in self.running_actions.values():
-                if not isinstance(running, dict):
+        running_mapping_keys: set[Tuple[str, str, str]] = set()
+        for running in self.running_actions.values():
+            if not isinstance(running, dict):
+                continue
+            running_action = running.get("action")
+            if not isinstance(running_action, dict):
+                continue
+            running_lfos = running_action.get("lfos")
+            if not isinstance(running_lfos, list):
+                continue
+            for lfo in running_lfos:
+                if not isinstance(lfo, dict):
                     continue
-                running_action = running.get("action")
-                if not isinstance(running_action, dict):
+                if lfo.get("enabled") is False or lfo.get("targetEnabled") is False:
                     continue
-                running_lfos = running_action.get("lfos")
-                if not isinstance(running_lfos, list):
+                lfo_id = str(lfo.get("lfoId") or lfo.get("lfo_id") or "").strip()
+                if not lfo_id:
                     continue
-                for lfo in running_lfos:
-                    if not isinstance(lfo, dict):
+                for target_entry in iter_lfo_target_entries(lfo, object_groups_by_id):
+                    target_object_id = str(target_entry.get("objectId") or "").strip()
+                    target_parameter = str(target_entry.get("parameter") or "").strip()
+                    if target_object_id not in self.objects:
                         continue
-                    if lfo.get("enabled") is False or lfo.get("targetEnabled") is False:
-                        continue
-                    lfo_id = str(lfo.get("lfoId") or lfo.get("lfo_id") or "").strip()
-                    object_id = str(lfo.get("objectId") or lfo.get("object_id") or "").strip()
-                    parameter = str(lfo.get("parameter") or "").strip()
-                    if not lfo_id or not object_id or parameter not in LFO_PARAMS:
-                        continue
-                    if object_id not in self.objects:
-                        continue
-                    running_mapping_keys.add((lfo_id, object_id, parameter))
+                    running_mapping_keys.add((lfo_id, target_object_id, target_parameter))
 
-            seen_mapping_keys: set[Tuple[str, str, str]] = set()
-            tracked_targets: set[str] = set()
+        seen_mapping_keys: set[Tuple[str, str, str]] = set()
+        tracked_targets: set[str] = set()
 
-            for action_id in sorted(actions_by_id.keys()):
-                action = actions_by_id.get(action_id)
-                if not isinstance(action, dict):
-                    continue
-                if not bool(action.get("enabled", True)):
-                    continue
+        for action_id in sorted(actions_by_id.keys()):
+            action = actions_by_id.get(action_id)
+            if not isinstance(action, dict):
+                continue
+            if not bool(action.get("enabled", True)):
+                continue
 
-                action_lfos = action.get("lfos")
-                if not isinstance(action_lfos, list):
+            action_lfos = action.get("lfos")
+            if not isinstance(action_lfos, list):
+                continue
+            for lfo in action_lfos:
+                if not isinstance(lfo, dict):
                     continue
-                for lfo in action_lfos:
-                    if not isinstance(lfo, dict):
+                if lfo.get("enabled") is False or lfo.get("targetEnabled") is False:
+                    continue
+                lfo_id = str(lfo.get("lfoId") or lfo.get("lfo_id") or "").strip()
+                if not lfo_id:
+                    continue
+                for target_entry in iter_lfo_target_entries(lfo, object_groups_by_id):
+                    target_object_id = str(target_entry.get("objectId") or "").strip()
+                    target_parameter = str(target_entry.get("parameter") or "").strip()
+                    phase_offset_deg = to_float(target_entry.get("phaseOffsetDeg"), 0.0)
+                    if target_object_id not in self.objects:
                         continue
-                    if lfo.get("enabled") is False or lfo.get("targetEnabled") is False:
-                        continue
-                    lfo_id = str(lfo.get("lfoId") or lfo.get("lfo_id") or "").strip()
-                    object_id = str(lfo.get("objectId") or lfo.get("object_id") or "").strip()
-                    parameter = str(lfo.get("parameter") or "").strip()
-                    if not lfo_id or not object_id or parameter not in LFO_PARAMS:
-                        continue
-                    if object_id not in self.objects:
-                        continue
-                    mapping_key = (lfo_id, object_id, parameter)
+                    mapping_key = (lfo_id, target_object_id, target_parameter)
                     if mapping_key in running_mapping_keys:
                         continue
                     if mapping_key in seen_mapping_keys:
                         continue
                     seen_mapping_keys.add(mapping_key)
 
-                    target_key = f"{object_id}:{parameter}"
+                    target_key = f"{target_object_id}:{target_parameter}"
                     tracked_targets.add(target_key)
                     mappings.append(
                         {
                             "lfoId": lfo_id,
-                            "objectId": object_id,
-                            "parameter": parameter,
+                            "objectId": target_object_id,
+                            "parameter": target_parameter,
                             "wave": str(lfo.get("wave") or "sine").strip().lower(),
                             "rateHz": max(0.0, to_float(lfo.get("rateHz"), 0.0)),
                             "depth": to_float(lfo.get("depth"), 0.0),
                             "offset": to_float(lfo.get("offset"), 0.0),
                             "phaseDeg": to_float(lfo.get("phaseDeg"), 0.0),
                             "mappingPhaseDeg": to_float(lfo.get("mappingPhaseDeg"), 0.0),
+                            "groupPhaseOffsetDeg": phase_offset_deg,
                             "phaseFlip": bool(lfo.get("phaseFlip", False)),
                             "polarity": coerce_lfo_polarity(lfo.get("polarity")),
                             "targetKey": target_key,
                         }
                     )
 
-            for target_key in tracked_targets:
-                object_id, parameter = target_key.split(":", 1)
-                current_obj = self.objects.get(object_id, default_object(object_id))
-                live_values_by_target[target_key] = to_float(current_obj.get(parameter), 0.0)
+        for target_key in tracked_targets:
+            object_id, parameter = target_key.split(":", 1)
+            current_obj = self.objects.get(object_id, default_object(object_id))
+            live_values_by_target[target_key] = to_float(current_obj.get(parameter), 0.0)
 
         return (mappings, live_values_by_target)
 
@@ -3397,7 +3590,7 @@ class Runtime:
             depth = to_float(mapping.get("depth"), 0.0)
             offset = to_float(mapping.get("offset"), 0.0)
             phase_deg = to_float(mapping.get("phaseDeg"), 0.0)
-            mapping_phase_deg = to_float(mapping.get("mappingPhaseDeg"), 0.0)
+            mapping_phase_deg = to_float(mapping.get("mappingPhaseDeg"), 0.0) + to_float(mapping.get("groupPhaseOffsetDeg"), 0.0)
             phase_flip = bool(mapping.get("phaseFlip", False))
             polarity = coerce_lfo_polarity(mapping.get("polarity"))
 
@@ -3493,10 +3686,17 @@ class Runtime:
     ) -> Optional[float]:
         total = 0.0
         matched = False
+        with self.lock:
+            object_groups_by_id = {group_id: dict(group) for group_id, group in self.object_groups.items()}
         for lfo in action.get("lfos", []):
-            lfo_object_id = str(lfo.get("objectId") or lfo.get("object_id") or "").strip()
-            lfo_parameter = str(lfo.get("parameter") or "").strip()
-            if lfo_object_id != object_id or lfo_parameter != parameter:
+            target_entries = iter_lfo_target_entries(lfo, object_groups_by_id)
+            matching_entries = [
+                target_entry
+                for target_entry in target_entries
+                if str(target_entry.get("objectId") or "").strip() == object_id
+                and str(target_entry.get("parameter") or "").strip() == parameter
+            ]
+            if not matching_entries:
                 continue
             if lfo.get("enabled") is False:
                 continue
@@ -3511,21 +3711,25 @@ class Runtime:
             depth = to_float(lfo.get("depth"), 0.0)
             offset = to_float(lfo.get("offset"), 0.0)
             phase_deg = to_float(lfo.get("phaseDeg"), 0.0)
-            mapping_phase_deg = to_float(lfo.get("mappingPhaseDeg"), 0.0)
             phase_flip = bool(lfo.get("phaseFlip", False))
             polarity = coerce_lfo_polarity(lfo.get("polarity"))
 
             phase_ms = float(elapsed_ms)
             if isinstance(lfo_phase_ms_by_id, dict) and lfo_id:
                 phase_ms = to_float(lfo_phase_ms_by_id.get(lfo_id), phase_ms)
-            phase_cycles = (phase_ms / 1000.0) * rate_hz + ((phase_deg + mapping_phase_deg) / 360.0)
-            sample = self._lfo_sample(wave, phase_cycles)
-            if polarity == "unipolar":
-                sample = (sample + 1.0) * 0.5
-            if phase_flip:
-                sample *= -1.0
-            total += offset + (depth * sample)
-            matched = True
+            for target_entry in matching_entries:
+                mapping_phase_deg = (
+                    to_float(lfo.get("mappingPhaseDeg"), 0.0)
+                    + to_float(target_entry.get("phaseOffsetDeg"), 0.0)
+                )
+                phase_cycles = (phase_ms / 1000.0) * rate_hz + ((phase_deg + mapping_phase_deg) / 360.0)
+                sample = self._lfo_sample(wave, phase_cycles)
+                if polarity == "unipolar":
+                    sample = (sample + 1.0) * 0.5
+                if phase_flip:
+                    sample *= -1.0
+                total += offset + (depth * sample)
+                matched = True
 
         if not matched:
             return None
@@ -3554,7 +3758,7 @@ class Runtime:
             depth = to_float(mapping.get("depth"), 0.0)
             offset = to_float(mapping.get("offset"), 0.0)
             phase_deg = to_float(mapping.get("phaseDeg"), 0.0)
-            mapping_phase_deg = to_float(mapping.get("mappingPhaseDeg"), 0.0)
+            mapping_phase_deg = to_float(mapping.get("mappingPhaseDeg"), 0.0) + to_float(mapping.get("groupPhaseOffsetDeg"), 0.0)
             phase_flip = bool(mapping.get("phaseFlip", False))
             polarity = coerce_lfo_polarity(mapping.get("polarity"))
 
@@ -3600,6 +3804,7 @@ class Runtime:
         delta_ms = max(0.0, to_float(frame_delta_ms, 0.0))
         with self.lock:
             existing_object_ids = set(self.objects.keys())
+            object_groups_by_id = {group_id: dict(group) for group_id, group in self.object_groups.items()}
 
         if action_rule_type == "modulationControl":
             target_modulator = str(action_rule.get("targetModulator") or "").strip()
@@ -3718,101 +3923,107 @@ class Runtime:
                 lfo_id = str(lfo.get("lfoId") or lfo.get("lfo_id") or "").strip()
                 if not lfo_id:
                     continue
-                object_id = str(lfo.get("objectId") or lfo.get("object_id") or "").strip()
-                parameter = str(lfo.get("parameter") or "").strip()
-                if not object_id or parameter not in LFO_PARAMS:
-                    continue
-                if object_id not in existing_object_ids:
-                    continue
+
                 if lfo_id not in advanced_lfo_ids:
                     current_phase_ms = to_float(phase_state.get(lfo_id), 0.0)
                     phase_state[lfo_id] = current_phase_ms + delta_ms
                     advanced_lfo_ids.add(lfo_id)
                 phase_ms = to_float(phase_state.get(lfo_id), 0.0)
 
-                lfo_key = f"{object_id}:{parameter}"
-                lfo_state = lfo_states.get(lfo_key)
-                if not isinstance(lfo_state, dict):
-                    with self.lock:
-                        base_object = self.objects.get(object_id, default_object(object_id))
-                    center_seed = to_float(base_object.get(parameter), 0.0)
-                    lfo_state = {
-                        "center": center_seed,
-                        "lastValue": center_seed,
-                    }
-                    lfo_states[lfo_key] = lfo_state
+                for target_entry in iter_lfo_target_entries(lfo, object_groups_by_id):
+                    target_object_id = str(target_entry.get("objectId") or "").strip()
+                    target_parameter = str(target_entry.get("parameter") or "").strip()
+                    if not target_object_id or target_parameter not in LFO_PARAMS:
+                        continue
+                    if target_object_id not in existing_object_ids:
+                        continue
 
-                accumulator = lfo_accumulators.get(lfo_key)
-                if not isinstance(accumulator, dict):
-                    center_value = to_float(lfo_state.get("center"), 0.0)
-                    existing_patch = patch_by_object_id.get(object_id)
-                    if existing_patch and parameter in existing_patch:
-                        track_value_raw = existing_patch.get(parameter)
-                        if isinstance(track_value_raw, (int, float)):
-                            track_value = float(track_value_raw)
-                            if math.isfinite(track_value):
-                                manual_offset = to_float(lfo_state.get("manualOffset"), 0.0)
-                                center_value = track_value + manual_offset
-                    else:
-                        # If the object changed since the previous frame (UI drag/OSC/group link),
-                        # shift the LFO center by the external delta so modulation does not snap back.
-                        lfo_state.pop("manualOffset", None)
+                    lfo_key = f"{target_object_id}:{target_parameter}"
+                    lfo_state = lfo_states.get(lfo_key)
+                    if not isinstance(lfo_state, dict):
                         with self.lock:
-                            live_object = self.objects.get(object_id, default_object(object_id))
-                        live_value = to_float(live_object.get(parameter), center_value)
-                        last_value = to_float(lfo_state.get("lastValue"), live_value)
-                        center_value += (live_value - last_value)
+                            base_object = self.objects.get(target_object_id, default_object(target_object_id))
+                        center_seed = to_float(base_object.get(target_parameter), 0.0)
+                        lfo_state = {
+                            "center": center_seed,
+                            "lastValue": center_seed,
+                        }
+                        lfo_states[lfo_key] = lfo_state
 
-                    accumulator = {
-                        "objectId": object_id,
-                        "parameter": parameter,
-                        "center": center_value,
-                        "totalMod": 0.0,
-                    }
-                    lfo_accumulators[lfo_key] = accumulator
+                    accumulator = lfo_accumulators.get(lfo_key)
+                    if not isinstance(accumulator, dict):
+                        center_value = to_float(lfo_state.get("center"), 0.0)
+                        existing_patch = patch_by_object_id.get(target_object_id)
+                        if existing_patch and target_parameter in existing_patch:
+                            track_value_raw = existing_patch.get(target_parameter)
+                            if isinstance(track_value_raw, (int, float)):
+                                track_value = float(track_value_raw)
+                                if math.isfinite(track_value):
+                                    manual_offset = to_float(lfo_state.get("manualOffset"), 0.0)
+                                    center_value = track_value + manual_offset
+                        else:
+                            # If the object changed since the previous frame (UI drag/OSC/group link),
+                            # shift the LFO center by the external delta so modulation does not snap back.
+                            lfo_state.pop("manualOffset", None)
+                            with self.lock:
+                                live_object = self.objects.get(target_object_id, default_object(target_object_id))
+                            live_value = to_float(live_object.get(target_parameter), center_value)
+                            last_value = to_float(lfo_state.get("lastValue"), live_value)
+                            center_value += (live_value - last_value)
 
-                center_value = to_float(accumulator.get("center"), 0.0)
+                        accumulator = {
+                            "objectId": target_object_id,
+                            "parameter": target_parameter,
+                            "center": center_value,
+                            "totalMod": 0.0,
+                        }
+                        lfo_accumulators[lfo_key] = accumulator
 
-                wave = str(lfo.get("wave") or "sine").strip().lower()
-                if wave not in LFO_WAVES:
-                    wave = "sine"
-                rate_hz = max(0.0, to_float(lfo.get("rateHz"), 0.0))
-                depth = to_float(lfo.get("depth"), 0.0)
-                offset = to_float(lfo.get("offset"), 0.0)
-                phase_deg = to_float(lfo.get("phaseDeg"), 0.0)
-                mapping_phase_deg = to_float(lfo.get("mappingPhaseDeg"), 0.0)
-                phase_flip = bool(lfo.get("phaseFlip", False))
-                polarity = coerce_lfo_polarity(lfo.get("polarity"))
+                    center_value = to_float(accumulator.get("center"), 0.0)
 
-                phase_cycles = (phase_ms / 1000.0) * rate_hz + ((phase_deg + mapping_phase_deg) / 360.0)
-                sample = self._lfo_sample(wave, phase_cycles)
-                if polarity == "unipolar":
-                    sample = (sample + 1.0) * 0.5
-                if phase_flip:
-                    sample *= -1.0
-                contribution = offset + (depth * sample)
-                accumulator["totalMod"] = to_float(accumulator.get("totalMod"), 0.0) + contribution
+                    wave = str(lfo.get("wave") or "sine").strip().lower()
+                    if wave not in LFO_WAVES:
+                        wave = "sine"
+                    rate_hz = max(0.0, to_float(lfo.get("rateHz"), 0.0))
+                    depth = to_float(lfo.get("depth"), 0.0)
+                    offset = to_float(lfo.get("offset"), 0.0)
+                    phase_deg = to_float(lfo.get("phaseDeg"), 0.0)
+                    mapping_phase_deg = (
+                        to_float(lfo.get("mappingPhaseDeg"), 0.0)
+                        + to_float(target_entry.get("phaseOffsetDeg"), 0.0)
+                    )
+                    phase_flip = bool(lfo.get("phaseFlip", False))
+                    polarity = coerce_lfo_polarity(lfo.get("polarity"))
 
-                lfo_debug_samples.append(
-                    {
-                        "_lfoKey": lfo_key,
-                        "lfoIndex": index,
-                        "objectId": object_id,
-                        "parameter": parameter,
-                        "value": center_value + contribution,
-                        "center": center_value,
-                        "sample": sample,
-                        "contribution": contribution,
-                        "wave": wave,
-                        "rateHz": rate_hz,
-                        "depth": depth,
-                        "offset": offset,
-                        "phaseDeg": phase_deg,
-                        "mappingPhaseDeg": mapping_phase_deg,
-                        "phaseFlip": phase_flip,
-                        "polarity": polarity,
-                    }
-                )
+                    phase_cycles = (phase_ms / 1000.0) * rate_hz + ((phase_deg + mapping_phase_deg) / 360.0)
+                    sample = self._lfo_sample(wave, phase_cycles)
+                    if polarity == "unipolar":
+                        sample = (sample + 1.0) * 0.5
+                    if phase_flip:
+                        sample *= -1.0
+                    contribution = offset + (depth * sample)
+                    accumulator["totalMod"] = to_float(accumulator.get("totalMod"), 0.0) + contribution
+
+                    lfo_debug_samples.append(
+                        {
+                            "_lfoKey": lfo_key,
+                            "lfoIndex": index,
+                            "objectId": target_object_id,
+                            "parameter": target_parameter,
+                            "value": center_value + contribution,
+                            "center": center_value,
+                            "sample": sample,
+                            "contribution": contribution,
+                            "wave": wave,
+                            "rateHz": rate_hz,
+                            "depth": depth,
+                            "offset": offset,
+                            "phaseDeg": phase_deg,
+                            "mappingPhaseDeg": mapping_phase_deg,
+                            "phaseFlip": phase_flip,
+                            "polarity": polarity,
+                        }
+                    )
 
             final_values_by_key: Dict[str, float] = {}
             for lfo_key, accumulator in lfo_accumulators.items():
@@ -3891,6 +4102,7 @@ class Runtime:
             lfo_states: Dict[str, Dict[str, float]] = {}
             lfo_phase_ms_by_id: Dict[str, float] = {}
             has_active_lfo_target = False
+            object_groups_by_id = {group_id: dict(group) for group_id, group in self.object_groups.items()}
             for lfo in action_snapshot.get("lfos", []):
                 lfo_id = str(lfo.get("lfoId") or lfo.get("lfo_id") or "").strip()
                 if lfo_id and lfo_id not in lfo_phase_ms_by_id:
@@ -3899,17 +4111,18 @@ class Runtime:
                     continue
                 if lfo.get("targetEnabled") is False:
                     continue
-                object_id = str(lfo.get("objectId") or "").strip()
-                parameter = str(lfo.get("parameter") or "").strip()
-                if not object_id or parameter not in LFO_PARAMS:
-                    continue
-                has_active_lfo_target = True
-                base_object = self.objects.get(object_id, default_object(object_id))
-                seed = to_float(base_object.get(parameter), 0.0)
-                lfo_states[f"{object_id}:{parameter}"] = {
-                    "center": seed,
-                    "lastValue": seed,
-                }
+                for object_id, parameter in iter_lfo_target_pairs(lfo, object_groups_by_id):
+                    if not object_id or parameter not in LFO_PARAMS:
+                        continue
+                    if object_id not in self.objects:
+                        continue
+                    has_active_lfo_target = True
+                    base_object = self.objects.get(object_id, default_object(object_id))
+                    seed = to_float(base_object.get(parameter), 0.0)
+                    lfo_states[f"{object_id}:{parameter}"] = {
+                        "center": seed,
+                        "lastValue": seed,
+                    }
             if has_active_lfo_target:
                 self.lfos_enabled = True
             stop_flag = threading.Event()
@@ -4431,13 +4644,17 @@ class Handler(BaseHTTPRequestHandler):
                 body = self._read_json_body()
                 action_id = normalize_action_id(body.get("actionId") or body.get("action_id"))
                 lfo_id = normalize_lfo_id(body.get("lfoId") or body.get("lfo_id"))
-                object_id = normalize_object_id(body.get("objectId") or body.get("object_id"))
+                target_scope = normalize_lfo_target_scope(body.get("targetScope") or body.get("target_scope"))
+                object_id = str(body.get("objectId") or body.get("object_id") or "").strip()
+                group_id = str(body.get("groupId") or body.get("group_id") or "").strip()
                 parameter = str(body.get("parameter") or "").strip().lower()
                 enabled = bool(body.get("enabled", True))
                 result = RUNTIME.set_action_lfo_target_enabled(
                     action_id,
                     lfo_id,
+                    target_scope,
                     object_id,
+                    group_id,
                     parameter,
                     enabled,
                     source="api",

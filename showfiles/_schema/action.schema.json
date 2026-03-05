@@ -64,7 +64,9 @@
           "lfo_id": { "type": "string" },
           "enabled": { "type": "boolean", "default": true },
           "object_id": { "type": "string" },
-          "parameter": { "type": "string", "enum": ["x", "y", "z", "size", "gain"] },
+          "group_id": { "type": "string" },
+          "target_scope": { "type": "string", "enum": ["object", "group"] },
+          "parameter": { "type": "string", "enum": ["all", "x", "y", "z", "size", "gain"] },
           "wave": { "type": "string", "enum": ["sine", "triangle", "square", "saw"] },
           "rate_hz": { "type": "number", "minimum": 0 },
           "depth": { "type": "number" },
@@ -72,6 +74,7 @@
           "phase_deg": { "type": "number" },
           "mapping_phase_deg": { "type": "number" },
           "phase_flip": { "type": "boolean", "default": false },
+          "distribute_phase_over_members": { "type": "boolean", "default": false },
           "target_enabled": { "type": "boolean", "default": true },
           "polarity": { "type": "string", "enum": ["bipolar", "unipolar"] }
         },

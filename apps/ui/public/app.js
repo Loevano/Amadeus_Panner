@@ -40,6 +40,8 @@ const DRAG_PATCH_SEND_INTERVAL_MS = 16;
 const DEBUG_LOG_NOISY_TYPES = new Set(["object", "osc_out", "osc_in"]);
 const DEBUG_LOG_NOISY_THROTTLE_MS = 250;
 const LFO_PARAM_OPTIONS = ["x", "y", "z", "size", "gain"];
+const LFO_TARGET_SCOPE_OBJECT = "object";
+const LFO_TARGET_SCOPE_GROUP = "group";
 const LFO_POLARITIES = new Set(["bipolar", "unipolar"]);
 const ACTION_RULE_TYPES = new Set(["modulationControl", "parameterRamp"]);
 const ACTION_RULE_MODULATION_PARAMS = new Set([
@@ -285,9 +287,11 @@ const els = {
   actionManagerLfoClearBtn: document.getElementById("actionManagerLfoClearBtn"),
   actionManagerSelectedLfoSummary: document.getElementById("actionManagerSelectedLfoSummary"),
   actionManagerLfoTargetsSummary: document.getElementById("actionManagerLfoTargetsSummary"),
+  actionManagerLfoTargetScopeInput: document.getElementById("actionManagerLfoTargetScopeInput"),
   actionManagerLfoTargetObjectInput: document.getElementById("actionManagerLfoTargetObjectInput"),
   actionManagerLfoTargetParamInput: document.getElementById("actionManagerLfoTargetParamInput"),
   actionManagerLfoTargetPhaseInput: document.getElementById("actionManagerLfoTargetPhaseInput"),
+  actionManagerLfoTargetSpreadInput: document.getElementById("actionManagerLfoTargetSpreadInput"),
   actionManagerLfoTargetRows: document.getElementById("actionManagerLfoTargetRows"),
   actionManagerLfoRows: document.getElementById("actionManagerLfoRows"),
   actionManagerLfoDebugSummary: document.getElementById("actionManagerLfoDebugSummary"),
@@ -1267,18 +1271,65 @@ function actionRulePayloadFromInputs(baseRule = null) {
   };
 }
 
+function normalizeLfoTargetScope(rawScope = LFO_TARGET_SCOPE_OBJECT) {
+  const normalized = String(rawScope || "").trim().toLowerCase();
+  if (normalized === LFO_TARGET_SCOPE_GROUP) {
+    return LFO_TARGET_SCOPE_GROUP;
+  }
+  return LFO_TARGET_SCOPE_OBJECT;
+}
+
+function isLfoTargetParameter(parameter, scope = LFO_TARGET_SCOPE_OBJECT) {
+  const normalized = String(parameter || "").trim().toLowerCase();
+  const normalizedScope = normalizeLfoTargetScope(scope);
+  if (normalizedScope === LFO_TARGET_SCOPE_GROUP) {
+    return normalized === "all" || LFO_PARAM_OPTIONS.includes(normalized);
+  }
+  return LFO_PARAM_OPTIONS.includes(normalized);
+}
+
+function getLfoTargetGroups() {
+  const groupSources = getObjectGroups();
+  const groupIds = [];
+  const seen = new Set();
+  for (const group of groupSources) {
+    const groupId = String(group?.groupId || group?.group_id || "").trim();
+    if (!groupId || seen.has(groupId)) continue;
+    if (!Array.isArray(group?.objectIds) || group.objectIds.length === 0) continue;
+    groupIds.push(groupId);
+    seen.add(groupId);
+  }
+  groupIds.sort((a, b) => a.localeCompare(b));
+  return groupIds;
+}
+
+function lfoTargetTypeLabel(lfo) {
+  const scope = normalizeLfoTargetScope(lfo?.targetScope || lfo?.target_scope || "");
+  return scope === LFO_TARGET_SCOPE_GROUP ? "Group" : "Object";
+}
+
 function lfoHasAssignedTarget(lfo) {
+  const scope = normalizeLfoTargetScope(lfo?.targetScope || lfo?.target_scope || "");
   const objectId = String(lfo?.objectId || lfo?.object_id || "").trim();
+  const groupId = String(lfo?.groupId || lfo?.group_id || "").trim();
   const parameter = String(lfo?.parameter || "").trim();
-  return Boolean(objectId && LFO_PARAM_OPTIONS.includes(parameter));
+  if (scope === LFO_TARGET_SCOPE_GROUP) {
+    return Boolean(groupId && isLfoTargetParameter(parameter, scope));
+  }
+  return Boolean(objectId && isLfoTargetParameter(parameter, scope));
 }
 
 function lfoTargetLabel(lfo) {
   if (!lfoHasAssignedTarget(lfo)) {
     return "";
   }
-  const objectId = String(lfo?.objectId || lfo?.object_id || "").trim();
+  const scope = normalizeLfoTargetScope(lfo?.targetScope || lfo?.target_scope || "");
   const parameter = String(lfo?.parameter || "").trim();
+  if (scope === LFO_TARGET_SCOPE_GROUP) {
+    const groupId = String(lfo?.groupId || lfo?.group_id || "").trim();
+    return `${groupId}.${parameter}`;
+  }
+  const objectId = String(lfo?.objectId || lfo?.object_id || "").trim();
   return `${objectId}.${parameter}`;
 }
 
@@ -1346,21 +1397,32 @@ function collectLfoGroups(lfos = []) {
     .sort((a, b) => a.lfoId.localeCompare(b.lfoId));
 }
 
-async function upsertActionLfoTargetMapping(actionId, selectorKey, objectId, parameter, options = {}) {
+async function upsertActionLfoTargetMapping(actionId, selectorKey, targetId, parameter, options = {}) {
   const normalizedActionId = String(actionId || "").trim();
   const normalizedSelectorKey = String(selectorKey || "").trim();
-  const normalizedObjectId = String(objectId || "").trim();
+  const targetScope = normalizeLfoTargetScope(options.targetScope || LFO_TARGET_SCOPE_OBJECT);
+  const normalizedTargetId = String(targetId || "").trim();
   const normalizedParam = String(parameter || "").trim();
+  const normalizedObjectId = targetScope === LFO_TARGET_SCOPE_OBJECT ? sanitizeObjectId(normalizedTargetId) : "";
+  const normalizedGroupId = targetScope === LFO_TARGET_SCOPE_GROUP ? sanitizeObjectId(normalizedTargetId) : "";
   const normalizedPhaseInput = parseFiniteNumber(options.mappingPhaseDeg, Number.NaN);
   const hasPhaseInput = Number.isFinite(normalizedPhaseInput);
   const hasPhaseFlipInput = options.phaseFlip !== undefined;
   const normalizedPhaseFlipInput = Boolean(options.phaseFlip);
   const hasTargetEnabledInput = options.targetEnabled !== undefined;
   const normalizedTargetEnabledInput = Boolean(options.targetEnabled);
+  const hasPhaseSpreadInput = options.distributePhaseOverMembers !== undefined;
+  const normalizedPhaseSpreadInput = Boolean(options.distributePhaseOverMembers);
   const applyOnCreateOnly = Boolean(options.applyOnCreateOnly);
 
-  if (!normalizedActionId || !normalizedSelectorKey || !normalizedObjectId || !LFO_PARAM_OPTIONS.includes(normalizedParam)) {
+  if (!normalizedActionId || !normalizedSelectorKey || !isLfoTargetParameter(normalizedParam, targetScope)) {
     throw new Error("Invalid LFO mapping request");
+  }
+  if (targetScope === LFO_TARGET_SCOPE_OBJECT && !normalizedObjectId) {
+    throw new Error("Object target requires object ID");
+  }
+  if (targetScope === LFO_TARGET_SCOPE_GROUP && !normalizedGroupId) {
+    throw new Error("Group target requires group ID");
   }
 
   const action = getActionById(normalizedActionId);
@@ -1381,9 +1443,16 @@ async function upsertActionLfoTargetMapping(actionId, selectorKey, objectId, par
   const existingIndex = lfos.findIndex((candidate, candidateIndex) => {
     const fallbackId = `lfo-${candidateIndex + 1}`;
     if (lfoSelectorKey(candidate, fallbackId) !== normalizedSelectorKey) return false;
-    const candidateObjectId = String(candidate?.objectId || "").trim();
     const candidateParam = String(candidate?.parameter || "").trim();
-    return candidateObjectId === normalizedObjectId && candidateParam === normalizedParam;
+    if (candidateParam !== normalizedParam) return false;
+    const candidateScope = normalizeLfoTargetScope(candidate?.targetScope || candidate?.target_scope || "");
+    if (candidateScope !== targetScope) return false;
+    if (targetScope === LFO_TARGET_SCOPE_GROUP) {
+      const candidateGroupId = String(candidate?.groupId || candidate?.group_id || "").trim();
+      return candidateGroupId === normalizedGroupId;
+    }
+    const candidateObjectId = String(candidate?.objectId || "").trim();
+    return candidateObjectId === normalizedObjectId;
   });
 
   let nextLfos = null;
@@ -1401,15 +1470,23 @@ async function upsertActionLfoTargetMapping(actionId, selectorKey, objectId, par
     const targetEnabled = (hasTargetEnabledInput && !applyOnCreateOnly)
       ? normalizedTargetEnabledInput
       : currentLfo.targetEnabled !== false;
+    const distributePhaseOverMembers = targetScope === LFO_TARGET_SCOPE_GROUP
+      ? ((hasPhaseSpreadInput && !applyOnCreateOnly)
+        ? normalizedPhaseSpreadInput
+        : Boolean(currentLfo.distributePhaseOverMembers))
+      : false;
     mappingPhaseDeg = normalizePhaseDegrees(basePhase, parseFiniteNumber(currentLfo.mappingPhaseDeg, 0));
     nextLfos = [...lfos];
     nextLfos[existingIndex] = {
       ...currentLfo,
       objectId: normalizedObjectId,
+      groupId: normalizedGroupId,
+      targetScope,
       parameter: normalizedParam,
       mappingPhaseDeg,
       phaseFlip,
-      targetEnabled
+      targetEnabled,
+      distributePhaseOverMembers
     };
   } else {
     const basePhase = hasPhaseInput
@@ -1417,14 +1494,20 @@ async function upsertActionLfoTargetMapping(actionId, selectorKey, objectId, par
       : parseFiniteNumber(sourceLfo.mappingPhaseDeg, 0);
     const phaseFlip = hasPhaseFlipInput ? normalizedPhaseFlipInput : false;
     const targetEnabled = hasTargetEnabledInput ? normalizedTargetEnabledInput : true;
+    const distributePhaseOverMembers = targetScope === LFO_TARGET_SCOPE_GROUP
+      ? (hasPhaseSpreadInput ? normalizedPhaseSpreadInput : false)
+      : false;
     mappingPhaseDeg = normalizePhaseDegrees(basePhase, parseFiniteNumber(sourceLfo.mappingPhaseDeg, 0));
     const linkedLfo = {
       ...(sourceLfo || {}),
+      targetScope,
+      groupId: normalizedGroupId,
       objectId: normalizedObjectId,
       parameter: normalizedParam,
       mappingPhaseDeg,
       phaseFlip,
-      targetEnabled
+      targetEnabled,
+      distributePhaseOverMembers
     };
     nextLfos = [...lfos, linkedLfo];
     created = true;
@@ -1439,16 +1522,31 @@ async function upsertActionLfoTargetMapping(actionId, selectorKey, objectId, par
   const selectedTargetIndex = nextLfos.findIndex((candidate, candidateIndex) => {
     const fallbackId = `lfo-${candidateIndex + 1}`;
     if (lfoSelectorKey(candidate, fallbackId) !== normalizedSelectorKey) return false;
-    const candidateObjectId = String(candidate?.objectId || "").trim();
+    const candidateScope = normalizeLfoTargetScope(candidate?.targetScope || candidate?.target_scope || "");
+    if (candidateScope !== targetScope) return false;
+    if (candidateScope === LFO_TARGET_SCOPE_GROUP) {
+      const candidateGroupId = String(candidate?.groupId || candidate?.group_id || "").trim();
+      if (candidateGroupId !== normalizedGroupId) return false;
+    } else {
+      const candidateObjectId = String(candidate?.objectId || "").trim();
+      if (candidateObjectId !== normalizedObjectId) return false;
+    }
     const candidateParam = String(candidate?.parameter || "").trim();
-    return candidateObjectId === normalizedObjectId && candidateParam === normalizedParam;
+    return candidateParam === normalizedParam;
   });
   state.selectedActionLfoTargetIndex = selectedTargetIndex >= 0 ? selectedTargetIndex : null;
   return {
     actionId: normalizedActionId,
+    targetScope,
+    groupId: normalizedGroupId,
     objectId: normalizedObjectId,
     parameter: normalizedParam,
     mappingPhaseDeg,
+    distributePhaseOverMembers: (
+      selectedTargetIndex >= 0
+        ? Boolean(nextLfos[selectedTargetIndex]?.distributePhaseOverMembers)
+        : false
+    ),
     created
   };
 }
@@ -1478,10 +1576,11 @@ async function linkActionLfoTargetFromPanner(actionId, selectorKey, objectId, pa
         offset: 0
       });
     }
+    const targetLabel = lfoTargetLabel(result);
     if (result.created) {
-      addLog(`action lfo link -> ${result.actionId} ${result.objectId}.${result.parameter} (phase ${result.mappingPhaseDeg}°)`);
+      addLog(`action lfo link -> ${result.actionId} ${targetLabel} (phase ${result.mappingPhaseDeg}°)`);
     } else {
-      addLog(`action lfo mapping phase -> ${result.actionId} ${result.objectId}.${result.parameter} = ${result.mappingPhaseDeg}°`);
+      addLog(`action lfo mapping phase -> ${result.actionId} ${targetLabel} = ${result.mappingPhaseDeg}°`);
     }
     if (options.closeContextMenu !== false) {
       closePannerContextMenu();
@@ -1750,6 +1849,8 @@ function applyObjectRuntimeUpdate(payload) {
 }
 
 function getSelectableGroups() {
+  // Object Manager selection is explicit per-row; do not auto-expand to group members there.
+  if (state.currentPage === "object-manager") return [];
   if (!state.groupSelectEnabled) return [];
   if (!areGroupsEnabled()) return [];
   return getObjectGroups().filter((group) => isGroupEnabled(group));
@@ -1851,6 +1952,10 @@ function isObjectSelected(objectId) {
 
 function selectedObjectTargets() {
   syncSelectedIdsWithObjects();
+  // Object Manager is single-select only so row interactions stay deterministic.
+  if (state.currentPage === "object-manager") {
+    return state.selectedObjectId ? [state.selectedObjectId] : [];
+  }
   if (state.selectedObjectIds.length) return [...state.selectedObjectIds];
   if (state.selectedObjectId) return [state.selectedObjectId];
   return [];
@@ -3801,35 +3906,43 @@ async function actionManagerAddLfoTarget() {
       throw new Error("Select an LFO row to add a target");
     }
 
-    const objects = getObjects();
-    if (!objects.length) {
-      throw new Error("No objects available");
-    }
-    const selectedObjectId = String(els.actionManagerLfoTargetObjectInput?.value || "").trim();
-    const fallbackObjectId = String(state.selectedObjectId || objects[0]?.objectId || "").trim();
-    const objectId = sanitizeObjectId(selectedObjectId || fallbackObjectId);
-    if (!objectId) {
-      throw new Error("Target object ID is required");
-    }
-    const targetObject = objects.find((obj) => String(obj.objectId || "").trim() === objectId);
-    if (!targetObject) {
-      throw new Error(`Object not found: ${objectId}`);
-    }
+    const targetScope = normalizeLfoTargetScope(
+      els.actionManagerLfoTargetScopeInput?.value
+      || selectedGroup.lfo?.targetScope
+      || selectedGroup.lfo?.target_scope
+      || LFO_TARGET_SCOPE_OBJECT
+    );
+    const mappingPhaseDeg = normalizePhaseDegrees(
+      parseFiniteNumber(
+        els.actionManagerLfoTargetPhaseInput?.value,
+        parseFiniteNumber(selectedGroup.lfo?.mappingPhaseDeg, 0)
+      ),
+      0
+    );
+    const distributePhaseOverMembers = targetScope === LFO_TARGET_SCOPE_GROUP
+      ? Boolean(els.actionManagerLfoTargetSpreadInput?.checked)
+      : false;
 
-    const parameter = String(els.actionManagerLfoTargetParamInput?.value || "").trim().toLowerCase();
-    if (!LFO_PARAM_OPTIONS.includes(parameter)) {
-      throw new Error(`Invalid parameter: ${parameter}`);
-    }
-
-    const mappingPhaseDeg = parseFiniteNumber(els.actionManagerLfoTargetPhaseInput?.value, 0);
-    const result = await upsertActionLfoTargetMapping(actionId, selectedGroup.selector, objectId, parameter, {
-      mappingPhaseDeg
-    });
-    if (result.created) {
-      addLog(`action lfo target add -> ${result.actionId} ${result.objectId}.${result.parameter} (phase ${result.mappingPhaseDeg}°)`);
-    } else {
-      addLog(`action lfo target update -> ${result.actionId} ${result.objectId}.${result.parameter} (phase ${result.mappingPhaseDeg}°)`);
-    }
+    // Always append a blank mapping row; user assigns the target after selecting the row.
+    const emptyTarget = {
+      ...(selectedGroup.lfo && typeof selectedGroup.lfo === "object" ? selectedGroup.lfo : {}),
+      targetScope,
+      objectId: "",
+      groupId: "",
+      parameter: "",
+      mappingPhaseDeg,
+      phaseFlip: false,
+      targetEnabled: true,
+      distributePhaseOverMembers
+    };
+    const nextLfos = [...currentLfos, emptyTarget];
+    await api(`/api/action/${encodeURIComponent(actionId)}/update`, "POST", { lfos: nextLfos });
+    state.selectedActionLfoActionId = actionId;
+    const nextGroups = collectLfoGroups(nextLfos);
+    const nextSelectedGroup = nextGroups.find((group) => group.selector === selectedGroup.selector) || null;
+    state.selectedActionLfoIndex = nextSelectedGroup ? nextSelectedGroup.representativeIndex : state.selectedActionLfoIndex;
+    state.selectedActionLfoTargetIndex = nextLfos.length - 1;
+    addLog(`action lfo target add -> ${actionId} (unassigned)`);
     await refreshStatus();
   } catch (error) {
     addLog(`action lfo add target failed: ${error.message}`);
@@ -3860,9 +3973,6 @@ async function actionManagerUpdateLfoTargetConfig(index, options = {}) {
     }
 
     const lfo = currentLfos[index] || {};
-    if (!lfoHasAssignedTarget(lfo)) {
-      throw new Error("Target mapping is missing object/parameter");
-    }
 
     const nextPhaseDeg = normalizePhaseDegrees(
       options.mappingPhaseDeg,
@@ -3882,6 +3992,12 @@ async function actionManagerUpdateLfoTargetConfig(index, options = {}) {
     const nextTargetEnabled = options.targetEnabled === undefined
       ? lfo.targetEnabled !== false
       : Boolean(options.targetEnabled);
+    const lfoScope = normalizeLfoTargetScope(lfo.targetScope || lfo.target_scope || "");
+    const nextDistributePhaseOverMembers = lfoScope === LFO_TARGET_SCOPE_GROUP
+      ? (options.distributePhaseOverMembers === undefined
+        ? Boolean(lfo.distributePhaseOverMembers)
+        : Boolean(options.distributePhaseOverMembers))
+      : false;
     const selectedLfoId = String(selectedGroup.lfoId || "").trim();
     if (!selectedLfoId) {
       throw new Error("Selected LFO is missing an ID");
@@ -3892,7 +4008,8 @@ async function actionManagerUpdateLfoTargetConfig(index, options = {}) {
       ...lfo,
       mappingPhaseDeg: nextPhaseDeg,
       phaseFlip: nextPhaseFlip,
-      targetEnabled: nextTargetEnabled
+      targetEnabled: nextTargetEnabled,
+      distributePhaseOverMembers: nextDistributePhaseOverMembers
     };
     await api("/api/action-lfo/update", "POST", {
       actionId,
@@ -3908,7 +4025,9 @@ async function actionManagerUpdateLfoTargetConfig(index, options = {}) {
     state.selectedActionLfoTargetIndex = index;
 
     const targetLabel = lfoTargetLabel(nextLfos[index]) || `target #${index + 1}`;
-    addLog(`action lfo target update -> ${actionId} ${targetLabel} (phase ${nextPhaseDeg}°, depth ${nextDepth.toFixed(3)}, offset ${nextOffset.toFixed(3)}, flip ${nextPhaseFlip ? "on" : "off"}, target ${nextTargetEnabled ? "on" : "off"})`);
+    addLog(
+      `action lfo target update -> ${actionId} ${targetLabel} (phase ${nextPhaseDeg}°, depth ${nextDepth.toFixed(3)}, offset ${nextOffset.toFixed(3)}, flip ${nextPhaseFlip ? "on" : "off"}, target ${nextTargetEnabled ? "on" : "off"}, spread ${nextDistributePhaseOverMembers ? "on" : "off"})`
+    );
     await refreshStatus();
   } catch (error) {
     addLog(`action lfo target update failed: ${error.message}`);
@@ -3940,51 +4059,77 @@ async function actionManagerUpdateSelectedLfoTargetFromInputs() {
     }
 
     const currentTarget = currentLfos[targetIndex] || {};
-    if (!lfoHasAssignedTarget(currentTarget)) {
-      return;
-    }
 
-    const objectId = sanitizeObjectId(String(els.actionManagerLfoTargetObjectInput?.value || "").trim());
-    const parameter = String(els.actionManagerLfoTargetParamInput?.value || "").trim().toLowerCase();
-    if (!objectId) {
-      throw new Error("Target object ID is required");
+    const targetScope = normalizeLfoTargetScope(
+      els.actionManagerLfoTargetScopeInput?.value || LFO_TARGET_SCOPE_OBJECT
+    );
+    const targetId = sanitizeObjectId(String(els.actionManagerLfoTargetObjectInput?.value || "").trim());
+    if (!targetId) {
+      throw new Error(`Target ${targetScope} ID is required`);
     }
-    if (!LFO_PARAM_OPTIONS.includes(parameter)) {
+    const parameter = String(els.actionManagerLfoTargetParamInput?.value || "").trim().toLowerCase();
+    if (!isLfoTargetParameter(parameter, targetScope)) {
       throw new Error(`Invalid parameter: ${parameter}`);
+    }
+    if (targetScope === LFO_TARGET_SCOPE_GROUP) {
+      const groupIds = getLfoTargetGroups();
+      if (!groupIds.includes(targetId)) {
+        throw new Error(`Group not found: ${targetId}`);
+      }
+    } else {
+      const targetObject = getObjects().find((obj) => String(obj.objectId || "").trim() === targetId);
+      if (!targetObject) {
+        throw new Error(`Object not found: ${targetId}`);
+      }
     }
     const mappingPhaseDeg = normalizePhaseDegrees(
       parseFiniteNumber(els.actionManagerLfoTargetPhaseInput?.value, currentTarget.mappingPhaseDeg),
       parseFiniteNumber(currentTarget.mappingPhaseDeg, 0)
     );
+    const distributePhaseOverMembers = targetScope === LFO_TARGET_SCOPE_GROUP
+      ? Boolean(els.actionManagerLfoTargetSpreadInput?.checked)
+      : false;
 
     const hasDuplicate = selectedGroup.entryIndices.some((entryIndex) => {
       if (entryIndex === targetIndex) return false;
       const candidate = currentLfos[entryIndex];
       if (!candidate || typeof candidate !== "object") return false;
+      const candidateScope = normalizeLfoTargetScope(candidate?.targetScope || candidate?.target_scope || "");
+      if (candidateScope !== targetScope) return false;
       const candidateObjectId = String(candidate.objectId || candidate.object_id || "").trim();
+      const candidateGroupId = String(candidate.groupId || candidate.group_id || "").trim();
+      const candidateTarget = targetScope === LFO_TARGET_SCOPE_GROUP ? candidateGroupId : candidateObjectId;
       const candidateParam = String(candidate.parameter || "").trim().toLowerCase();
-      return candidateObjectId === objectId && candidateParam === parameter;
+      return candidateTarget === targetId && candidateParam === parameter;
     });
     if (hasDuplicate) {
-      throw new Error(`Target already exists for this LFO: ${objectId}.${parameter}`);
+      const duplicateLabel = `${targetId}.${parameter}`;
+      throw new Error(`Target already exists for this LFO: ${duplicateLabel}`);
     }
 
     const nextLfos = [...currentLfos];
+    const previousScope = normalizeLfoTargetScope(currentTarget?.targetScope || currentTarget?.target_scope || "");
     const previousObjectId = String(currentTarget.objectId || currentTarget.object_id || "").trim();
+    const previousGroupId = String(currentTarget.groupId || currentTarget.group_id || "").trim();
     const previousParam = String(currentTarget.parameter || "").trim().toLowerCase();
     const changed =
-      previousObjectId !== objectId
+      previousScope !== targetScope
+      || (targetScope === LFO_TARGET_SCOPE_GROUP ? previousGroupId !== targetId : previousObjectId !== targetId)
       || previousParam !== parameter
-      || normalizePhaseDegrees(currentTarget.mappingPhaseDeg, 0) !== mappingPhaseDeg;
+      || normalizePhaseDegrees(currentTarget.mappingPhaseDeg, 0) !== mappingPhaseDeg
+      || Boolean(currentTarget.distributePhaseOverMembers) !== distributePhaseOverMembers;
     if (!changed) {
       return;
     }
 
     nextLfos[targetIndex] = {
       ...currentTarget,
-      objectId,
+      targetScope,
+      objectId: targetScope === LFO_TARGET_SCOPE_OBJECT ? targetId : "",
+      groupId: targetScope === LFO_TARGET_SCOPE_GROUP ? targetId : "",
       parameter,
-      mappingPhaseDeg
+      mappingPhaseDeg,
+      distributePhaseOverMembers
     };
 
     await api(`/api/action/${encodeURIComponent(actionId)}/update`, "POST", { lfos: nextLfos });
@@ -3993,7 +4138,8 @@ async function actionManagerUpdateSelectedLfoTargetFromInputs() {
     const nextSelectedGroup = nextGroups.find((group) => group.selector === selectedGroup.selector) || null;
     state.selectedActionLfoIndex = nextSelectedGroup ? nextSelectedGroup.representativeIndex : state.selectedActionLfoIndex;
     state.selectedActionLfoTargetIndex = targetIndex;
-    addLog(`action lfo target set -> ${actionId} ${objectId}.${parameter} (phase ${mappingPhaseDeg}°)`);
+    const targetLabel = lfoTargetLabel(nextLfos[targetIndex]) || `${targetId}.${parameter}`;
+    addLog(`action lfo target set -> ${actionId} ${targetLabel} (phase ${mappingPhaseDeg}°)`);
     await refreshStatus();
   } catch (error) {
     addLog(`action lfo target set failed: ${error.message}`);
@@ -4261,21 +4407,27 @@ async function actionManagerToggleLfoTargetEnabled(index, enabled) {
       throw new Error("Target mapping is missing object/parameter");
     }
     const lfoId = String(lfo.lfoId || lfo.lfo_id || "").trim();
-    const objectId = String(lfo.objectId || lfo.object_id || "").trim();
+    const targetScope = normalizeLfoTargetScope(lfo?.targetScope || lfo?.target_scope || "");
+    const targetId = targetScope === LFO_TARGET_SCOPE_GROUP
+      ? String(lfo.groupId || lfo.group_id || "").trim()
+      : String(lfo.objectId || lfo.object_id || "").trim();
     const parameter = String(lfo.parameter || "").trim().toLowerCase();
-    if (!lfoId || !objectId || !LFO_PARAM_OPTIONS.includes(parameter)) {
+    if (!lfoId || !targetId || !isLfoTargetParameter(parameter, targetScope)) {
       throw new Error("Invalid LFO target mapping");
     }
     await api("/api/action-lfo/target-enabled", "POST", {
       actionId,
       lfoId,
-      objectId,
+      targetScope,
+      groupId: targetScope === LFO_TARGET_SCOPE_GROUP ? targetId : "",
+      objectId: targetScope === LFO_TARGET_SCOPE_OBJECT ? targetId : "",
       parameter,
       enabled: Boolean(enabled)
     });
     state.selectedActionLfoActionId = actionId;
     state.selectedActionLfoTargetIndex = index;
-    addLog(`action lfo target ${enabled ? "enabled" : "disabled"} -> ${actionId} ${objectId}.${parameter} (${lfoId})`);
+    const targetLabel = lfoTargetLabel(lfo);
+    addLog(`action lfo target ${enabled ? "enabled" : "disabled"} -> ${actionId} ${targetLabel} (${lfoId})`);
     await refreshStatus();
   } catch (error) {
     addLog(`action lfo target toggle failed: ${error.message}`);
@@ -4332,7 +4484,7 @@ function renderActionLfoDebug(selectedAction, selectedLfoGroup, isRunning) {
 
   if (!selectedGroup) {
     const row = document.createElement("tr");
-    row.innerHTML = '<td class="muted" colspan="6">Select an LFO to monitor its targets.</td>';
+    row.innerHTML = '<td class="muted" colspan="6">Select an LFO to monitor targets.</td>';
     els.actionManagerLfoDebugRows.appendChild(row);
     els.actionManagerLfoDebugSummary.textContent = "No LFO selected.";
     return;
@@ -4736,7 +4888,7 @@ function renderActionManager() {
         <td class="action-group-entry-target-cell">${escapeHtml(targetLabel)}</td>
         <td class="action-manager-row-actions-cell">
           <div class="action-manager-row-actions">
-            <button type="button" data-action-group-entry-command="test">Trigger</button>
+            <button type="button" data-action-group-entry-command="trigger">Trigger</button>
             <button class="danger" type="button" data-action-group-entry-command="remove">Delete</button>
           </div>
         </td>
@@ -4748,7 +4900,7 @@ function renderActionManager() {
         renderActionManager();
       };
 
-      const triggerBtn = row.querySelector('button[data-action-group-entry-command="test"]');
+      const triggerBtn = row.querySelector('button[data-action-group-entry-command="trigger"]');
       if (triggerBtn instanceof HTMLButtonElement) {
         triggerBtn.addEventListener("click", (event) => {
           event.stopPropagation();
@@ -4922,6 +5074,9 @@ function renderActionManager() {
       state.selectedActionLfoTargetIndex = null;
     }
   }
+  if (!Number.isInteger(state.selectedActionLfoIndex) && selectedLfoGroups.length) {
+    state.selectedActionLfoIndex = selectedLfoGroups[0].representativeIndex;
+  }
   const selectedLfoGroup = Number.isInteger(state.selectedActionLfoIndex)
     ? (selectedLfoGroups.find((group) => group.representativeIndex === state.selectedActionLfoIndex) || null)
     : null;
@@ -4932,62 +5087,109 @@ function renderActionManager() {
   }
   const objects = [...getObjects()]
     .sort((a, b) => String(a.objectId || "").localeCompare(String(b.objectId || "")));
+  const groupIds = getLfoTargetGroups();
   const hasObjects = objects.length > 0;
-  const canEditLfoTargets = Boolean(selectedAction && hasSelectedLfo && hasObjects);
+  const hasGroups = groupIds.length > 0;
+  const canConfigureLfoTargets = Boolean(selectedAction && (hasObjects || hasGroups));
+  const canEditLfoTargets = Boolean(canConfigureLfoTargets && hasSelectedLfo);
   els.actionManagerLfoAddTargetBtn.disabled = !canEditLfoTargets;
   els.actionManagerLfoClearBtn.disabled = !selectedAction || !selectedLfos.length;
+  if (els.actionManagerLfoTargetScopeInput) {
+    const previousScope = String(els.actionManagerLfoTargetScopeInput.value || LFO_TARGET_SCOPE_OBJECT).trim();
+    const preferredScope = normalizeLfoTargetScope(previousScope);
+    els.actionManagerLfoTargetScopeInput.innerHTML = "";
+    const objectOption = document.createElement("option");
+    objectOption.value = LFO_TARGET_SCOPE_OBJECT;
+    objectOption.textContent = "Object";
+    objectOption.selected = preferredScope === LFO_TARGET_SCOPE_OBJECT;
+    els.actionManagerLfoTargetScopeInput.appendChild(objectOption);
+    const groupOption = document.createElement("option");
+    groupOption.value = LFO_TARGET_SCOPE_GROUP;
+    groupOption.textContent = "Group";
+    groupOption.selected = preferredScope === LFO_TARGET_SCOPE_GROUP;
+    groupOption.disabled = !hasGroups;
+    els.actionManagerLfoTargetScopeInput.appendChild(groupOption);
+    els.actionManagerLfoTargetScopeInput.disabled = !canConfigureLfoTargets;
+  }
+  const selectedTargetScope = normalizeLfoTargetScope(els.actionManagerLfoTargetScopeInput?.value || LFO_TARGET_SCOPE_OBJECT);
   if (els.actionManagerLfoTargetObjectInput) {
-    const previousObjectId = String(els.actionManagerLfoTargetObjectInput.value || "").trim();
-    const preferredObjectId = objects.some((obj) => String(obj.objectId || "").trim() === previousObjectId)
-      ? previousObjectId
-      : String(state.selectedObjectId || objects[0]?.objectId || "").trim();
+    const previousTargetId = String(els.actionManagerLfoTargetObjectInput.value || "").trim();
+    const preferredTargetId = selectedTargetScope === LFO_TARGET_SCOPE_GROUP
+      ? (groupIds.includes(previousTargetId)
+        ? previousTargetId
+        : groupIds[0] || "")
+      : (objects.some((obj) => String(obj.objectId || "").trim() === previousTargetId)
+        ? previousTargetId
+        : String(state.selectedObjectId || objects[0]?.objectId || "").trim());
     els.actionManagerLfoTargetObjectInput.innerHTML = "";
-    if (!objects.length) {
+    const hasTargets = selectedTargetScope === LFO_TARGET_SCOPE_GROUP ? hasGroups : hasObjects;
+    if (!hasTargets) {
       const option = document.createElement("option");
       option.value = "";
-      option.textContent = "No objects";
+      option.textContent = selectedTargetScope === LFO_TARGET_SCOPE_GROUP ? "No groups" : "No objects";
       option.disabled = true;
       option.selected = true;
       els.actionManagerLfoTargetObjectInput.appendChild(option);
     } else {
-      for (const obj of objects) {
-        const objectId = String(obj.objectId || "").trim();
-        if (!objectId) continue;
+      const targets = selectedTargetScope === LFO_TARGET_SCOPE_GROUP
+        ? groupIds
+        : objects.map((obj) => String(obj.objectId || "").trim()).filter(Boolean);
+      for (const targetId of targets) {
         const option = document.createElement("option");
-        option.value = objectId;
-        option.textContent = objectId;
-        if (objectId === preferredObjectId) {
+        option.value = targetId;
+        option.textContent = targetId;
+        if (targetId === preferredTargetId) {
           option.selected = true;
         }
         els.actionManagerLfoTargetObjectInput.appendChild(option);
       }
-      if (!String(els.actionManagerLfoTargetObjectInput.value || "").trim() && preferredObjectId) {
-        els.actionManagerLfoTargetObjectInput.value = preferredObjectId;
+      if (!String(els.actionManagerLfoTargetObjectInput.value || "").trim() && preferredTargetId) {
+        els.actionManagerLfoTargetObjectInput.value = preferredTargetId;
       }
     }
-    els.actionManagerLfoTargetObjectInput.disabled = !canEditLfoTargets;
+    els.actionManagerLfoTargetObjectInput.disabled = !canConfigureLfoTargets;
   }
   if (els.actionManagerLfoTargetParamInput) {
+    const targetParamOptions = selectedTargetScope === LFO_TARGET_SCOPE_GROUP
+      ? ["all", ...LFO_PARAM_OPTIONS]
+      : [...LFO_PARAM_OPTIONS];
     const currentParam = String(els.actionManagerLfoTargetParamInput.value || "").trim().toLowerCase();
-    if (!LFO_PARAM_OPTIONS.includes(currentParam)) {
-      let fallbackParam = "y";
+    els.actionManagerLfoTargetParamInput.innerHTML = "";
+    for (const option of targetParamOptions) {
+      const optionElement = document.createElement("option");
+      optionElement.value = option;
+      optionElement.textContent = option;
+      if (option === currentParam) {
+        optionElement.selected = true;
+      }
+      els.actionManagerLfoTargetParamInput.appendChild(optionElement);
+    }
+    if (!targetParamOptions.includes(currentParam)) {
+      let fallbackParam = selectedTargetScope === LFO_TARGET_SCOPE_GROUP ? "all" : "x";
       const firstTargetLabel = selectedLfoGroup?.targetLabels?.find(Boolean) || "";
       if (firstTargetLabel.includes(".")) {
         const candidateParam = firstTargetLabel.split(".").pop() || "";
-        if (LFO_PARAM_OPTIONS.includes(candidateParam)) {
+        if (targetParamOptions.includes(candidateParam)) {
           fallbackParam = candidateParam;
         }
       }
       els.actionManagerLfoTargetParamInput.value = fallbackParam;
     }
-    els.actionManagerLfoTargetParamInput.disabled = !canEditLfoTargets;
+    els.actionManagerLfoTargetParamInput.disabled = !canConfigureLfoTargets;
   }
   if (els.actionManagerLfoTargetPhaseInput) {
     const currentPhase = parseFiniteNumber(els.actionManagerLfoTargetPhaseInput.value, Number.NaN);
     if (!Number.isFinite(currentPhase)) {
       els.actionManagerLfoTargetPhaseInput.value = "0";
     }
-    els.actionManagerLfoTargetPhaseInput.disabled = !canEditLfoTargets;
+    els.actionManagerLfoTargetPhaseInput.disabled = !canConfigureLfoTargets;
+  }
+  if (els.actionManagerLfoTargetSpreadInput instanceof HTMLInputElement) {
+    const canSpreadPhase = canConfigureLfoTargets && selectedTargetScope === LFO_TARGET_SCOPE_GROUP;
+    if (!canSpreadPhase) {
+      setCheckboxCheckedIfIdle(els.actionManagerLfoTargetSpreadInput, false);
+    }
+    els.actionManagerLfoTargetSpreadInput.disabled = !canSpreadPhase;
   }
 
   const selectedTargetEntries = [];
@@ -4995,20 +5197,25 @@ function renderActionManager() {
     for (const entryIndex of selectedLfoGroup.entryIndices) {
       if (!Number.isInteger(entryIndex) || entryIndex < 0 || entryIndex >= selectedLfos.length) continue;
       const entry = selectedLfos[entryIndex] || {};
-      if (!lfoHasAssignedTarget(entry)) continue;
-      const objectId = String(entry.objectId || entry.object_id || "").trim();
+      const targetScope = normalizeLfoTargetScope(entry?.targetScope || entry?.target_scope || "");
+      const targetId = targetScope === LFO_TARGET_SCOPE_GROUP
+        ? String(entry.groupId || entry.group_id || "").trim()
+        : String(entry.objectId || entry.object_id || "").trim();
       const parameter = String(entry.parameter || "").trim();
       selectedTargetEntries.push({
         entryIndex,
         lfo: entry,
-        objectId,
+        targetScope,
+        objectId: targetId,
         parameter,
-        targetLabel: `${objectId}.${parameter}`,
+        targetLabel: lfoTargetLabel(entry) || "(unassigned)",
         mappingPhaseDeg: normalizePhaseDegrees(entry.mappingPhaseDeg, 0),
         depth: parseFiniteNumber(entry.depth, 0),
         offset: parseFiniteNumber(entry.offset, 0),
+        targetType: lfoTargetTypeLabel(entry),
         phaseFlip: Boolean(entry.phaseFlip),
-        targetEnabled: entry.targetEnabled !== false
+        targetEnabled: entry.targetEnabled !== false,
+        distributePhaseOverMembers: Boolean(entry.distributePhaseOverMembers)
       });
     }
   }
@@ -5028,6 +5235,10 @@ function renderActionManager() {
     : null;
   if (selectedTargetEntry) {
     if (els.actionManagerLfoTargetObjectInput) {
+      const scopeTargetInput = selectedTargetEntry.targetScope || LFO_TARGET_SCOPE_OBJECT;
+      if (els.actionManagerLfoTargetScopeInput) {
+        setInputValueIfIdle(els.actionManagerLfoTargetScopeInput, scopeTargetInput);
+      }
       const selectedObjectId = selectedTargetEntry.objectId;
       const hasSelectedObjectOption = Array.from(els.actionManagerLfoTargetObjectInput.options)
         .some((option) => String(option.value || "").trim() === selectedObjectId);
@@ -5035,8 +5246,16 @@ function renderActionManager() {
         setInputValueIfIdle(els.actionManagerLfoTargetObjectInput, selectedObjectId);
       }
     }
-    if (els.actionManagerLfoTargetParamInput && LFO_PARAM_OPTIONS.includes(selectedTargetEntry.parameter)) {
+    if (els.actionManagerLfoTargetParamInput && isLfoTargetParameter(selectedTargetEntry.parameter, selectedTargetEntry.targetScope || LFO_TARGET_SCOPE_OBJECT)) {
       setInputValueIfIdle(els.actionManagerLfoTargetParamInput, selectedTargetEntry.parameter);
+    }
+    if (els.actionManagerLfoTargetSpreadInput instanceof HTMLInputElement) {
+      setCheckboxCheckedIfIdle(
+        els.actionManagerLfoTargetSpreadInput,
+        selectedTargetEntry.targetScope === LFO_TARGET_SCOPE_GROUP
+          ? Boolean(selectedTargetEntry.distributePhaseOverMembers)
+          : false
+      );
     }
     if (els.actionManagerLfoTargetPhaseInput) {
       setInputValueIfIdle(els.actionManagerLfoTargetPhaseInput, String(selectedTargetEntry.mappingPhaseDeg));
@@ -5045,7 +5264,7 @@ function renderActionManager() {
 
   if (els.actionManagerLfoTargetsSummary) {
     if (!selectedAction) {
-      els.actionManagerLfoTargetsSummary.textContent = "Select an action to manage LFO targets.";
+      els.actionManagerLfoTargetsSummary.textContent = "Select an action to edit targets.";
     } else if (!hasSelectedLfo) {
       els.actionManagerLfoTargetsSummary.textContent = "Select an LFO to manage targets.";
     } else if (!selectedTargetEntries.length) {
@@ -5171,15 +5390,15 @@ function renderActionManager() {
     els.actionManagerLfoTargetRows.innerHTML = "";
     if (!selectedAction) {
       const row = document.createElement("tr");
-      row.innerHTML = '<td class="muted" colspan="7">Select an action to manage targets.</td>';
+      row.innerHTML = '<td class="muted" colspan="9">Select an action to edit targets.</td>';
       els.actionManagerLfoTargetRows.appendChild(row);
     } else if (!hasSelectedLfo) {
       const row = document.createElement("tr");
-      row.innerHTML = '<td class="muted" colspan="7">Select an LFO to view targets.</td>';
+      row.innerHTML = '<td class="muted" colspan="9">Select an LFO to view targets.</td>';
       els.actionManagerLfoTargetRows.appendChild(row);
     } else if (!selectedTargetEntries.length) {
       const row = document.createElement("tr");
-      row.innerHTML = '<td class="muted" colspan="7">No targets assigned. Use Add Target above.</td>';
+      row.innerHTML = '<td class="muted" colspan="9">No targets assigned.</td>';
       els.actionManagerLfoTargetRows.appendChild(row);
     } else {
       for (const targetEntry of selectedTargetEntries) {
@@ -5204,6 +5423,7 @@ function renderActionManager() {
               aria-pressed="${targetEntry.targetEnabled ? "true" : "false"}"
             >${targetEntry.targetEnabled ? "On" : "Off"}</button>
           </td>
+          <td>${escapeHtml(targetEntry.targetType || lfoTargetTypeLabel(targetEntry.lfo))}</td>
           <td>${escapeHtml(targetEntry.targetLabel)}</td>
           <td>
             <div class="action-lfo-target-rotary-cell">
@@ -5253,6 +5473,15 @@ function renderActionManager() {
               aria-pressed="${isPhaseFlipped ? "true" : "false"}"
             >${isPhaseFlipped ? "Flipped" : "Normal"}</button>
           </td>
+          <td class="action-lfo-target-phase-spread-cell">
+            <button
+              type="button"
+              class="action-enabled-toggle action-lfo-target-spread-toggle ${targetEntry.distributePhaseOverMembers ? "is-on" : ""}"
+              data-action-lfo-target-spread="${targetEntry.distributePhaseOverMembers ? "true" : "false"}"
+              aria-pressed="${targetEntry.distributePhaseOverMembers ? "true" : "false"}"
+              ${targetEntry.targetScope === LFO_TARGET_SCOPE_GROUP ? "" : "disabled"}
+            >${targetEntry.targetScope === LFO_TARGET_SCOPE_GROUP ? (targetEntry.distributePhaseOverMembers ? "On" : "Off") : "-"}</button>
+          </td>
           <td class="action-manager-row-actions-cell">
             <div class="action-manager-row-actions">
               <button type="button" data-action-lfo-target-command="update" data-index="${targetEntry.entryIndex}">Save</button>
@@ -5267,6 +5496,7 @@ function renderActionManager() {
         const phaseValueLabel = row.querySelector(".action-lfo-target-phase-value");
         const depthValueLabel = row.querySelector(".action-lfo-target-depth-value");
         const polarityToggle = row.querySelector(".action-lfo-target-polarity-toggle");
+        const spreadToggle = row.querySelector(".action-lfo-target-spread-toggle");
         const enabledToggle = row.querySelector(".action-lfo-target-enabled-toggle");
         const saveBtn = row.querySelector('button[data-action-lfo-target-command="update"]');
         const removeBtn = row.querySelector('button[data-action-lfo-target-command="remove"]');
@@ -5288,12 +5518,16 @@ function renderActionManager() {
           const targetEnabledValue = enabledToggle instanceof HTMLButtonElement
             ? String(enabledToggle.dataset.actionLfoTargetToggleEnabled || "").toLowerCase() !== "false"
             : targetEntry.targetEnabled;
+          const phaseSpreadValue = spreadToggle instanceof HTMLButtonElement
+            ? String(spreadToggle.dataset.actionLfoTargetSpread || "").toLowerCase() === "true"
+            : Boolean(targetEntry.distributePhaseOverMembers);
           void actionManagerUpdateLfoTargetConfig(entryIndex, {
             mappingPhaseDeg: phaseValue,
             depth: depthValue,
             offset: offsetValue,
             phaseFlip: phaseFlipValue,
-            targetEnabled: targetEnabledValue
+            targetEnabled: targetEnabledValue,
+            distributePhaseOverMembers: targetEntry.targetScope === LFO_TARGET_SCOPE_GROUP ? phaseSpreadValue : false
           });
         };
 
@@ -5329,11 +5563,22 @@ function renderActionManager() {
           enabledToggle.setAttribute("aria-pressed", nextEnabled ? "true" : "false");
           enabledToggle.textContent = nextEnabled ? "On" : "Off";
         };
+        const setTargetSpreadToggle = (enabled) => {
+          if (!(spreadToggle instanceof HTMLButtonElement)) return;
+          const canSpread = targetEntry.targetScope === LFO_TARGET_SCOPE_GROUP;
+          const nextEnabled = canSpread && Boolean(enabled);
+          spreadToggle.dataset.actionLfoTargetSpread = nextEnabled ? "true" : "false";
+          spreadToggle.classList.toggle("is-on", nextEnabled);
+          spreadToggle.setAttribute("aria-pressed", nextEnabled ? "true" : "false");
+          spreadToggle.textContent = canSpread ? (nextEnabled ? "On" : "Off") : "-";
+          spreadToggle.disabled = !canSpread;
+        };
 
         syncPhaseLabel();
         syncDepthLabel();
         setTargetPolarityToggle(targetEntry.phaseFlip);
         setTargetEnabledToggle(targetEntry.targetEnabled);
+        setTargetSpreadToggle(targetEntry.distributePhaseOverMembers);
 
         if (phaseInput instanceof HTMLInputElement) {
           phaseInput.addEventListener("input", (event) => {
@@ -5377,6 +5622,15 @@ function renderActionManager() {
             const enabledNow = String(enabledToggle.dataset.actionLfoTargetToggleEnabled || "").toLowerCase() !== "false";
             setTargetEnabledToggle(!enabledNow);
             void actionManagerToggleLfoTargetEnabled(entryIndex, !enabledNow);
+          });
+        }
+        if (spreadToggle instanceof HTMLButtonElement) {
+          spreadToggle.addEventListener("click", (event) => {
+            event.stopPropagation();
+            if (targetEntry.targetScope !== LFO_TARGET_SCOPE_GROUP) return;
+            const spreadNow = String(spreadToggle.dataset.actionLfoTargetSpread || "").toLowerCase() === "true";
+            setTargetSpreadToggle(!spreadNow);
+            saveTargetConfig();
           });
         }
         if (saveBtn instanceof HTMLButtonElement) {
@@ -5599,7 +5853,7 @@ function renderGroupsManager() {
     setInputValueIfIdle(els.managerGroupName, String(selectedGroup.name || selectedGroup.groupId));
     setInputValueIfIdle(els.managerGroupColor, normalizeHexColor(selectedGroup.color, DEFAULT_GROUP_COLOR));
     applyLinkParamsToInputs(selectedGroup.linkParams || []);
-    setTextIfChanged(els.managerGroupSummary, `Group members: ${selectedGroup.objectIds.length}. Update will replace members with current selection (${selectedObjectIds.length}).`);
+    setTextIfChanged(els.managerGroupSummary, `Group members: ${selectedGroup.objectIds.length}. Current selection: ${selectedObjectIds.length}.`);
   } else {
     const suggestedId = uniqueGroupId(suggestGroupBaseFromSelection(selectedObjectIds));
     state.draftSuggestedIds.objectGroup = suggestedId;
@@ -5615,7 +5869,7 @@ function renderGroupsManager() {
       const groupName = humanizeId(String(els.managerGroupId.value || suggestedId));
       setInputValueIfIdle(els.managerGroupName, groupName || String(els.managerGroupId.value || suggestedId));
     }
-    setTextIfChanged(els.managerGroupSummary, `${groups.length} group${groups.length === 1 ? "" : "s"} total. Add can be empty; Update uses current selection (${selectedObjectIds.length}).`);
+    setTextIfChanged(els.managerGroupSummary, `${groups.length} group${groups.length === 1 ? "" : "s"}. Choose a group to edit.`);
   }
 
   els.managerGroupUpdateBtn.disabled = !state.selectedGroupId;
@@ -5872,7 +6126,6 @@ function renderManager() {
   if (state.currentPage !== "object-manager") return;
   syncSelectedIdsWithObjects();
   const objects = getObjects();
-  const orderedObjectIds = objects.map((obj) => String(obj.objectId || "").trim()).filter(Boolean);
   const groups = getObjectGroups();
   const allGroup = getVirtualAllGroup();
   const allMembers = new Set(allGroup.objectIds);
@@ -5892,12 +6145,12 @@ function renderManager() {
     }
   }
   const selectedIds = selectedObjectTargets();
-  const selectedObjectIdSet = new Set(state.selectedObjectIds);
+  const selectedObjectIdSet = new Set(selectedIds);
   const managerStructureKey = [
     `groups-enabled:${areGroupsEnabled() ? "1" : "0"}`,
     `group-select-enabled:${state.groupSelectEnabled ? "1" : "0"}`,
     `selected:${String(state.selectedObjectId || "")}`,
-    `selected-list:${state.selectedObjectIds.join(",")}`,
+    `selected-list:${selectedIds.join(",")}`,
     `selected-group:${String(state.selectedGroupId || "")}`,
     `objects:${objects.map((obj) => (
       `${String(obj.objectId || "").trim()}|${String(obj.type || "")}|${String(obj.color || "")}|${Boolean(obj.excludeFromAll) ? 1 : 0}`
@@ -5919,10 +6172,9 @@ function renderManager() {
   state.managerStructureRenderKey = managerStructureKey;
   state.managerPositionRenderKey = managerPositionKey;
   if (els.managerGroupSelectToggle instanceof HTMLInputElement) {
-    els.managerGroupSelectToggle.checked = Boolean(state.groupSelectEnabled);
-    els.managerGroupSelectToggle.title = areGroupsEnabled()
-      ? "Selecting one member can include enabled group members."
-      : "Groups are disabled globally.";
+    els.managerGroupSelectToggle.checked = false;
+    els.managerGroupSelectToggle.disabled = true;
+    els.managerGroupSelectToggle.title = "Group Select is disabled in Object Manager. Each row selects one object.";
   }
   if (!String(els.managerAddId.value || "").trim()) {
     const suggestedAddId = uniqueObjectId(suggestObjectBaseFromType(els.managerAddType.value || DEFAULT_OBJECT_TYPE));
@@ -6035,35 +6287,7 @@ function renderManager() {
         return;
       }
       const targetId = String(obj.objectId || "").trim();
-      const isAdditive = event.metaKey || event.ctrlKey;
-      const isRange = event.shiftKey;
-      if (isRange) {
-        const targetIndex = orderedObjectIds.indexOf(targetId);
-        const anchorId = orderedObjectIds.includes(state.selectedObjectId) ? state.selectedObjectId : targetId;
-        const anchorIndex = orderedObjectIds.indexOf(anchorId);
-        if (targetIndex >= 0 && anchorIndex >= 0) {
-          const start = Math.min(anchorIndex, targetIndex);
-          const end = Math.max(anchorIndex, targetIndex);
-          const rangeIds = orderedObjectIds.slice(start, end + 1);
-          const nextIds = isAdditive
-            ? [...new Set([...selectedObjectTargets(), ...rangeIds])]
-            : rangeIds;
-          setSelection(nextIds);
-          if (state.selectedObjectIds.includes(targetId)) {
-            state.selectedObjectId = targetId;
-          }
-        } else {
-          setSingleSelection(targetId);
-        }
-      } else if (isAdditive) {
-        const wasSelected = isObjectSelected(targetId);
-        toggleSelection(targetId);
-        if (!wasSelected && state.selectedObjectIds.includes(targetId)) {
-          state.selectedObjectId = targetId;
-        }
-      } else {
-        setSingleSelection(targetId);
-      }
+      setSingleSelection(targetId);
       renderAll();
     });
 
@@ -6074,16 +6298,7 @@ function renderManager() {
       if (target.closest("button, input, select, textarea, a")) return;
       event.preventDefault();
       const targetId = String(obj.objectId || "").trim();
-      const isAdditive = event.metaKey || event.ctrlKey;
-      if (isAdditive) {
-        const wasSelected = isObjectSelected(targetId);
-        toggleSelection(targetId);
-        if (!wasSelected && state.selectedObjectIds.includes(targetId)) {
-          state.selectedObjectId = targetId;
-        }
-      } else {
-        setSingleSelection(targetId);
-      }
+      setSingleSelection(targetId);
       renderAll();
     });
 
@@ -7213,6 +7428,12 @@ function setupHandlers() {
     void actionManagerAddLfoTarget();
   });
 
+  if (els.actionManagerLfoTargetScopeInput) {
+    els.actionManagerLfoTargetScopeInput.addEventListener("change", () => {
+      void renderActionManager();
+    });
+  }
+
   if (els.actionManagerLfoTargetObjectInput) {
     els.actionManagerLfoTargetObjectInput.addEventListener("change", () => {
       void actionManagerUpdateSelectedLfoTargetFromInputs();
@@ -7221,6 +7442,12 @@ function setupHandlers() {
 
   if (els.actionManagerLfoTargetParamInput) {
     els.actionManagerLfoTargetParamInput.addEventListener("change", () => {
+      void actionManagerUpdateSelectedLfoTargetFromInputs();
+    });
+  }
+
+  if (els.actionManagerLfoTargetSpreadInput instanceof HTMLInputElement) {
+    els.actionManagerLfoTargetSpreadInput.addEventListener("change", () => {
       void actionManagerUpdateSelectedLfoTargetFromInputs();
     });
   }

@@ -174,7 +174,7 @@
             <label><input class="manager-group-link" data-param="color" type="checkbox" checked /> Color</label>
           </div>
 
-          <p id="managerGroupSummary" class="muted">Add can be empty; update uses current selection.</p>
+          <p id="managerGroupSummary" class="muted">0 groups. Choose a group to edit.</p>
           <div class="row">
             <button id="managerGroupCreateBtn" type="button">Add Group</button>
             <button id="managerGroupUpdateBtn" type="button">Update Group</button>
@@ -539,9 +539,11 @@
           <h3>LFO Targets</h3>
           <p id="actionManagerLfoTargetsSummary" class="muted">Select an LFO to manage targets.</p>
           <div class="field-grid manager-field-grid action-lfo-target-grid">
-            <label for="actionManagerLfoTargetObjectInput">Object</label><select id="actionManagerLfoTargetObjectInput"></select>
+            <label for="actionManagerLfoTargetScopeInput">Target Type</label><select id="actionManagerLfoTargetScopeInput"></select>
+            <label for="actionManagerLfoTargetObjectInput">Target Name</label><select id="actionManagerLfoTargetObjectInput"></select>
             <label for="actionManagerLfoTargetParamInput">Parameter</label>
             <select id="actionManagerLfoTargetParamInput">
+              <option value="all">all</option>
               <option value="x">x</option>
               <option value="y">y</option>
               <option value="z">z</option>
@@ -549,6 +551,7 @@
               <option value="gain">gain</option>
             </select>
             <label for="actionManagerLfoTargetPhaseInput">Map Phase (deg)</label><input id="actionManagerLfoTargetPhaseInput" type="number" step="1" value="0" />
+            <label for="actionManagerLfoTargetSpreadInput">Phase Spread</label><input id="actionManagerLfoTargetSpreadInput" type="checkbox" />
           </div>
           <div class="row">
             <button id="actionManagerLfoAddTargetBtn" type="button">Add Target</button>
@@ -558,11 +561,13 @@
               <thead>
                 <tr>
                   <th>Enabled</th>
+                  <th>Type</th>
                   <th>Target</th>
                   <th>Phase</th>
                   <th>Depth</th>
                   <th>Offset</th>
                   <th>Phase Flip</th>
+                  <th>Phase Spread</th>
                   <th class="action-manager-row-actions-cell">Actions</th>
                 </tr>
               </thead>
