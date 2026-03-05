@@ -21,6 +21,7 @@
       <button id="viewModulationManagerBtn" class="view-btn" type="button" role="tab" aria-selected="false">Modulation Manager</button>
       <button id="viewActionManagerBtn" class="view-btn" type="button" role="tab" aria-selected="false">Action Manager</button>
       <button id="viewActionGroupManagerBtn" class="view-btn" type="button" role="tab" aria-selected="false">Action Group Manager</button>
+      <button id="viewConfigurationBtn" class="view-btn" type="button" role="tab" aria-selected="false">Configuration</button>
     </div>
   </div>
 
@@ -36,7 +37,7 @@
         <button id="loadShowBtn" type="button">Load Show</button>
         <button id="saveShowBtn" type="button">Save Show</button>
         <button id="saveShowAsBtn" type="button">Save Show As</button>
-        <button id="newShowBtn" type="button">Create New Show</button>
+        <button id="newShowBtn" type="button">Add Show</button>
       </div>
       <p id="showInfo" class="muted">No show loaded</p>
 
@@ -129,7 +130,7 @@
           <select id="managerObjectSelect"></select>
 
           <div class="row">
-            <input id="managerRenameInput" type="text" placeholder="new-id" />
+            <input id="managerRenameInput" type="text" placeholder="target-id" />
             <button id="managerRenameBtn" type="button">Rename</button>
           </div>
 
@@ -144,8 +145,8 @@
           </div>
 
           <div class="row">
-            <button id="managerRemoveBtn" class="danger" type="button">Remove Selected</button>
-            <button id="managerClearBtn" class="danger" type="button">Clear All</button>
+            <button id="managerRemoveBtn" class="danger" type="button">Delete Selected</button>
+            <button id="managerClearBtn" class="danger" type="button">Delete All</button>
           </div>
         </div>
 
@@ -173,9 +174,9 @@
             <label><input class="manager-group-link" data-param="color" type="checkbox" checked /> Color</label>
           </div>
 
-          <p id="managerGroupSummary" class="muted">Create can be empty; update uses current selection.</p>
+          <p id="managerGroupSummary" class="muted">Add can be empty; update uses current selection.</p>
           <div class="row">
-            <button id="managerGroupCreateBtn" type="button">Create Group</button>
+            <button id="managerGroupCreateBtn" type="button">Add Group</button>
             <button id="managerGroupUpdateBtn" type="button">Update Group</button>
             <button id="managerGroupDeleteBtn" class="danger" type="button">Delete Group</button>
           </div>
@@ -209,7 +210,7 @@
           <label for="groupManagerEditSelect">Group</label>
           <div class="row group-manager-top-row">
             <select id="groupManagerEditSelect"></select>
-            <button id="groupManagerCreateBtn" type="button">Create Group</button>
+            <button id="groupManagerCreateBtn" type="button">Add Group</button>
             <button id="groupManagerEditDeleteBtn" class="danger" type="button">Delete</button>
           </div>
 
@@ -387,7 +388,7 @@
           </section>
 
           <div class="row action-setup-actions-row">
-            <button id="actionManagerCreateBtn" type="button">Create</button>
+            <button id="actionManagerCreateBtn" type="button">Add</button>
             <button id="actionManagerSaveBtn" type="button">Save</button>
             <button id="actionManagerSaveAsBtn" type="button">Save As</button>
             <button id="actionManagerDeleteBtn" class="danger" type="button">Delete</button>
@@ -418,7 +419,7 @@
             <label for="actionGroupManagerOscTriggerInput">OSC Trigger</label><input id="actionGroupManagerOscTriggerInput" type="text" placeholder="/art/action-group/group-1/trigger" />
           </div>
           <div class="row">
-            <button id="actionGroupManagerCreateBtn" type="button">Create Group</button>
+            <button id="actionGroupManagerCreateBtn" type="button">Add Group</button>
             <button id="actionGroupManagerDeleteBtn" class="danger" type="button">Delete Group</button>
           </div>
         </div>
@@ -468,7 +469,7 @@
           <div class="row">
             <button id="actionGroupEntryAddBtn" type="button">Add Entry</button>
             <button id="actionGroupEntryTriggerBtn" type="button">Trigger Entry</button>
-            <button id="actionGroupEntryClearBtn" class="danger" type="button">Clear Entries</button>
+            <button id="actionGroupEntryClearBtn" class="danger" type="button">Delete Entries</button>
           </div>
           <div class="manager-table-wrap">
             <table class="manager-table action-group-entry-table">
@@ -510,8 +511,8 @@
             <label for="actionManagerLfoPolarityBtn">Polarity</label><button id="actionManagerLfoPolarityBtn" class="lfo-toggle-btn" type="button" aria-pressed="false">Bipolar</button>
           </div>
           <div class="row">
-            <button id="actionManagerLfoAddBtn" type="button">New LFO</button>
-            <button id="actionManagerLfoClearBtn" class="danger" type="button">Clear LFOs</button>
+            <button id="actionManagerLfoAddBtn" type="button">Add LFO</button>
+            <button id="actionManagerLfoClearBtn" class="danger" type="button">Delete LFOs</button>
           </div>
           <p id="actionManagerSelectedLfoSummary" class="muted">Selected LFO: none</p>
           <div class="manager-table-wrap">
@@ -569,6 +570,38 @@
             </table>
           </div>
         </div>
+      </div>
+    </section>
+
+    <section class="panel configuration-panel">
+      <h2>Configuration</h2>
+      <p id="configurationSummary" class="muted">Configure OSC transport and address prefixes used by this project.</p>
+
+      <div class="manager-grid configuration-grid">
+        <div class="manager-block configuration-network-block">
+          <h3>OSC Network</h3>
+          <div class="field-grid manager-field-grid configuration-field-grid">
+            <label for="configOscOutHostInput">OSC Out Host</label><input id="configOscOutHostInput" type="text" placeholder="127.0.0.1" />
+            <label for="configOscOutPortInput">OSC Out Port</label><input id="configOscOutPortInput" type="number" min="1" max="65535" step="1" />
+            <label for="configOscInPortInput">OSC In Port</label><input id="configOscInPortInput" type="number" min="1" max="65535" step="1" />
+          </div>
+        </div>
+
+        <div class="manager-block configuration-routing-block">
+          <h3>OSC Address Prefixes</h3>
+          <div class="field-grid manager-field-grid configuration-field-grid">
+            <label for="configOscObjectPrefixInput">Object Prefix</label><input id="configOscObjectPrefixInput" type="text" placeholder="/art/object" />
+            <label for="configOscScenePrefixInput">Scene Prefix</label><input id="configOscScenePrefixInput" type="text" placeholder="/art/scene" />
+            <label for="configOscActionPrefixInput">Action Prefix</label><input id="configOscActionPrefixInput" type="text" placeholder="/art/action" />
+            <label for="configOscActionGroupPrefixInput">Action Group Prefix</label><input id="configOscActionGroupPrefixInput" type="text" placeholder="/art/action-group" />
+          </div>
+          <p class="muted">Object = &lt;prefix&gt;/&lt;objectId&gt;/&lt;param&gt;, Scene recall = &lt;prefix&gt;/&lt;sceneId&gt;/recall.</p>
+        </div>
+      </div>
+
+      <div class="row">
+        <button id="configSaveBtn" type="button">Save Configuration</button>
+        <button id="configResetBtn" type="button">Reset Draft</button>
       </div>
     </section>
 

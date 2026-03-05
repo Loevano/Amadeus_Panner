@@ -57,6 +57,12 @@ const ACTION_RULE_MODULATION_DISCRETE_VALUES = {
   wave: ["sine", "triangle", "square", "saw"],
   polarity: ["bipolar", "unipolar"]
 };
+const OSC_PREFIX_DEFAULTS = {
+  objectPathPrefix: "/art/object",
+  scenePathPrefix: "/art/scene",
+  actionPathPrefix: "/art/action",
+  actionGroupPathPrefix: "/art/action-group"
+};
 const CLIENT_UPDATE_SESSION_ID = (() => {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
     return `ui-${crypto.randomUUID()}`;
@@ -145,7 +151,10 @@ const state = {
   lfoDebugLastValueByKey: {},
   lastLfoDebugEventByAction: {},
   logs: [],
-  managerRenderKey: "",
+  configDraft: null,
+  configDraftDirty: false,
+  managerStructureRenderKey: "",
+  managerPositionRenderKey: "",
   camera: {
     yawDeg: CAMERA_DEFAULT.yawDeg,
     pitchDeg: CAMERA_DEFAULT.pitchDeg,
@@ -164,6 +173,7 @@ const els = {
   viewModulationManagerBtn: document.getElementById("viewModulationManagerBtn"),
   viewObjectManagerBtn: document.getElementById("viewObjectManagerBtn"),
   viewGroupManagerBtn: document.getElementById("viewGroupManagerBtn"),
+  viewConfigurationBtn: document.getElementById("viewConfigurationBtn"),
   showPathInput: document.getElementById("showPathInput"),
   loadShowBtn: document.getElementById("loadShowBtn"),
   saveShowBtn: document.getElementById("saveShowBtn"),
@@ -293,6 +303,16 @@ const els = {
   groupManagerEditSummary: document.getElementById("groupManagerEditSummary"),
   groupManagerCreateBtn: document.getElementById("groupManagerCreateBtn"),
   groupManagerEditDeleteBtn: document.getElementById("groupManagerEditDeleteBtn"),
+  configurationSummary: document.getElementById("configurationSummary"),
+  configOscOutHostInput: document.getElementById("configOscOutHostInput"),
+  configOscOutPortInput: document.getElementById("configOscOutPortInput"),
+  configOscInPortInput: document.getElementById("configOscInPortInput"),
+  configOscObjectPrefixInput: document.getElementById("configOscObjectPrefixInput"),
+  configOscScenePrefixInput: document.getElementById("configOscScenePrefixInput"),
+  configOscActionPrefixInput: document.getElementById("configOscActionPrefixInput"),
+  configOscActionGroupPrefixInput: document.getElementById("configOscActionGroupPrefixInput"),
+  configSaveBtn: document.getElementById("configSaveBtn"),
+  configResetBtn: document.getElementById("configResetBtn"),
   toggleDebugEventsBtn: document.getElementById("toggleDebugEventsBtn"),
   debugEventsState: document.getElementById("debugEventsState"),
   eventLog: document.getElementById("eventLog"),
@@ -743,7 +763,7 @@ function addLog(line) {
     setUiStatus(line, "error");
     return;
   }
-  if (/loaded|saved|created|updated|enabled|disabled|recall|started|stopped|aborted|add|remove|rename|clear|set|patch/i.test(line)) {
+  if (/loaded|saved|created|updated|enabled|disabled|recall|started|stopped|aborted|add|delete|deleted|remove|rename|clear|set|patch/i.test(line)) {
     setUiStatus(line, "success");
     return;
   }
@@ -872,6 +892,26 @@ function setTextIfChanged(element, value) {
   const next = String(value || "");
   if (element.textContent === next) return;
   element.textContent = next;
+}
+
+function managerPositionText(obj) {
+  return `${Number(obj.x).toFixed(1)}, ${Number(obj.y).toFixed(1)}, ${Number(obj.z).toFixed(1)}`;
+}
+
+// Keep table row nodes stable during rapid runtime motion updates (e.g. LFO modulation).
+function updateManagerObjectPositionCells(objects) {
+  const objectsById = new Map(
+    (Array.isArray(objects) ? objects : []).map((obj) => [String(obj.objectId || "").trim(), obj])
+  );
+  const rows = els.managerObjectRows.querySelectorAll("tr[data-object-id]");
+  for (const row of rows) {
+    const objectId = String(row.dataset.objectId || "").trim();
+    if (!objectId) continue;
+    const obj = objectsById.get(objectId);
+    if (!obj) continue;
+    const positionCell = row.querySelector(".position-cell");
+    setTextIfChanged(positionCell, managerPositionText(obj));
+  }
 }
 
 async function api(path, method = "GET", body) {
@@ -1020,7 +1060,7 @@ async function toggleObjectGroupMembershipFromPanner(objectId, groupId) {
 
     await api(`/api/groups/${encodeURIComponent(targetGroupId)}/update`, "POST", { objectIds: nextMembers });
     state.selectedGroupId = targetGroupId;
-    addLog(`group ${isMember ? "remove" : "add"} member -> ${targetObjectId} ${isMember ? "from" : "to"} ${targetGroupId}`);
+    addLog(`group ${isMember ? "delete" : "add"} member -> ${targetObjectId} ${isMember ? "from" : "to"} ${targetGroupId}`);
     closePannerContextMenu();
     await refreshStatus();
   } catch (error) {
@@ -1975,12 +2015,14 @@ function setPage(nextPage) {
   els.viewModulationManagerBtn.classList.toggle("is-active", nextPage === "modulation-manager");
   els.viewObjectManagerBtn.classList.toggle("is-active", nextPage === "object-manager");
   els.viewGroupManagerBtn.classList.toggle("is-active", nextPage === "group-manager");
+  els.viewConfigurationBtn.classList.toggle("is-active", nextPage === "configuration");
   els.viewPannerBtn.setAttribute("aria-selected", nextPage === "panner" ? "true" : "false");
   els.viewActionManagerBtn.setAttribute("aria-selected", nextPage === "action-manager" ? "true" : "false");
   els.viewActionGroupManagerBtn.setAttribute("aria-selected", nextPage === "action-group-manager" ? "true" : "false");
   els.viewModulationManagerBtn.setAttribute("aria-selected", nextPage === "modulation-manager" ? "true" : "false");
   els.viewObjectManagerBtn.setAttribute("aria-selected", nextPage === "object-manager" ? "true" : "false");
   els.viewGroupManagerBtn.setAttribute("aria-selected", nextPage === "group-manager" ? "true" : "false");
+  els.viewConfigurationBtn.setAttribute("aria-selected", nextPage === "configuration" ? "true" : "false");
   renderAll();
 }
 
@@ -2461,7 +2503,7 @@ async function runSceneSaveAs() {
   try {
     const sourceSceneId = selectedSceneIdOrThrow();
     const suggestedSceneId = uniqueSceneId(sourceSceneId);
-    const rawNewSceneId = prompt("New scene ID", suggestedSceneId);
+    const rawNewSceneId = prompt("Add scene ID", suggestedSceneId);
     if (rawNewSceneId === null) {
       addLog("scene save-as cancelled");
       return;
@@ -2580,12 +2622,150 @@ function selectedActionOrNull() {
   return getActionById(actionId);
 }
 
+function normalizeOscPort(value, fallback) {
+  const parsed = Number.parseInt(String(value ?? "").trim(), 10);
+  if (Number.isInteger(parsed) && parsed >= 1 && parsed <= 65535) {
+    return parsed;
+  }
+  return Number(fallback);
+}
+
+function normalizeOscPathPrefix(value, fallback) {
+  const raw = String(value || "").trim();
+  const seeded = raw || String(fallback || "/");
+  let normalized = `/${seeded.replace(/^\/+/, "")}`;
+  normalized = normalized.replace(/\/+/g, "/");
+  if (normalized.length > 1) {
+    normalized = normalized.replace(/\/+$/, "");
+  }
+  return normalized || String(fallback || "/");
+}
+
+function getStatusOscConfig() {
+  const statusOsc = state.status?.osc && typeof state.status.osc === "object" ? state.status.osc : {};
+  const fallbackOutHost = "127.0.0.1";
+  const outHost = String(statusOsc.outHost || fallbackOutHost).trim() || fallbackOutHost;
+  return {
+    outHost,
+    outPort: normalizeOscPort(statusOsc.outPort, 9000),
+    inPort: normalizeOscPort(statusOsc.inPort, 9001),
+    objectPathPrefix: normalizeOscPathPrefix(statusOsc.objectPathPrefix, OSC_PREFIX_DEFAULTS.objectPathPrefix),
+    scenePathPrefix: normalizeOscPathPrefix(statusOsc.scenePathPrefix, OSC_PREFIX_DEFAULTS.scenePathPrefix),
+    actionPathPrefix: normalizeOscPathPrefix(statusOsc.actionPathPrefix, OSC_PREFIX_DEFAULTS.actionPathPrefix),
+    actionGroupPathPrefix: normalizeOscPathPrefix(statusOsc.actionGroupPathPrefix, OSC_PREFIX_DEFAULTS.actionGroupPathPrefix)
+  };
+}
+
+function configurationInputElements() {
+  return [
+    els.configOscOutHostInput,
+    els.configOscOutPortInput,
+    els.configOscInPortInput,
+    els.configOscObjectPrefixInput,
+    els.configOscScenePrefixInput,
+    els.configOscActionPrefixInput,
+    els.configOscActionGroupPrefixInput
+  ].filter((element) => element instanceof HTMLInputElement);
+}
+
+function configurationDraftFromInputs(fallbackConfig = getStatusOscConfig()) {
+  const outHost = String(els.configOscOutHostInput?.value || "").trim() || fallbackConfig.outHost;
+  return {
+    outHost,
+    outPort: normalizeOscPort(els.configOscOutPortInput?.value, fallbackConfig.outPort),
+    inPort: normalizeOscPort(els.configOscInPortInput?.value, fallbackConfig.inPort),
+    objectPathPrefix: normalizeOscPathPrefix(els.configOscObjectPrefixInput?.value, fallbackConfig.objectPathPrefix),
+    scenePathPrefix: normalizeOscPathPrefix(els.configOscScenePrefixInput?.value, fallbackConfig.scenePathPrefix),
+    actionPathPrefix: normalizeOscPathPrefix(els.configOscActionPrefixInput?.value, fallbackConfig.actionPathPrefix),
+    actionGroupPathPrefix: normalizeOscPathPrefix(els.configOscActionGroupPrefixInput?.value, fallbackConfig.actionGroupPathPrefix)
+  };
+}
+
+function oscConfigEquals(left, right) {
+  if (!left || !right) return false;
+  return String(left.outHost || "").trim() === String(right.outHost || "").trim()
+    && normalizeOscPort(left.outPort, 0) === normalizeOscPort(right.outPort, 0)
+    && normalizeOscPort(left.inPort, 0) === normalizeOscPort(right.inPort, 0)
+    && normalizeOscPathPrefix(left.objectPathPrefix, "/") === normalizeOscPathPrefix(right.objectPathPrefix, "/")
+    && normalizeOscPathPrefix(left.scenePathPrefix, "/") === normalizeOscPathPrefix(right.scenePathPrefix, "/")
+    && normalizeOscPathPrefix(left.actionPathPrefix, "/") === normalizeOscPathPrefix(right.actionPathPrefix, "/")
+    && normalizeOscPathPrefix(left.actionGroupPathPrefix, "/") === normalizeOscPathPrefix(right.actionGroupPathPrefix, "/");
+}
+
+function captureConfigurationDraftFromInputs() {
+  state.configDraft = configurationDraftFromInputs(getStatusOscConfig());
+  state.configDraftDirty = true;
+}
+
+// Keep OSC routing edits staged locally until the user explicitly saves.
+function renderConfiguration() {
+  if (state.currentPage !== "configuration") return;
+  const runtimeConfig = getStatusOscConfig();
+  if (!state.configDraft || !state.configDraftDirty) {
+    state.configDraft = { ...runtimeConfig };
+  }
+  const draft = state.configDraft || runtimeConfig;
+  const activeElement = document.activeElement;
+  const hasFocusedInput = configurationInputElements().includes(activeElement);
+
+  if (!hasFocusedInput) {
+    setInputValueIfIdle(els.configOscOutHostInput, String(draft.outHost || ""));
+    setInputValueIfIdle(els.configOscOutPortInput, String(draft.outPort));
+    setInputValueIfIdle(els.configOscInPortInput, String(draft.inPort));
+    setInputValueIfIdle(els.configOscObjectPrefixInput, String(draft.objectPathPrefix || ""));
+    setInputValueIfIdle(els.configOscScenePrefixInput, String(draft.scenePathPrefix || ""));
+    setInputValueIfIdle(els.configOscActionPrefixInput, String(draft.actionPathPrefix || ""));
+    setInputValueIfIdle(els.configOscActionGroupPrefixInput, String(draft.actionGroupPathPrefix || ""));
+  }
+
+  const hasChanges = !oscConfigEquals(draft, runtimeConfig);
+  if (els.configSaveBtn instanceof HTMLButtonElement) {
+    els.configSaveBtn.disabled = !hasChanges;
+  }
+  if (els.configResetBtn instanceof HTMLButtonElement) {
+    els.configResetBtn.disabled = !state.configDraftDirty && !hasChanges;
+  }
+  const summary = hasChanges
+    ? `Unsaved OSC changes. Runtime out ${runtimeConfig.outHost}:${runtimeConfig.outPort}, in ${runtimeConfig.inPort}.`
+    : `Runtime OSC out ${runtimeConfig.outHost}:${runtimeConfig.outPort}, in ${runtimeConfig.inPort}.`;
+  setTextIfChanged(els.configurationSummary, summary);
+}
+
+async function saveConfiguration() {
+  try {
+    const runtimeConfig = getStatusOscConfig();
+    const draft = configurationDraftFromInputs(runtimeConfig);
+    state.configDraft = { ...draft };
+    state.configDraftDirty = true;
+    if (oscConfigEquals(draft, runtimeConfig)) {
+      addLog("configuration unchanged");
+      renderConfiguration();
+      return;
+    }
+    await api("/api/osc/config", "POST", draft);
+    state.configDraftDirty = false;
+    addLog(`configuration saved -> out ${draft.outHost}:${draft.outPort}, in ${draft.inPort}`);
+    await refreshStatus();
+  } catch (error) {
+    addLog(`configuration save failed: ${error.message}`);
+  }
+}
+
+function resetConfigurationDraft() {
+  state.configDraft = { ...getStatusOscConfig() };
+  state.configDraftDirty = false;
+  addLog("configuration draft reset");
+  renderConfiguration();
+}
+
 function defaultActionOscPath(actionId, verb) {
-  return `/art/action/${actionId}/${verb}`;
+  const prefix = getStatusOscConfig().actionPathPrefix;
+  return `${prefix}/${actionId}/${verb}`;
 }
 
 function defaultActionGroupOscPath(groupId) {
-  return `/art/action-group/${groupId}/trigger`;
+  const prefix = getStatusOscConfig().actionGroupPathPrefix;
+  return `${prefix}/${groupId}/trigger`;
 }
 
 function selectedActionGroupIdOrThrow() {
@@ -3274,7 +3454,7 @@ async function actionManagerSaveAs() {
     }
 
     const suggestedActionId = uniqueActionId(deriveIdBaseFromName(currentAction.name, sourceActionId));
-    const rawNewActionId = prompt("New action ID", suggestedActionId);
+    const rawNewActionId = prompt("Add action ID", suggestedActionId);
     if (rawNewActionId === null) {
       addLog("action save-as cancelled");
       return;
@@ -3526,10 +3706,10 @@ async function actionGroupEntryRemove(index) {
         state.selectedActionGroupEntryIndex -= 1;
       }
     }
-    addLog(`action group entry remove -> ${groupId} #${index + 1}`);
+    addLog(`action group entry delete -> ${groupId} #${index + 1}`);
     await refreshStatus();
   } catch (error) {
-    addLog(`action group entry remove failed: ${error.message}`);
+    addLog(`action group entry delete failed: ${error.message}`);
   }
 }
 
@@ -3544,17 +3724,17 @@ async function actionGroupEntryClear() {
     if (!entries.length) {
       return;
     }
-    if (!confirm(`Clear all entries from "${groupId}"?`)) {
+    if (!confirm(`Delete all entries from "${groupId}"?`)) {
       return;
     }
     await api(`/api/action-group/${encodeURIComponent(groupId)}/update`, "POST", { entries: [] });
     if (state.selectedActionGroupEntryGroupId === groupId) {
       state.selectedActionGroupEntryIndex = null;
     }
-    addLog(`action group entries cleared -> ${groupId}`);
+    addLog(`action group entries deleted -> ${groupId}`);
     await refreshStatus();
   } catch (error) {
-    addLog(`action group entry clear failed: ${error.message}`);
+    addLog(`action group entry delete failed: ${error.message}`);
   }
 }
 
@@ -3581,7 +3761,7 @@ async function actionManagerAddLfo() {
       const created = await api("/api/action/create", "POST", createPayload);
       actionId = String(created?.actionId || createPayload.actionId || "").trim();
       if (!actionId) {
-        throw new Error("Failed to create action for LFO");
+        throw new Error("Failed to add action for LFO");
       }
       state.selectedActionId = actionId;
       action = created?.action && typeof created.action === "object" ? created.action : createPayload;
@@ -3842,7 +4022,7 @@ async function actionManagerRemoveLfoTarget(index) {
     const groups = collectLfoGroups(currentLfos);
     const selectedGroup = groups.find((group) => group.representativeIndex === selectedIndex) || null;
     if (!selectedGroup) {
-      throw new Error("Select an LFO row to remove targets");
+      throw new Error("Select an LFO row to delete targets");
     }
     if (!selectedGroup.entryIndices.includes(index)) {
       return;
@@ -3859,10 +4039,10 @@ async function actionManagerRemoveLfoTarget(index) {
       ? nextSelectedGroup.representativeIndex
       : (nextGroups[0]?.representativeIndex ?? null);
     state.selectedActionLfoTargetIndex = null;
-    addLog(`action lfo target remove -> ${actionId} ${removedLabel}`);
+    addLog(`action lfo target delete -> ${actionId} ${removedLabel}`);
     await refreshStatus();
   } catch (error) {
-    addLog(`action lfo target remove failed: ${error.message}`);
+    addLog(`action lfo target delete failed: ${error.message}`);
   }
 }
 
@@ -4015,10 +4195,10 @@ async function actionManagerRemoveLfo(index) {
         state.selectedActionLfoIndex -= removedBefore;
       }
     }
-    addLog(`action lfo remove -> ${actionId} ${selectedGroup.lfoId}`);
+    addLog(`action lfo delete -> ${actionId} ${selectedGroup.lfoId}`);
     await refreshStatus();
   } catch (error) {
-    addLog(`action lfo remove failed: ${error.message}`);
+    addLog(`action lfo delete failed: ${error.message}`);
   }
 }
 
@@ -4115,17 +4295,17 @@ async function actionManagerClearLfos() {
     if (!currentLfos.length) {
       return;
     }
-    if (!confirm(`Clear all LFOs from "${actionId}"?`)) {
+    if (!confirm(`Delete all LFOs from "${actionId}"?`)) {
       return;
     }
     await api(`/api/action/${encodeURIComponent(actionId)}/update`, "POST", { lfos: [] });
     state.selectedActionLfoActionId = actionId;
     state.selectedActionLfoIndex = null;
     state.selectedActionLfoTargetIndex = null;
-    addLog(`action lfo clear -> ${actionId}`);
+    addLog(`action lfo delete all -> ${actionId}`);
     await refreshStatus();
   } catch (error) {
-    addLog(`action lfo clear failed: ${error.message}`);
+    addLog(`action lfo delete failed: ${error.message}`);
   }
 }
 
@@ -4372,7 +4552,7 @@ function renderActionManager() {
   els.actionManagerRows.innerHTML = "";
   if (!actionIds.length) {
     const row = document.createElement("tr");
-    row.innerHTML = '<td class="muted" colspan="8">No actions created yet.</td>';
+    row.innerHTML = '<td class="muted" colspan="8">No actions added yet.</td>';
     els.actionManagerRows.appendChild(row);
   } else {
     for (const actionId of actionIds) {
@@ -4556,8 +4736,8 @@ function renderActionManager() {
         <td class="action-group-entry-target-cell">${escapeHtml(targetLabel)}</td>
         <td class="action-manager-row-actions-cell">
           <div class="action-manager-row-actions">
-            <button type="button" data-action-group-entry-command="test">Test</button>
-            <button class="danger" type="button" data-action-group-entry-command="remove">Remove</button>
+            <button type="button" data-action-group-entry-command="test">Trigger</button>
+            <button class="danger" type="button" data-action-group-entry-command="remove">Delete</button>
           </div>
         </td>
       `;
@@ -4610,7 +4790,7 @@ function renderActionManager() {
     els.actionGroupListSummary.textContent = "No action groups.";
     const row = document.createElement("tr");
     row.className = "action-group-list-empty-row";
-    row.innerHTML = '<td class="muted action-group-list-empty" colspan="5">Create an action group to see it here.</td>';
+    row.innerHTML = '<td class="muted action-group-list-empty" colspan="5">Add an action group to see it here.</td>';
     els.actionGroupListRows.appendChild(row);
   } else {
     const selectedLabel = selectedActionGroupId || "-";
@@ -4945,7 +5125,7 @@ function renderActionManager() {
         <td>${escapeHtml(targetSummary)}</td>
         <td class="action-manager-row-actions-cell">
           <div class="action-manager-row-actions">
-            <button class="danger action-lfo-remove-btn" data-index="${index}" type="button">Remove</button>
+            <button class="danger action-lfo-remove-btn" data-index="${index}" type="button">Delete</button>
           </div>
         </td>
       `;
@@ -5076,7 +5256,7 @@ function renderActionManager() {
           <td class="action-manager-row-actions-cell">
             <div class="action-manager-row-actions">
               <button type="button" data-action-lfo-target-command="update" data-index="${targetEntry.entryIndex}">Save</button>
-              <button class="danger" type="button" data-action-lfo-target-command="remove" data-index="${targetEntry.entryIndex}">Remove</button>
+              <button class="danger" type="button" data-action-lfo-target-command="remove" data-index="${targetEntry.entryIndex}">Delete</button>
             </div>
           </td>
         `;
@@ -5400,7 +5580,7 @@ function renderGroupsManager() {
   els.managerGroupSelect.innerHTML = "";
   const newOpt = document.createElement("option");
   newOpt.value = "";
-  newOpt.textContent = "New group...";
+  newOpt.textContent = "Add group...";
   if (!state.selectedGroupId) newOpt.selected = true;
   els.managerGroupSelect.appendChild(newOpt);
 
@@ -5435,7 +5615,7 @@ function renderGroupsManager() {
       const groupName = humanizeId(String(els.managerGroupId.value || suggestedId));
       setInputValueIfIdle(els.managerGroupName, groupName || String(els.managerGroupId.value || suggestedId));
     }
-    setTextIfChanged(els.managerGroupSummary, `${groups.length} group${groups.length === 1 ? "" : "s"} total. Create can be empty; Update uses current selection (${selectedObjectIds.length}).`);
+    setTextIfChanged(els.managerGroupSummary, `${groups.length} group${groups.length === 1 ? "" : "s"} total. Add can be empty; Update uses current selection (${selectedObjectIds.length}).`);
   }
 
   els.managerGroupUpdateBtn.disabled = !state.selectedGroupId;
@@ -5623,7 +5803,7 @@ function renderGroupManager() {
 
   if (!groups.length) {
     const row = document.createElement("tr");
-    row.innerHTML = '<td class="muted" colspan="7">No groups created yet.</td>';
+    row.innerHTML = '<td class="muted" colspan="7">No groups added yet.</td>';
     els.groupManagerRows.appendChild(row);
     renderGroupManagerEditor(null, objects);
     return;
@@ -5662,7 +5842,6 @@ function renderGroupManager() {
       <td title="${escapeHtml(linkSummary.full)}">${escapeHtml(linkSummary.preview)}</td>
       <td class="group-manager-actions action-manager-row-actions-cell">
         <div class="action-manager-row-actions">
-          <button class="group-manager-edit-btn" type="button">Edit</button>
           <button class="group-manager-delete-btn danger" type="button">Delete</button>
         </div>
       </td>
@@ -5714,23 +5893,31 @@ function renderManager() {
   }
   const selectedIds = selectedObjectTargets();
   const selectedObjectIdSet = new Set(state.selectedObjectIds);
-  const managerRenderKey = [
+  const managerStructureKey = [
     `groups-enabled:${areGroupsEnabled() ? "1" : "0"}`,
     `group-select-enabled:${state.groupSelectEnabled ? "1" : "0"}`,
     `selected:${String(state.selectedObjectId || "")}`,
     `selected-list:${state.selectedObjectIds.join(",")}`,
     `selected-group:${String(state.selectedGroupId || "")}`,
     `objects:${objects.map((obj) => (
-      `${String(obj.objectId || "").trim()}|${String(obj.type || "")}|${String(obj.color || "")}|${Number(obj.x)}|${Number(obj.y)}|${Number(obj.z)}|${Boolean(obj.excludeFromAll) ? 1 : 0}`
+      `${String(obj.objectId || "").trim()}|${String(obj.type || "")}|${String(obj.color || "")}|${Boolean(obj.excludeFromAll) ? 1 : 0}`
     )).join(";")}`,
     `groups:${groups.map((group) => (
       `${String(group.groupId || "").trim()}|${String(group.name || "")}|${String(group.color || "")}|${isGroupEnabled(group) ? 1 : 0}|${(Array.isArray(group.linkParams) ? group.linkParams : []).map((param) => String(param || "").trim()).join(",")}|${(Array.isArray(group.objectIds) ? group.objectIds : []).map((memberId) => String(memberId || "").trim()).join(",")}`
     )).join(";")}`
   ].join("\n");
-  if (state.managerRenderKey === managerRenderKey) {
+  const managerPositionKey = objects
+    .map((obj) => `${String(obj.objectId || "").trim()}|${Number(obj.x)}|${Number(obj.y)}|${Number(obj.z)}`)
+    .join(";");
+  if (state.managerStructureRenderKey === managerStructureKey) {
+    if (state.managerPositionRenderKey !== managerPositionKey) {
+      state.managerPositionRenderKey = managerPositionKey;
+      updateManagerObjectPositionCells(objects);
+    }
     return;
   }
-  state.managerRenderKey = managerRenderKey;
+  state.managerStructureRenderKey = managerStructureKey;
+  state.managerPositionRenderKey = managerPositionKey;
   if (els.managerGroupSelectToggle instanceof HTMLInputElement) {
     els.managerGroupSelectToggle.checked = Boolean(state.groupSelectEnabled);
     els.managerGroupSelectToggle.title = areGroupsEnabled()
@@ -5781,7 +5968,7 @@ function renderManager() {
     row.dataset.objectId = obj.objectId;
     row.tabIndex = 0;
 
-    const positionText = `${Number(obj.x).toFixed(1)}, ${Number(obj.y).toFixed(1)}, ${Number(obj.z).toFixed(1)}`;
+    const positionText = managerPositionText(obj);
     const objectColor = normalizeHexColor(obj.color, DEFAULT_OBJECT_COLOR);
     const groupColor = groupColorByObjectId.get(obj.objectId) || null;
     const color = groupColor || objectColor;
@@ -5797,12 +5984,12 @@ function renderManager() {
       <td>${escapeHtml(obj.objectId)}</td>
       <td>${escapeHtml(String(obj.type || DEFAULT_OBJECT_TYPE))}</td>
       <td><span class="color-chip" style="background:${escapeHtml(color)}"></span>${escapeHtml(color)}${escapeHtml(colorSuffix)}</td>
-      <td>${escapeHtml(positionText)}</td>
+      <td class="position-cell">${escapeHtml(positionText)}</td>
       <td class="groups-cell">${escapeHtml(groupText)}</td>
       <td class="all-exclude-cell"><input class="row-exclude-all-toggle" type="checkbox" ${excludeFromAll ? "checked" : ""} aria-label="Exclude ${escapeHtml(obj.objectId)} from All" /></td>
       <td class="action-manager-row-actions-cell">
         <div class="action-manager-row-actions">
-          <button class="danger manager-object-remove-btn" type="button" aria-label="Remove ${escapeHtml(obj.objectId)}">Remove</button>
+          <button class="danger manager-object-remove-btn" type="button" aria-label="Delete ${escapeHtml(obj.objectId)}">Delete</button>
         </div>
       </td>
     `;
@@ -5834,10 +6021,10 @@ function renderManager() {
           await api(`/api/object/${encodeURIComponent(objectId)}/remove`, "POST", {});
           const nextSelection = selectedObjectTargets().filter((selectedId) => selectedId !== objectId);
           setSelection(nextSelection);
-          addLog(`object remove -> ${objectId}`);
+          addLog(`object delete -> ${objectId}`);
           await refreshStatus();
         } catch (error) {
-          addLog(`remove failed: ${error.message}`);
+          addLog(`delete failed: ${error.message}`);
         }
       });
     }
@@ -5925,6 +6112,10 @@ function renderAll() {
   }
   if (state.currentPage === "group-manager") {
     renderGroupManager();
+    return;
+  }
+  if (state.currentPage === "configuration") {
+    renderConfiguration();
     return;
   }
   if (state.currentPage === "action-manager" || state.currentPage === "action-group-manager" || state.currentPage === "modulation-manager") {
@@ -6400,24 +6591,24 @@ async function managerRemoveSelected() {
       objectIds.map((objectId) => api(`/api/object/${encodeURIComponent(objectId)}/remove`, "POST", {}))
     );
     setSelection([]);
-    addLog(`object remove -> ${objectIds.join(", ")}`);
+    addLog(`object delete -> ${objectIds.join(", ")}`);
     await refreshStatus();
   } catch (error) {
-    addLog(`remove failed: ${error.message}`);
+    addLog(`delete failed: ${error.message}`);
   }
 }
 
 async function managerClearAll() {
-  if (!confirm("Clear all objects from current runtime state?")) {
+  if (!confirm("Delete all objects from current runtime state?")) {
     return;
   }
   try {
     await api("/api/object/clear", "POST", {});
     setSelection([]);
-    addLog("object clear -> all");
+    addLog("object delete all -> all");
     await refreshStatus();
   } catch (error) {
-    addLog(`clear failed: ${error.message}`);
+    addLog(`delete failed: ${error.message}`);
   }
 }
 
@@ -6682,13 +6873,13 @@ async function createNewShow() {
   try {
     await api("/api/show/new", "POST", { path: showPath, overwrite: false });
     state.selectedSceneId = null;
-    addLog(`show created -> ${showPath}`);
+    addLog(`show added -> ${showPath}`);
     await refreshStatus();
   } catch (error) {
     if (String(error.message || "").toLowerCase().includes("already exists")) {
       const confirmed = confirm(`Show file already exists at "${showPath}". Overwrite it?`);
       if (!confirmed) {
-        addLog("new show cancelled");
+        addLog("add show cancelled");
         return;
       }
       try {
@@ -6697,11 +6888,11 @@ async function createNewShow() {
         addLog(`show overwritten -> ${showPath}`);
         await refreshStatus();
       } catch (overwriteError) {
-        addLog(`new show failed: ${overwriteError.message}`);
+        addLog(`add show failed: ${overwriteError.message}`);
       }
       return;
     }
-    addLog(`new show failed: ${error.message}`);
+    addLog(`add show failed: ${error.message}`);
   }
 }
 
@@ -6728,6 +6919,27 @@ function setupHandlers() {
 
   els.viewGroupManagerBtn.addEventListener("click", () => {
     setPage("group-manager");
+  });
+
+  els.viewConfigurationBtn.addEventListener("click", () => {
+    setPage("configuration");
+  });
+
+  const configurationInputHandler = () => {
+    captureConfigurationDraftFromInputs();
+    renderConfiguration();
+  };
+  for (const input of configurationInputElements()) {
+    input.addEventListener("input", configurationInputHandler);
+    input.addEventListener("change", configurationInputHandler);
+  }
+
+  els.configSaveBtn.addEventListener("click", () => {
+    void saveConfiguration();
+  });
+
+  els.configResetBtn.addEventListener("click", () => {
+    resetConfigurationDraft();
   });
 
   els.loadShowBtn.addEventListener("click", () => {
@@ -7192,10 +7404,6 @@ function setupHandlers() {
     }
     if (target.closest(".group-manager-delete-btn")) {
       void groupManagerDeleteById(groupId);
-      return;
-    }
-    if (target.closest(".group-manager-edit-btn")) {
-      selectGroupManagerGroup(groupId);
       return;
     }
     selectGroupManagerGroup(groupId);

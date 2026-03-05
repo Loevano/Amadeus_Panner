@@ -19,14 +19,27 @@ from showfile_validator import validate_show_bundle
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 UI_ROOT = PROJECT_ROOT / "apps" / "ui" / "public"
+OSC_CONFIG_PATH = PROJECT_ROOT / "config" / "osc.json"
+
+DEFAULT_OSC_OUT_HOST = "127.0.0.1"
+DEFAULT_OSC_OUT_PORT = 9000
+DEFAULT_OSC_IN_PORT = 9001
+DEFAULT_OSC_OBJECT_PATH_PREFIX = "/art/object"
+DEFAULT_OSC_SCENE_PATH_PREFIX = "/art/scene"
+DEFAULT_OSC_ACTION_PATH_PREFIX = "/art/action"
+DEFAULT_OSC_ACTION_GROUP_PATH_PREFIX = "/art/action-group"
 
 CONFIG = {
     "mode": os.getenv("MODE", "program"),
     "host": os.getenv("HOST", "0.0.0.0"),
     "http_port": int(os.getenv("HTTP_PORT", "8787")),
-    "osc_out_host": os.getenv("OSC_OUT_HOST", "127.0.0.1"),
-    "osc_out_port": int(os.getenv("OSC_OUT_PORT", "9000")),
-    "osc_in_port": int(os.getenv("OSC_IN_PORT", "9001")),
+    "osc_out_host": os.getenv("OSC_OUT_HOST", DEFAULT_OSC_OUT_HOST),
+    "osc_out_port": int(os.getenv("OSC_OUT_PORT", str(DEFAULT_OSC_OUT_PORT))),
+    "osc_in_port": int(os.getenv("OSC_IN_PORT", str(DEFAULT_OSC_IN_PORT))),
+    "osc_object_path_prefix": os.getenv("OSC_OBJECT_PATH_PREFIX", DEFAULT_OSC_OBJECT_PATH_PREFIX),
+    "osc_scene_path_prefix": os.getenv("OSC_SCENE_PATH_PREFIX", DEFAULT_OSC_SCENE_PATH_PREFIX),
+    "osc_action_path_prefix": os.getenv("OSC_ACTION_PATH_PREFIX", DEFAULT_OSC_ACTION_PATH_PREFIX),
+    "osc_action_group_path_prefix": os.getenv("OSC_ACTION_GROUP_PATH_PREFIX", DEFAULT_OSC_ACTION_GROUP_PATH_PREFIX),
 }
 
 OBJECT_LIMITS = {
@@ -74,6 +87,149 @@ def to_float(value: Any, default: float = 0.0) -> float:
     except (TypeError, ValueError):
         pass
     return default
+
+
+def normalize_osc_host(value: Any, default: str = DEFAULT_OSC_OUT_HOST) -> str:
+    host = str(value or "").strip()
+    if not host:
+        return default
+    if any(ch.isspace() for ch in host):
+        raise ValueError("OSC host must not contain whitespace")
+    if len(host) > 253:
+        raise ValueError("OSC host must be 253 characters or fewer")
+    return host
+
+
+def normalize_osc_port(value: Any, default: int) -> int:
+    if value is None or str(value).strip() == "":
+        return int(default)
+    try:
+        port = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("OSC port must be an integer") from exc
+    if port < 1 or port > 65535:
+        raise ValueError("OSC port must be between 1 and 65535")
+    return port
+
+
+def normalize_osc_path_prefix(value: Any, default: str) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        raw = default
+    normalized = "/" + raw.lstrip("/")
+    normalized = re.sub(r"/+", "/", normalized)
+    if len(normalized) > 1:
+        normalized = normalized.rstrip("/")
+    return normalized or default
+
+
+def osc_join_path(prefix: str, *segments: Any) -> str:
+    normalized_prefix = normalize_osc_path_prefix(prefix, "/")
+    normalized_segments = [str(segment or "").strip().strip("/") for segment in segments]
+    normalized_segments = [segment for segment in normalized_segments if segment]
+    if normalized_prefix == "/":
+        return "/" + "/".join(normalized_segments)
+    if not normalized_segments:
+        return normalized_prefix
+    return normalized_prefix + "/" + "/".join(normalized_segments)
+
+
+def osc_strip_prefix(address: Any, prefix: Any) -> Optional[str]:
+    normalized_address = str(address or "").strip()
+    normalized_prefix = normalize_osc_path_prefix(prefix, "/")
+    if normalized_prefix == "/":
+        if not normalized_address.startswith("/"):
+            return None
+        return normalized_address[1:]
+    prefix_with_sep = f"{normalized_prefix}/"
+    if not normalized_address.startswith(prefix_with_sep):
+        return None
+    return normalized_address[len(prefix_with_sep) :]
+
+
+def current_osc_runtime_config() -> Dict[str, Any]:
+    return {
+        "outHost": normalize_osc_host(CONFIG.get("osc_out_host"), DEFAULT_OSC_OUT_HOST),
+        "outPort": normalize_osc_port(CONFIG.get("osc_out_port"), DEFAULT_OSC_OUT_PORT),
+        "inPort": normalize_osc_port(CONFIG.get("osc_in_port"), DEFAULT_OSC_IN_PORT),
+        "objectPathPrefix": normalize_osc_path_prefix(CONFIG.get("osc_object_path_prefix"), DEFAULT_OSC_OBJECT_PATH_PREFIX),
+        "scenePathPrefix": normalize_osc_path_prefix(CONFIG.get("osc_scene_path_prefix"), DEFAULT_OSC_SCENE_PATH_PREFIX),
+        "actionPathPrefix": normalize_osc_path_prefix(CONFIG.get("osc_action_path_prefix"), DEFAULT_OSC_ACTION_PATH_PREFIX),
+        "actionGroupPathPrefix": normalize_osc_path_prefix(CONFIG.get("osc_action_group_path_prefix"), DEFAULT_OSC_ACTION_GROUP_PATH_PREFIX),
+    }
+
+
+def normalize_osc_runtime_config(raw_config: Any, fallback: Dict[str, Any], partial: bool = False) -> Dict[str, Any]:
+    source = raw_config if isinstance(raw_config, dict) else {}
+    normalized: Dict[str, Any] = {}
+
+    field_aliases = {
+        "outHost": ("outHost", "out_host", "oscOutHost", "osc_out_host"),
+        "outPort": ("outPort", "out_port", "oscOutPort", "osc_out_port"),
+        "inPort": ("inPort", "in_port", "oscInPort", "osc_in_port"),
+        "objectPathPrefix": ("objectPathPrefix", "object_path_prefix", "oscObjectPathPrefix", "osc_object_path_prefix"),
+        "scenePathPrefix": ("scenePathPrefix", "scene_path_prefix", "oscScenePathPrefix", "osc_scene_path_prefix"),
+        "actionPathPrefix": ("actionPathPrefix", "action_path_prefix", "oscActionPathPrefix", "osc_action_path_prefix"),
+        "actionGroupPathPrefix": ("actionGroupPathPrefix", "action_group_path_prefix", "oscActionGroupPathPrefix", "osc_action_group_path_prefix"),
+    }
+
+    def pick_value(field_name: str) -> Tuple[Any, bool]:
+        for alias in field_aliases[field_name]:
+            if alias in source:
+                return source.get(alias), True
+        return None, False
+
+    raw_out_host, has_out_host = pick_value("outHost")
+    raw_out_port, has_out_port = pick_value("outPort")
+    raw_in_port, has_in_port = pick_value("inPort")
+    raw_object_prefix, has_object_prefix = pick_value("objectPathPrefix")
+    raw_scene_prefix, has_scene_prefix = pick_value("scenePathPrefix")
+    raw_action_prefix, has_action_prefix = pick_value("actionPathPrefix")
+    raw_action_group_prefix, has_action_group_prefix = pick_value("actionGroupPathPrefix")
+
+    if has_out_host or not partial:
+        normalized["outHost"] = normalize_osc_host(raw_out_host, str(fallback.get("outHost") or DEFAULT_OSC_OUT_HOST))
+    if has_out_port or not partial:
+        normalized["outPort"] = normalize_osc_port(raw_out_port, int(fallback.get("outPort") or DEFAULT_OSC_OUT_PORT))
+    if has_in_port or not partial:
+        normalized["inPort"] = normalize_osc_port(raw_in_port, int(fallback.get("inPort") or DEFAULT_OSC_IN_PORT))
+    if has_object_prefix or not partial:
+        normalized["objectPathPrefix"] = normalize_osc_path_prefix(raw_object_prefix, str(fallback.get("objectPathPrefix") or DEFAULT_OSC_OBJECT_PATH_PREFIX))
+    if has_scene_prefix or not partial:
+        normalized["scenePathPrefix"] = normalize_osc_path_prefix(raw_scene_prefix, str(fallback.get("scenePathPrefix") or DEFAULT_OSC_SCENE_PATH_PREFIX))
+    if has_action_prefix or not partial:
+        normalized["actionPathPrefix"] = normalize_osc_path_prefix(raw_action_prefix, str(fallback.get("actionPathPrefix") or DEFAULT_OSC_ACTION_PATH_PREFIX))
+    if has_action_group_prefix or not partial:
+        normalized["actionGroupPathPrefix"] = normalize_osc_path_prefix(raw_action_group_prefix, str(fallback.get("actionGroupPathPrefix") or DEFAULT_OSC_ACTION_GROUP_PATH_PREFIX))
+    return normalized
+
+
+def apply_runtime_osc_config(config_values: Dict[str, Any]) -> None:
+    CONFIG["osc_out_host"] = normalize_osc_host(config_values.get("outHost"), DEFAULT_OSC_OUT_HOST)
+    CONFIG["osc_out_port"] = normalize_osc_port(config_values.get("outPort"), DEFAULT_OSC_OUT_PORT)
+    CONFIG["osc_in_port"] = normalize_osc_port(config_values.get("inPort"), DEFAULT_OSC_IN_PORT)
+    CONFIG["osc_object_path_prefix"] = normalize_osc_path_prefix(config_values.get("objectPathPrefix"), DEFAULT_OSC_OBJECT_PATH_PREFIX)
+    CONFIG["osc_scene_path_prefix"] = normalize_osc_path_prefix(config_values.get("scenePathPrefix"), DEFAULT_OSC_SCENE_PATH_PREFIX)
+    CONFIG["osc_action_path_prefix"] = normalize_osc_path_prefix(config_values.get("actionPathPrefix"), DEFAULT_OSC_ACTION_PATH_PREFIX)
+    CONFIG["osc_action_group_path_prefix"] = normalize_osc_path_prefix(config_values.get("actionGroupPathPrefix"), DEFAULT_OSC_ACTION_GROUP_PATH_PREFIX)
+
+
+def load_persisted_osc_runtime_config(fallback: Dict[str, Any]) -> Dict[str, Any]:
+    if not OSC_CONFIG_PATH.exists():
+        return dict(fallback)
+    try:
+        raw = json.loads(OSC_CONFIG_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return dict(fallback)
+    try:
+        return normalize_osc_runtime_config(raw, fallback, partial=False)
+    except Exception:
+        return dict(fallback)
+
+
+def save_persisted_osc_runtime_config(config_values: Dict[str, Any]) -> None:
+    OSC_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    OSC_CONFIG_PATH.write_text(json.dumps(config_values, indent=2) + "\n", encoding="utf-8")
 
 
 def normalize_object_id(value: Any) -> str:
@@ -863,11 +1019,12 @@ class Runtime:
         self.last_client_update_seq_by_object: Dict[Tuple[str, str], int] = {}
         self.last_client_center_target_by_key: Dict[Tuple[str, str, str, str], float] = {}
 
+        # Load persisted OSC routing/transport config before sockets are created.
+        persisted_osc_config = load_persisted_osc_runtime_config(current_osc_runtime_config())
+        apply_runtime_osc_config(persisted_osc_config)
+
         self.osc_out_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.osc_in_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.osc_in_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.osc_in_socket.bind(("0.0.0.0", CONFIG["osc_in_port"]))
-        self.osc_in_socket.settimeout(1.0)
+        self.osc_in_socket = self._create_osc_in_socket(CONFIG["osc_in_port"])
 
         self.stop_event = threading.Event()
         self.osc_thread = threading.Thread(target=self._osc_loop, daemon=True)
@@ -884,6 +1041,8 @@ class Runtime:
                 "http": f"http://{CONFIG['host']}:{CONFIG['http_port']}",
                 "oscOut": f"{CONFIG['osc_out_host']}:{CONFIG['osc_out_port']}",
                 "oscIn": f"0.0.0.0:{CONFIG['osc_in_port']}",
+                "oscObjectPrefix": CONFIG["osc_object_path_prefix"],
+                "oscScenePrefix": CONFIG["osc_scene_path_prefix"],
             },
         )
 
@@ -900,6 +1059,73 @@ class Runtime:
             self.osc_out_socket.close()
         except OSError:
             pass
+
+    def _create_osc_in_socket(self, port: Any) -> socket.socket:
+        normalized_port = normalize_osc_port(port, DEFAULT_OSC_IN_PORT)
+        osc_in_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        osc_in_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        osc_in_socket.bind(("0.0.0.0", normalized_port))
+        osc_in_socket.settimeout(1.0)
+        return osc_in_socket
+
+    def osc_runtime_config(self) -> Dict[str, Any]:
+        with self.lock:
+            return current_osc_runtime_config()
+
+    def update_osc_runtime_config(self, patch: Dict[str, Any], source: str = "api") -> Dict[str, Any]:
+        if not isinstance(patch, dict):
+            raise ValueError("Body must be an object")
+
+        with self.lock:
+            current = current_osc_runtime_config()
+        normalized_patch = normalize_osc_runtime_config(patch, current, partial=True)
+        if not normalized_patch:
+            return current
+
+        merged = dict(current)
+        merged.update(normalized_patch)
+        merged = normalize_osc_runtime_config(merged, merged, partial=False)
+
+        replacement_socket: Optional[socket.socket] = None
+        if merged["inPort"] != current["inPort"]:
+            replacement_socket = self._create_osc_in_socket(merged["inPort"])
+
+        try:
+            save_persisted_osc_runtime_config(merged)
+        except Exception:
+            if replacement_socket is not None:
+                try:
+                    replacement_socket.close()
+                except OSError:
+                    pass
+            raise
+
+        previous_socket: Optional[socket.socket] = None
+        with self.lock:
+            apply_runtime_osc_config(merged)
+            if replacement_socket is not None:
+                previous_socket = self.osc_in_socket
+                self.osc_in_socket = replacement_socket
+        if previous_socket is not None:
+            try:
+                previous_socket.close()
+            except OSError:
+                pass
+
+        self.emit_event(
+            "system",
+            {
+                "message": "osc_config_updated",
+                "source": source,
+                "oscOut": f"{merged['outHost']}:{merged['outPort']}",
+                "oscIn": f"0.0.0.0:{merged['inPort']}",
+                "objectPathPrefix": merged["objectPathPrefix"],
+                "scenePathPrefix": merged["scenePathPrefix"],
+                "actionPathPrefix": merged["actionPathPrefix"],
+                "actionGroupPathPrefix": merged["actionGroupPathPrefix"],
+            },
+        )
+        return merged
 
     def _push_recent_event(self, event: Dict[str, Any]) -> None:
         self.recent_events.append(event)
@@ -971,6 +1197,10 @@ class Runtime:
                     "outHost": CONFIG["osc_out_host"],
                     "outPort": CONFIG["osc_out_port"],
                     "inPort": CONFIG["osc_in_port"],
+                    "objectPathPrefix": CONFIG["osc_object_path_prefix"],
+                    "scenePathPrefix": CONFIG["osc_scene_path_prefix"],
+                    "actionPathPrefix": CONFIG["osc_action_path_prefix"],
+                    "actionGroupPathPrefix": CONFIG["osc_action_group_path_prefix"],
                     "inboundCount": self.osc_inbound_count,
                     "outboundCount": self.osc_outbound_count,
                     "lastInboundAt": self.last_inbound_at,
@@ -1579,7 +1809,7 @@ class Runtime:
         )
 
     def _send_object_param(self, object_id: str, param: str, value: Any) -> None:
-        self._send_osc(f"/art/object/{object_id}/{param}", [value])
+        self._send_osc(osc_join_path(CONFIG["osc_object_path_prefix"], object_id, param), [value])
 
     def _send_full_object_state(self, obj: Dict[str, Any]) -> None:
         self._send_object_param(obj["objectId"], "x", obj["x"])
@@ -2516,7 +2746,7 @@ class Runtime:
         if emit_osc:
             for obj in objects_snapshot:
                 self._send_full_object_state(obj)
-            self._send_osc(f"/art/scene/{scene_id}/recall", [1])
+            self._send_osc(osc_join_path(CONFIG["osc_scene_path_prefix"], scene_id, "recall"), [1])
 
         self.emit_event(
             "scene",
@@ -3843,17 +4073,16 @@ class Runtime:
                         self.trigger_action_group(str(action_group.get("groupId") or ""), source="osc")
                         return
 
-            scene_prefix = "/art/scene/"
-            scene_suffix = "/recall"
-            if address.startswith(scene_prefix) and address.endswith(scene_suffix):
-                scene_id = address[len(scene_prefix) : -len(scene_suffix)]
-                self.recall_scene(unquote(scene_id), source="osc", emit_osc=False)
-                return
+            scene_remainder = osc_strip_prefix(address, CONFIG["osc_scene_path_prefix"])
+            if scene_remainder:
+                parts = scene_remainder.split("/")
+                if len(parts) == 2 and parts[1] == "recall":
+                    self.recall_scene(unquote(parts[0]), source="osc", emit_osc=False)
+                    return
 
-        object_prefix = "/art/object/"
-        if address.startswith(object_prefix):
-            remainder = address[len(object_prefix) :]
-            parts = remainder.split("/")
+        object_remainder = osc_strip_prefix(address, CONFIG["osc_object_path_prefix"])
+        if object_remainder:
+            parts = object_remainder.split("/")
             if len(parts) == 2:
                 object_id = unquote(parts[0])
                 param = parts[1]
@@ -3870,7 +4099,10 @@ class Runtime:
             except socket.timeout:
                 continue
             except OSError:
-                return
+                if self.stop_event.is_set():
+                    return
+                time.sleep(0.05)
+                continue
             try:
                 message = decode_osc_message(data)
                 self._handle_inbound_osc(message, addr)
@@ -3936,6 +4168,9 @@ class Handler(BaseHTTPRequestHandler):
         if path_name == "/api/status":
             self._send_json(HTTPStatus.OK, RUNTIME.status())
             return
+        if path_name == "/api/osc/config":
+            self._send_json(HTTPStatus.OK, {"ok": True, "osc": RUNTIME.osc_runtime_config()})
+            return
         if path_name == "/api/show/list":
             with RUNTIME.lock:
                 current_path = str(RUNTIME.show["path"]) if RUNTIME.show else None
@@ -3991,6 +4226,12 @@ class Handler(BaseHTTPRequestHandler):
         path_name = parsed.path
 
         try:
+            if path_name == "/api/osc/config":
+                body = self._read_json_body()
+                osc_config = RUNTIME.update_osc_runtime_config(body, source="api")
+                self._send_json(HTTPStatus.OK, {"ok": True, "osc": osc_config, "status": RUNTIME.status()})
+                return
+
             if path_name == "/api/show/load":
                 body = self._read_json_body()
                 RUNTIME.load_show(str(body.get("path", "showfiles/_template/show.json")))
@@ -4350,6 +4591,10 @@ def run() -> None:
     print(f"HTTP: http://{CONFIG['host']}:{CONFIG['http_port']}")
     print(f"OSC out: {CONFIG['osc_out_host']}:{CONFIG['osc_out_port']}")
     print(f"OSC in: 0.0.0.0:{CONFIG['osc_in_port']}")
+    print(f"OSC object prefix: {CONFIG['osc_object_path_prefix']}")
+    print(f"OSC scene prefix: {CONFIG['osc_scene_path_prefix']}")
+    print(f"OSC action prefix: {CONFIG['osc_action_path_prefix']}")
+    print(f"OSC action-group prefix: {CONFIG['osc_action_group_path_prefix']}")
 
     stop_main = threading.Event()
 
