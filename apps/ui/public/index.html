@@ -4,12 +4,30 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Amadeus Panner Dev</title>
+  <script>
+    (() => {
+      try {
+        const key = "amadeus-ui-theme";
+        const stored = localStorage.getItem(key);
+        const preferred = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches
+          ? "dark"
+          : "light";
+        const resolved = stored === "dark" || stored === "light" ? stored : preferred;
+        document.documentElement.dataset.theme = resolved;
+      } catch {
+        document.documentElement.dataset.theme = "light";
+      }
+    })();
+  </script>
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
   <header class="topbar">
     <h1>Amadeus Panner</h1>
-    <div id="statusLine" class="status-line">Connecting...</div>
+    <div class="topbar-tools">
+      <button id="themeToggleBtn" class="theme-toggle-btn" type="button" aria-pressed="false">Dark Mode: Off</button>
+      <div id="statusLine" class="status-line">Connecting...</div>
+    </div>
   </header>
   <div id="uiStatusBar" class="ui-status-bar" role="status" aria-live="polite">Ready.</div>
 

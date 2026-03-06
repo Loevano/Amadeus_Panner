@@ -1,0 +1,51 @@
+{
+  "action_id": "action",
+  "name": "Action",
+  "enabled": true,
+  "duration_ms": 4000,
+  "action_rule": {
+    "type": "parameter_ramp",
+    "target": "1VA.x",
+    "start_value": 0.0,
+    "end_value": 0.0,
+    "speed_ms": 1000.0,
+    "relative": false
+  },
+  "on_end_action_id": "",
+  "tracks": [],
+  "lfos": [
+    {
+      "lfo_id": "lfo",
+      "enabled": true,
+      "wave": "sine",
+      "rate_hz": 0.25,
+      "depth": 20.0,
+      "offset": 0.0,
+      "phase_deg": 0.0,
+      "mapping_phase_deg": 0.0,
+      "phase_flip": false,
+      "target_enabled": true,
+      "polarity": "bipolar"
+    },
+    {
+      "lfo_id": "lfo",
+      "enabled": true,
+      "wave": "sine",
+      "rate_hz": 0.25,
+      "depth": 20.0,
+      "offset": 0.0,
+      "phase_deg": 0.0,
+      "mapping_phase_deg": 0.0,
+      "phase_flip": false,
+      "target_enabled": true,
+      "polarity": "bipolar",
+      "object_id": "1VA",
+      "parameter": "x"
+    }
+  ],
+  "osc_triggers": {
+    "start": "/art/action/action/start",
+    "stop": "/art/action/action/stop",
+    "abort": "/art/action/action/abort"
+  }
+}

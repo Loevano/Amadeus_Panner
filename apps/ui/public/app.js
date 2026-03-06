@@ -65,6 +65,7 @@ const OSC_PREFIX_DEFAULTS = {
   actionPathPrefix: "/art/action",
   actionGroupPathPrefix: "/art/action-group"
 };
+const THEME_STORAGE_KEY = "amadeus-ui-theme";
 const CLIENT_UPDATE_SESSION_ID = (() => {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
     return `ui-${crypto.randomUUID()}`;
@@ -86,6 +87,7 @@ const state = {
   selectedActionLfoIndex: null,
   selectedActionLfoActionId: null,
   selectedActionLfoTargetIndex: null,
+  uiTheme: "light",
   currentPage: "panner",
   objectUpdateSessionId: CLIENT_UPDATE_SESSION_ID,
   objectUpdateSeqByObjectId: {},
@@ -134,6 +136,8 @@ const state = {
   runtimeFrameNeedsManager: false,
   runtimeFrameNeedsActionDebug: false,
   managerRenameAutoTimerId: null,
+  managerTypeAutoTimerId: null,
+  managerColorAutoTimerId: null,
   groupManagerAutoSaveTimerId: null,
   actionGroupAutoSaveTimerId: null,
   actionLfoAutoApplyTimerId: null,
@@ -166,6 +170,7 @@ const state = {
 };
 
 const els = {
+  themeToggleBtn: document.getElementById("themeToggleBtn"),
   statusLine: document.getElementById("statusLine"),
   uiStatusBar: document.getElementById("uiStatusBar"),
   mainLayout: document.getElementById("mainLayout"),
@@ -809,6 +814,26 @@ function cancelManagerRenameAutoApplyTimer() {
   }
 }
 
+function cancelManagerTypeAutoApplyTimer() {
+  if (state.managerTypeAutoTimerId !== null) {
+    clearTimeout(state.managerTypeAutoTimerId);
+    state.managerTypeAutoTimerId = null;
+  }
+}
+
+function cancelManagerColorAutoApplyTimer() {
+  if (state.managerColorAutoTimerId !== null) {
+    clearTimeout(state.managerColorAutoTimerId);
+    state.managerColorAutoTimerId = null;
+  }
+}
+
+function cancelManagerEditAutoApplyTimers() {
+  cancelManagerRenameAutoApplyTimer();
+  cancelManagerTypeAutoApplyTimer();
+  cancelManagerColorAutoApplyTimer();
+}
+
 function scheduleManagerRenameAutoApply(delayMs = 300) {
   const selectedIds = selectedObjectTargets();
   cancelManagerRenameAutoApplyTimer();
@@ -818,6 +843,32 @@ function scheduleManagerRenameAutoApply(delayMs = 300) {
   state.managerRenameAutoTimerId = setTimeout(() => {
     state.managerRenameAutoTimerId = null;
     void managerRenameObject({ auto: true, expectedCurrentId });
+  }, Math.max(0, Number(delayMs) || 0));
+}
+
+// Debounced Object Manager input saves: apply only to the same selected object
+// that was active when the timer was started.
+function scheduleManagerTypeAutoApply(delayMs = 320) {
+  const selectedIds = selectedObjectTargets();
+  cancelManagerTypeAutoApplyTimer();
+  if (selectedIds.length !== 1) return;
+  const expectedObjectId = String(selectedIds[0] || "").trim();
+  if (!expectedObjectId) return;
+  state.managerTypeAutoTimerId = setTimeout(() => {
+    state.managerTypeAutoTimerId = null;
+    void managerSetType({ auto: true, expectedObjectId });
+  }, Math.max(0, Number(delayMs) || 0));
+}
+
+function scheduleManagerColorAutoApply(delayMs = 220) {
+  const selectedIds = selectedObjectTargets();
+  cancelManagerColorAutoApplyTimer();
+  if (selectedIds.length !== 1) return;
+  const expectedObjectId = String(selectedIds[0] || "").trim();
+  if (!expectedObjectId) return;
+  state.managerColorAutoTimerId = setTimeout(() => {
+    state.managerColorAutoTimerId = null;
+    void managerSetColor({ auto: true, expectedObjectId });
   }, Math.max(0, Number(delayMs) || 0));
 }
 
@@ -2097,6 +2148,49 @@ function setCheckboxCheckedIfIdle(input, checked) {
   if (!(input instanceof HTMLInputElement)) return;
   if (document.activeElement === input) return;
   input.checked = Boolean(checked);
+}
+
+function normalizeTheme(value) {
+  return String(value || "").trim().toLowerCase() === "dark" ? "dark" : "light";
+}
+
+function systemPreferredTheme() {
+  return window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+}
+
+function resolveInitialTheme() {
+  try {
+    const stored = localStorage.getItem(THEME_STORAGE_KEY);
+    if (stored === "dark" || stored === "light") {
+      return stored;
+    }
+  } catch {
+    // Ignore storage failures and fall back to system preference.
+  }
+  return systemPreferredTheme();
+}
+
+function applyTheme(theme, options = {}) {
+  const persist = options.persist !== false;
+  const normalized = normalizeTheme(theme);
+  state.uiTheme = normalized;
+  document.documentElement.dataset.theme = normalized;
+  if (els.themeToggleBtn instanceof HTMLButtonElement) {
+    const darkEnabled = normalized === "dark";
+    els.themeToggleBtn.textContent = `Dark Mode: ${darkEnabled ? "On" : "Off"}`;
+    els.themeToggleBtn.setAttribute("aria-pressed", darkEnabled ? "true" : "false");
+  }
+  if (persist) {
+    try {
+      localStorage.setItem(THEME_STORAGE_KEY, normalized);
+    } catch {
+      // Ignore storage failures so theme switch still applies for current session.
+    }
+  }
+}
+
+function toggleTheme() {
+  applyTheme(state.uiTheme === "dark" ? "light" : "dark");
 }
 
 function getObjectById(objectId) {
@@ -4090,22 +4184,8 @@ async function actionManagerUpdateSelectedLfoTargetFromInputs() {
       ? Boolean(els.actionManagerLfoTargetSpreadInput?.checked)
       : false;
 
-    const hasDuplicate = selectedGroup.entryIndices.some((entryIndex) => {
-      if (entryIndex === targetIndex) return false;
-      const candidate = currentLfos[entryIndex];
-      if (!candidate || typeof candidate !== "object") return false;
-      const candidateScope = normalizeLfoTargetScope(candidate?.targetScope || candidate?.target_scope || "");
-      if (candidateScope !== targetScope) return false;
-      const candidateObjectId = String(candidate.objectId || candidate.object_id || "").trim();
-      const candidateGroupId = String(candidate.groupId || candidate.group_id || "").trim();
-      const candidateTarget = targetScope === LFO_TARGET_SCOPE_GROUP ? candidateGroupId : candidateObjectId;
-      const candidateParam = String(candidate.parameter || "").trim().toLowerCase();
-      return candidateTarget === targetId && candidateParam === parameter;
-    });
-    if (hasDuplicate) {
-      const duplicateLabel = `${targetId}.${parameter}`;
-      throw new Error(`Target already exists for this LFO: ${duplicateLabel}`);
-    }
+    // Intentionally allow duplicate mappings so one LFO can stack multiple times
+    // on the same target/parameter with different phase/depth/offset settings.
 
     const nextLfos = [...currentLfos];
     const previousScope = normalizeLfoTargetScope(currentTarget?.targetScope || currentTarget?.target_scope || "");
@@ -4176,7 +4256,25 @@ async function actionManagerRemoveLfoTarget(index) {
 
     const removedLfo = currentLfos[index] || {};
     const removedLabel = lfoTargetLabel(removedLfo) || `target #${index + 1}`;
-    const nextLfos = currentLfos.filter((_, entryIndex) => entryIndex !== index);
+    const isLastTargetForLfo = selectedGroup.entryIndices.length <= 1;
+    let nextLfos = [];
+    if (isLastTargetForLfo) {
+      const preservedScope = normalizeLfoTargetScope(
+        removedLfo.targetScope || removedLfo.target_scope || LFO_TARGET_SCOPE_OBJECT
+      );
+      nextLfos = [...currentLfos];
+      nextLfos[index] = {
+        ...removedLfo,
+        targetScope: preservedScope,
+        objectId: "",
+        groupId: "",
+        parameter: "",
+        targetEnabled: true,
+        distributePhaseOverMembers: false
+      };
+    } else {
+      nextLfos = currentLfos.filter((_, entryIndex) => entryIndex !== index);
+    }
     await api(`/api/action/${encodeURIComponent(actionId)}/update`, "POST", { lfos: nextLfos });
     state.selectedActionLfoActionId = actionId;
     const nextGroups = collectLfoGroups(nextLfos);
@@ -4184,8 +4282,12 @@ async function actionManagerRemoveLfoTarget(index) {
     state.selectedActionLfoIndex = nextSelectedGroup
       ? nextSelectedGroup.representativeIndex
       : (nextGroups[0]?.representativeIndex ?? null);
-    state.selectedActionLfoTargetIndex = null;
-    addLog(`action lfo target delete -> ${actionId} ${removedLabel}`);
+    state.selectedActionLfoTargetIndex = isLastTargetForLfo ? index : null;
+    addLog(
+      isLastTargetForLfo
+        ? `action lfo target clear -> ${actionId} ${removedLabel} (lfo preserved)`
+        : `action lfo target delete -> ${actionId} ${removedLabel}`
+    );
     await refreshStatus();
   } catch (error) {
     addLog(`action lfo target delete failed: ${error.message}`);
@@ -5501,6 +5603,7 @@ function renderActionManager() {
         const saveBtn = row.querySelector('button[data-action-lfo-target-command="update"]');
         const removeBtn = row.querySelector('button[data-action-lfo-target-command="remove"]');
         const entryIndex = targetEntry.entryIndex;
+        let autoSaveTimerId = null;
 
         const saveTargetConfig = () => {
           const phaseValue = phaseInput instanceof HTMLInputElement
@@ -5529,6 +5632,15 @@ function renderActionManager() {
             targetEnabled: targetEnabledValue,
             distributePhaseOverMembers: targetEntry.targetScope === LFO_TARGET_SCOPE_GROUP ? phaseSpreadValue : false
           });
+        };
+        const scheduleTargetSave = (delayMs = 180) => {
+          if (autoSaveTimerId !== null) {
+            clearTimeout(autoSaveTimerId);
+          }
+          autoSaveTimerId = setTimeout(() => {
+            autoSaveTimerId = null;
+            saveTargetConfig();
+          }, Math.max(0, Math.round(parseFiniteNumber(delayMs, 0))));
         };
 
         const syncPhaseLabel = () => {
@@ -5584,6 +5696,7 @@ function renderActionManager() {
           phaseInput.addEventListener("input", (event) => {
             event.stopPropagation();
             syncPhaseLabel();
+            scheduleTargetSave();
           });
           phaseInput.addEventListener("change", (event) => {
             event.stopPropagation();
@@ -5594,6 +5707,7 @@ function renderActionManager() {
           depthInput.addEventListener("input", (event) => {
             event.stopPropagation();
             syncDepthLabel();
+            scheduleTargetSave();
           });
           depthInput.addEventListener("change", (event) => {
             event.stopPropagation();
@@ -5601,6 +5715,17 @@ function renderActionManager() {
           });
         }
         if (offsetInput instanceof HTMLInputElement) {
+          offsetInput.addEventListener("input", (event) => {
+            event.stopPropagation();
+            scheduleTargetSave();
+          });
+          offsetInput.addEventListener("change", (event) => {
+            event.stopPropagation();
+            saveTargetConfig();
+          });
+          offsetInput.addEventListener("blur", () => {
+            saveTargetConfig();
+          });
           offsetInput.addEventListener("keydown", (event) => {
             if (event.key !== "Enter") return;
             event.preventDefault();
@@ -6287,6 +6412,7 @@ function renderManager() {
         return;
       }
       const targetId = String(obj.objectId || "").trim();
+      cancelManagerEditAutoApplyTimers();
       setSingleSelection(targetId);
       renderAll();
     });
@@ -6298,6 +6424,7 @@ function renderManager() {
       if (target.closest("button, input, select, textarea, a")) return;
       event.preventDefault();
       const targetId = String(obj.objectId || "").trim();
+      cancelManagerEditAutoApplyTimers();
       setSingleSelection(targetId);
       renderAll();
     });
@@ -6762,37 +6889,96 @@ async function managerRenameObject(options = {}) {
   }
 }
 
-async function managerSetType() {
+async function managerSetType(options = {}) {
+  const { auto = false, expectedObjectId = "" } = options;
+  cancelManagerTypeAutoApplyTimer();
   try {
     const objectIds = selectedObjectTargets();
     if (!objectIds.length) {
-      throw new Error("No objects selected");
+      if (!auto) {
+        throw new Error("No objects selected");
+      }
+      return false;
     }
-    const type = String(els.managerTypeInput.value || DEFAULT_OBJECT_TYPE).trim() || DEFAULT_OBJECT_TYPE;
+    if (expectedObjectId) {
+      if (objectIds.length !== 1 || String(objectIds[0] || "").trim() !== String(expectedObjectId || "").trim()) {
+        return false;
+      }
+    }
+
+    const rawType = String(els.managerTypeInput.value || "").trim();
+    // During auto-save, skip blank intermediate text while the user is still typing.
+    if (auto && !rawType) {
+      return false;
+    }
+    const type = rawType || DEFAULT_OBJECT_TYPE;
+    const objectsById = new Map(getObjects().map((obj) => [String(obj.objectId || "").trim(), obj]));
+    const changedObjectIds = objectIds.filter((objectId) => {
+      const currentObject = objectsById.get(objectId);
+      const currentType = String(currentObject?.type || DEFAULT_OBJECT_TYPE).trim() || DEFAULT_OBJECT_TYPE;
+      return currentType !== type;
+    });
+    if (!changedObjectIds.length) {
+      return false;
+    }
+
     await Promise.all(
-      objectIds.map((objectId) => api(`/api/object/${encodeURIComponent(objectId)}`, "POST", { type }))
+      changedObjectIds.map((objectId) => api(`/api/object/${encodeURIComponent(objectId)}`, "POST", { type }))
     );
-    addLog(`object type set -> ${objectIds.join(", ")} = ${type}`);
+    if (!auto) {
+      addLog(`object type set -> ${changedObjectIds.join(", ")} = ${type}`);
+    }
     await refreshStatus();
+    return true;
   } catch (error) {
-    addLog(`set type failed: ${error.message}`);
+    if (!auto) {
+      addLog(`set type failed: ${error.message}`);
+    }
+    return false;
   }
 }
 
-async function managerSetColor() {
+async function managerSetColor(options = {}) {
+  const { auto = false, expectedObjectId = "" } = options;
+  cancelManagerColorAutoApplyTimer();
   try {
     const objectIds = selectedObjectTargets();
     if (!objectIds.length) {
-      throw new Error("No objects selected");
+      if (!auto) {
+        throw new Error("No objects selected");
+      }
+      return false;
     }
+    if (expectedObjectId) {
+      if (objectIds.length !== 1 || String(objectIds[0] || "").trim() !== String(expectedObjectId || "").trim()) {
+        return false;
+      }
+    }
+
     const color = normalizeHexColor(els.managerColorInput.value, DEFAULT_OBJECT_COLOR);
+    const objectsById = new Map(getObjects().map((obj) => [String(obj.objectId || "").trim(), obj]));
+    const changedObjectIds = objectIds.filter((objectId) => {
+      const currentObject = objectsById.get(objectId);
+      const currentColor = normalizeHexColor(currentObject?.color, DEFAULT_OBJECT_COLOR);
+      return currentColor !== color;
+    });
+    if (!changedObjectIds.length) {
+      return false;
+    }
+
     await Promise.all(
-      objectIds.map((objectId) => api(`/api/object/${encodeURIComponent(objectId)}`, "POST", { color }))
+      changedObjectIds.map((objectId) => api(`/api/object/${encodeURIComponent(objectId)}`, "POST", { color }))
     );
-    addLog(`object color set -> ${objectIds.join(", ")} = ${color}`);
+    if (!auto) {
+      addLog(`object color set -> ${changedObjectIds.join(", ")} = ${color}`);
+    }
     await refreshStatus();
+    return true;
   } catch (error) {
-    addLog(`set color failed: ${error.message}`);
+    if (!auto) {
+      addLog(`set color failed: ${error.message}`);
+    }
+    return false;
   }
 }
 
@@ -7112,6 +7298,12 @@ async function createNewShow() {
 }
 
 function setupHandlers() {
+  if (els.themeToggleBtn instanceof HTMLButtonElement) {
+    els.themeToggleBtn.addEventListener("click", () => {
+      toggleTheme();
+    });
+  }
+
   els.viewPannerBtn.addEventListener("click", () => {
     setPage("panner");
   });
@@ -7430,7 +7622,8 @@ function setupHandlers() {
 
   if (els.actionManagerLfoTargetScopeInput) {
     els.actionManagerLfoTargetScopeInput.addEventListener("change", () => {
-      void renderActionManager();
+      renderActionManager();
+      void actionManagerUpdateSelectedLfoTargetFromInputs();
     });
   }
 
@@ -7453,6 +7646,19 @@ function setupHandlers() {
   }
 
   if (els.actionManagerLfoTargetPhaseInput) {
+    let targetPhaseAutoTimerId = null;
+    const scheduleTargetPhaseAutoApply = (delayMs = 180) => {
+      if (targetPhaseAutoTimerId !== null) {
+        clearTimeout(targetPhaseAutoTimerId);
+      }
+      targetPhaseAutoTimerId = setTimeout(() => {
+        targetPhaseAutoTimerId = null;
+        void actionManagerUpdateSelectedLfoTargetFromInputs();
+      }, Math.max(0, Math.round(parseFiniteNumber(delayMs, 0))));
+    };
+    els.actionManagerLfoTargetPhaseInput.addEventListener("input", () => {
+      scheduleTargetPhaseAutoApply();
+    });
     els.actionManagerLfoTargetPhaseInput.addEventListener("change", () => {
       void actionManagerUpdateSelectedLfoTargetFromInputs();
     });
@@ -7513,7 +7719,7 @@ function setupHandlers() {
   });
 
   els.managerObjectSelect.addEventListener("change", () => {
-    cancelManagerRenameAutoApplyTimer();
+    cancelManagerEditAutoApplyTimers();
     setSingleSelection(els.managerObjectSelect.value);
     renderAll();
   });
@@ -7542,8 +7748,30 @@ function setupHandlers() {
     void managerRenameObject();
   });
 
+  els.managerTypeInput.addEventListener("input", () => {
+    scheduleManagerTypeAutoApply();
+  });
+
+  els.managerTypeInput.addEventListener("change", () => {
+    void managerSetType({ auto: true });
+  });
+
+  els.managerTypeInput.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    void managerSetType();
+  });
+
   els.managerTypeBtn.addEventListener("click", () => {
     void managerSetType();
+  });
+
+  els.managerColorInput.addEventListener("input", () => {
+    scheduleManagerColorAutoApply();
+  });
+
+  els.managerColorInput.addEventListener("change", () => {
+    void managerSetColor({ auto: true });
   });
 
   els.managerColorBtn.addEventListener("click", () => {
@@ -7551,10 +7779,12 @@ function setupHandlers() {
   });
 
   els.managerRemoveBtn.addEventListener("click", () => {
+    cancelManagerEditAutoApplyTimers();
     void managerRemoveSelected();
   });
 
   els.managerClearBtn.addEventListener("click", () => {
+    cancelManagerEditAutoApplyTimers();
     void managerClearAll();
   });
 
@@ -7970,6 +8200,7 @@ function setupEventStream() {
 }
 
 async function start() {
+  applyTheme(resolveInitialTheme(), { persist: false });
   setUiStatus("Connecting...");
   updateLfoPolarityButton("bipolar");
   syncCameraInputs();
