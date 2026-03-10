@@ -2368,6 +2368,7 @@ function pickObject(canvasPoint) {
   let bestDist = Infinity;
 
   for (const obj of getObjects()) {
+    if (Boolean(obj.hidden)) continue;
     const projected = projectPoint(camera, vec(Number(obj.x), Number(obj.y), Number(obj.z)));
     if (!projected) continue;
 
@@ -2405,6 +2406,7 @@ function renderPanner() {
 
   const renderables = [];
   for (const obj of getObjects()) {
+    if (Boolean(obj.hidden)) continue;
     const x = Number(obj.x);
     const y = Number(obj.y);
     const z = Number(obj.z);

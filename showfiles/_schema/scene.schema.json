@@ -30,6 +30,7 @@
           "size": { "type": "number", "minimum": 0, "maximum": 100 },
           "gain": { "type": "number", "minimum": -120, "maximum": 12 },
           "mute": { "type": "boolean" },
+          "hidden": { "type": "boolean" },
           "algorithm": { "type": "string" }
         },
         "additionalProperties": false

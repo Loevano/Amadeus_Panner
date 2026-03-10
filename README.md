@@ -34,6 +34,63 @@ Example:
 HOST=0.0.0.0 HTTP_PORT=8787 OSC_OUT_HOST=10.0.0.50 OSC_OUT_PORT=9000 OSC_IN_PORT=9001 ./scripts/run-dev.sh
 ```
 
+## Stream Deck XL Hardware Control
+
+The control server now exposes Stream Deck-friendly HTTP routes so buttons can trigger cues without crafting JSON bodies.
+
+- Read compact button/state feedback:
+  - `GET /api/hardware/streamdeck/status`
+- Generate Stream Deck XL layout presets:
+  - `GET /api/hardware/streamdeck/layout` (all presets)
+  - `GET /api/hardware/streamdeck/layout/xl-page-1-obj-select`
+  - `GET /api/hardware/streamdeck/layout/xl-page-2-obj-hide`
+  - `GET /api/hardware/streamdeck/layout/xl-page-3-group-enable`
+  - `GET /api/hardware/streamdeck/layout/xl-page-4-actions`
+  - `GET /api/hardware/streamdeck/layout/xl-page-5-action-groups`
+  - `GET /api/hardware/streamdeck/layout/xl-page-6-empty`
+  - `GET /api/hardware/streamdeck/layout/xl-page-7-empty`
+  - `GET /api/hardware/streamdeck/layout/xl-page-8-config`
+- Poll computed button states for feedback:
+  - `GET /api/hardware/streamdeck/layout/<layoutId>/state`
+- Showfile controls:
+  - `GET /api/hardware/streamdeck/show/save`
+  - `GET /api/hardware/streamdeck/show/load/current`
+  - `GET /api/hardware/streamdeck/show/load/next`
+  - `GET /api/hardware/streamdeck/show/save-as/timestamp`
+  - `GET /api/hardware/streamdeck/show/new/timestamp`
+- Trigger scene recall:
+  - `GET /api/hardware/streamdeck/scene/<sceneId>/recall`
+- Selection control:
+  - `GET /api/hardware/streamdeck/object/<objectId>/select`
+  - `GET /api/hardware/streamdeck/object/<objectId>/hide/<on|off|toggle>` (visual hide/show in panner)
+  - `GET /api/hardware/streamdeck/objects/hide/toggle` (visual hide/show all in panner)
+  - `GET /api/hardware/streamdeck/object-selection/clear`
+  - `GET /api/hardware/streamdeck/group/<groupId>/select`
+  - `GET /api/hardware/streamdeck/group-selection/clear`
+- Enable/disable object groups:
+  - `GET /api/hardware/streamdeck/group/<groupId>/enabled/<on|off|toggle>`
+  - `GET /api/hardware/streamdeck/groups/enabled/<on|off|toggle>` (global master)
+- Trigger actions:
+  - `GET /api/hardware/streamdeck/action/<actionId>/start`
+  - `GET /api/hardware/streamdeck/action/<actionId>/trigger` (alias for `start`)
+  - `GET /api/hardware/streamdeck/action/<actionId>/stop`
+  - `GET /api/hardware/streamdeck/action/<actionId>/abort`
+  - `GET /api/hardware/streamdeck/action/<actionId>/toggle`
+- Enable/disable action:
+  - `GET /api/hardware/streamdeck/action/<actionId>/enabled/<on|off|toggle>`
+- LFO control:
+  - `GET /api/hardware/streamdeck/lfos/enabled/<on|off|toggle>` (global master)
+  - `GET /api/hardware/streamdeck/action/<actionId>/lfo/<lfoId>/enabled/<on|off|toggle>`
+- Trigger action group:
+  - `GET /api/hardware/streamdeck/action-group/<groupId>/trigger`
+- Enable/disable action group:
+  - `GET /api/hardware/streamdeck/action-group/<groupId>/enabled/<on|off|toggle>`
+
+`POST` is also accepted for all of the routes above (empty body is fine).
+
+Layout endpoint response includes `row`, `col`, `title`, and full `url` fields per button so you can copy/paste into Stream Deck website actions.
+Layout responses now also include per-button `state` (`active`/`inactive`/`disabled`/`mixed`) with `label` and `color` for reflecting runtime status.
+
 ## What Is Implemented
 - Web UI with:
   - View tabs for `Panner`, `Action Manager`, `Modulation Manager`, `Object Manager`, and `Object Group Manager`.

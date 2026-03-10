@@ -12,8 +12,8 @@ import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import unquote, urlparse
+from typing import Any, Dict, List, Optional, Set, Tuple
+from urllib.parse import quote, unquote, urlparse
 
 from showfile_validator import validate_show_bundle
 
@@ -72,6 +72,9 @@ ACTION_TICK_SEC = 1.0 / 60.0
 ACTION_GROUP_ACTION_COMMANDS = {"start", "stop", "abort"}
 ACTION_RULE_TYPES = {"modulationControl", "parameterRamp"}
 ACTION_RULE_MODULATION_PARAMS = {"enabled", "wave", "rateHz", "depth", "offset", "phaseDeg", "mappingPhaseDeg", "polarity"}
+ENABLED_SWITCH_ON_VALUES = {"on", "enable", "enabled", "true", "1", "yes"}
+ENABLED_SWITCH_OFF_VALUES = {"off", "disable", "disabled", "false", "0", "no"}
+ENABLED_SWITCH_TOGGLE_VALUES = {"toggle", "flip"}
 
 
 def clamp(value: float, min_max: Tuple[float, float]) -> float:
@@ -81,6 +84,24 @@ def clamp(value: float, min_max: Tuple[float, float]) -> float:
 
 def now_iso() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime()) + "Z"
+
+
+def normalize_enabled_switch(value: Any) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in ENABLED_SWITCH_ON_VALUES:
+        return "on"
+    if normalized in ENABLED_SWITCH_OFF_VALUES:
+        return "off"
+    if normalized in ENABLED_SWITCH_TOGGLE_VALUES:
+        return "toggle"
+    raise ValueError("Enabled switch must be one of: on, off, toggle")
+
+
+def apply_enabled_switch(current_enabled: bool, switch: str) -> bool:
+    normalized_switch = normalize_enabled_switch(switch)
+    if normalized_switch == "toggle":
+        return not bool(current_enabled)
+    return normalized_switch == "on"
 
 
 def to_float(value: Any, default: float = 0.0) -> float:
@@ -654,6 +675,7 @@ def normalize_object(input_obj: Dict[str, Any], fallback_id: str) -> Dict[str, A
         "algorithm": str(input_obj.get("algorithm") or "default"),
         "type": str(input_obj.get("type") or DEFAULT_OBJECT_TYPE),
         "color": normalize_color(input_obj.get("color"), DEFAULT_OBJECT_COLOR),
+        "hidden": bool(input_obj.get("hidden", False)),
         "excludeFromAll": bool(input_obj.get("exclude_from_all") if "exclude_from_all" in input_obj else input_obj.get("excludeFromAll", False)),
     }
 
@@ -1171,6 +1193,8 @@ class Runtime:
         self.show: Optional[Dict[str, Any]] = None
         self.objects: Dict[str, Dict[str, Any]] = {}
         self.object_groups: Dict[str, Dict[str, Any]] = {}
+        self.selected_object_ids: List[str] = []
+        self.selected_group_id: Optional[str] = None
         self.groups_enabled = True
         self.lfos_enabled = True
         self.active_scene_id: Optional[str] = None
@@ -1356,6 +1380,15 @@ class Runtime:
                     "actionGroupsById": json.loads(json.dumps(self.show["actionGroupsById"])),
                 }
 
+            selected_object_ids = [
+                object_id
+                for object_id in self.selected_object_ids
+                if object_id in self.objects
+            ]
+            selected_group_id = str(self.selected_group_id or "").strip()
+            if selected_group_id and selected_group_id.lower() != VIRTUAL_ALL_GROUP_ID and selected_group_id not in self.object_groups:
+                selected_group_id = ""
+
             running_action_details = {
                 action_id: {
                     "source": str(payload.get("source") or ""),
@@ -1388,6 +1421,8 @@ class Runtime:
                 "runningActionDetails": running_action_details,
                 "groupsEnabled": self.groups_enabled,
                 "lfosEnabled": self.lfos_enabled,
+                "selectedObjectIds": selected_object_ids,
+                "selectedGroupId": selected_group_id,
                 "objectGroups": list(self.object_groups.values()),
                 "objects": list(self.objects.values()),
             }
@@ -1439,6 +1474,7 @@ class Runtime:
             "gain": clamp(to_float(obj.get("gain"), 0.0), OBJECT_LIMITS["gain"]),
             "mute": bool(obj.get("mute", False)),
             "algorithm": str(obj.get("algorithm") or "default"),
+            "hidden": bool(obj.get("hidden", False)),
         }
 
     def _sanitize_action_links(self, actions_by_id: Dict[str, Dict[str, Any]]) -> None:
@@ -1926,6 +1962,8 @@ class Runtime:
             self.object_groups = {group_id: dict(group) for group_id, group in object_groups_by_id.items()}
             self.groups_enabled = groups_enabled
             self.objects = {}
+            self.selected_object_ids = []
+            self.selected_group_id = None
             self.active_scene_id = None
             self.always_lfo_target_states = {}
             self.always_lfo_phase_ms_by_id = {}
@@ -2114,6 +2152,81 @@ class Runtime:
             },
         )
         return next_enabled
+
+    def select_objects(self, object_ids: List[Any], source: str = "api") -> List[str]:
+        normalized_ids: List[str] = []
+        seen_ids: set[str] = set()
+        for raw_object_id in object_ids:
+            object_text = str(raw_object_id or "").strip()
+            if not object_text:
+                continue
+            normalized_object_id = normalize_object_id(object_text)
+            if normalized_object_id in seen_ids:
+                continue
+            seen_ids.add(normalized_object_id)
+            normalized_ids.append(normalized_object_id)
+
+        with self.lock:
+            for object_id in normalized_ids:
+                if object_id not in self.objects:
+                    raise ValueError(f"Object not found: {object_id}")
+            self.selected_object_ids = list(normalized_ids)
+            selected_snapshot = list(self.selected_object_ids)
+
+        self.emit_event(
+            "selection",
+            {
+                "source": source,
+                "target": "objects",
+                "objectIds": selected_snapshot,
+            },
+        )
+        return selected_snapshot
+
+    def clear_object_selection(self, source: str = "api") -> List[str]:
+        with self.lock:
+            self.selected_object_ids = []
+
+        self.emit_event(
+            "selection",
+            {
+                "source": source,
+                "target": "objects",
+                "objectIds": [],
+            },
+        )
+        return []
+
+    def select_group(self, group_id: str, source: str = "api") -> str:
+        normalized_group_id = normalize_object_id(group_id)
+        with self.lock:
+            if normalized_group_id.lower() != VIRTUAL_ALL_GROUP_ID and normalized_group_id not in self.object_groups:
+                raise ValueError(f"Group not found: {normalized_group_id}")
+            self.selected_group_id = normalized_group_id
+
+        self.emit_event(
+            "selection",
+            {
+                "source": source,
+                "target": "group",
+                "groupId": normalized_group_id,
+            },
+        )
+        return normalized_group_id
+
+    def clear_group_selection(self, source: str = "api") -> str:
+        with self.lock:
+            self.selected_group_id = None
+
+        self.emit_event(
+            "selection",
+            {
+                "source": source,
+                "target": "group",
+                "groupId": "",
+            },
+        )
+        return ""
 
     def set_action_lfo_enabled(self, action_id: str, lfo_id: str, enabled: bool, source: str = "api") -> Dict[str, Any]:
         normalized_action_id = normalize_action_id(action_id)
@@ -2435,6 +2548,8 @@ class Runtime:
             if normalized_group_id not in self.object_groups:
                 raise ValueError(f"Group not found: {normalized_group_id}")
             deleted = self.object_groups.pop(normalized_group_id)
+            if self.selected_group_id == normalized_group_id:
+                self.selected_group_id = None
 
         self.emit_event(
             "object_group",
@@ -2568,6 +2683,8 @@ class Runtime:
             obj = dict(self.objects.pop(old_id))
             obj["objectId"] = next_id
             self.objects[next_id] = obj
+            if self.selected_object_ids:
+                self.selected_object_ids = [next_id if selected_id == old_id else selected_id for selected_id in self.selected_object_ids]
 
         self._rename_groups_for_object(old_id, next_id)
 
@@ -2596,6 +2713,8 @@ class Runtime:
             if normalized_id not in self.objects:
                 raise ValueError(f"Object not found: {normalized_id}")
             removed = self.objects.pop(normalized_id)
+            if self.selected_object_ids:
+                self.selected_object_ids = [object_id for object_id in self.selected_object_ids if object_id != normalized_id]
 
             if self.show and isinstance(self.show.get("actionsById"), dict):
                 actions_by_id = dict(self.show.get("actionsById") or {})
@@ -2704,6 +2823,7 @@ class Runtime:
         with self.lock:
             object_ids = sorted(self.objects.keys())
             self.objects = {}
+            self.selected_object_ids = []
             for group in self.object_groups.values():
                 group["objectIds"] = []
 
@@ -2892,7 +3012,7 @@ class Runtime:
 
             changed = [
                 k
-                for k in ["x", "y", "z", "size", "gain", "mute", "algorithm", "type", "color", "excludeFromAll"]
+                for k in ["x", "y", "z", "size", "gain", "mute", "algorithm", "type", "color", "hidden", "excludeFromAll"]
                 if current.get(k) != next_obj.get(k)
             ]
             self.objects[object_id] = next_obj
@@ -4352,6 +4472,13 @@ class Handler(BaseHTTPRequestHandler):
         raw = self.rfile.read(raw_len) if raw_len > 0 else b"{}"
         return json.loads(raw.decode("utf-8"))
 
+    def _drain_request_body(self) -> None:
+        raw_len = int(self.headers.get("Content-Length", "0"))
+        if raw_len > 1024 * 1024:
+            raise ValueError("Request body too large")
+        if raw_len > 0:
+            _ = self.rfile.read(raw_len)
+
     def _serve_static(self, filename: str, content_type: str) -> None:
         file_path = UI_ROOT / filename
         if not file_path.exists():
@@ -4364,6 +4491,1297 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(raw)))
         self.end_headers()
         self.wfile.write(raw)
+
+    def _streamdeck_status_payload(self) -> Dict[str, Any]:
+        runtime_status = RUNTIME.status()
+        show_payload = runtime_status.get("show")
+        if not isinstance(show_payload, dict):
+            show_payload = {}
+
+        actions_by_id = show_payload.get("actionsById")
+        if not isinstance(actions_by_id, dict):
+            actions_by_id = {}
+
+        action_groups_by_id = show_payload.get("actionGroupsById")
+        if not isinstance(action_groups_by_id, dict):
+            action_groups_by_id = {}
+        object_groups_raw = runtime_status.get("objectGroups")
+        object_groups = object_groups_raw if isinstance(object_groups_raw, list) else []
+
+        running_actions_raw = runtime_status.get("runningActions")
+        running_actions = {str(action_id) for action_id in running_actions_raw} if isinstance(running_actions_raw, list) else set()
+
+        action_states: Dict[str, Dict[str, Any]] = {}
+        for action_id in sorted(actions_by_id.keys()):
+            action = actions_by_id.get(action_id)
+            if not isinstance(action, dict):
+                continue
+            action_states[action_id] = {
+                "enabled": bool(action.get("enabled", True)),
+                "running": action_id in running_actions,
+            }
+
+        action_lfo_states: Dict[str, Dict[str, Dict[str, Any]]] = {}
+        for action_id in sorted(actions_by_id.keys()):
+            action = actions_by_id.get(action_id)
+            if not isinstance(action, dict):
+                continue
+            lfos = action.get("lfos")
+            if not isinstance(lfos, list):
+                continue
+            by_lfo_id: Dict[str, Dict[str, Any]] = {}
+            for raw_lfo in lfos:
+                if not isinstance(raw_lfo, dict):
+                    continue
+                lfo_id = str(raw_lfo.get("lfoId") or raw_lfo.get("lfo_id") or "").strip()
+                if not lfo_id:
+                    continue
+                current = by_lfo_id.get(lfo_id)
+                if not isinstance(current, dict):
+                    current = {"mappingCount": 0, "enabledCount": 0}
+                current["mappingCount"] = int(to_float(current.get("mappingCount"), 0.0)) + 1
+                if bool(raw_lfo.get("enabled", True)):
+                    current["enabledCount"] = int(to_float(current.get("enabledCount"), 0.0)) + 1
+                by_lfo_id[lfo_id] = current
+            for lfo_id, lfo_info in by_lfo_id.items():
+                mapping_count = int(to_float(lfo_info.get("mappingCount"), 0.0))
+                enabled_count = int(to_float(lfo_info.get("enabledCount"), 0.0))
+                by_lfo_id[lfo_id] = {
+                    "enabled": enabled_count > 0,
+                    "mixed": enabled_count > 0 and enabled_count < mapping_count,
+                    "mappingCount": mapping_count,
+                    "enabledCount": enabled_count,
+                }
+            if by_lfo_id:
+                action_lfo_states[action_id] = by_lfo_id
+
+        action_group_states: Dict[str, Dict[str, Any]] = {}
+        for group_id in sorted(action_groups_by_id.keys()):
+            group = action_groups_by_id.get(group_id)
+            if not isinstance(group, dict):
+                continue
+            action_group_states[group_id] = {
+                "enabled": bool(group.get("enabled", True)),
+            }
+
+        object_group_states: Dict[str, Dict[str, Any]] = {}
+        for raw_group in object_groups:
+            if not isinstance(raw_group, dict):
+                continue
+            group_id = str(raw_group.get("groupId") or "").strip()
+            if not group_id:
+                continue
+            member_ids = raw_group.get("objectIds")
+            object_group_states[group_id] = {
+                "enabled": bool(raw_group.get("enabled", True)),
+                "memberCount": len(member_ids) if isinstance(member_ids, list) else 0,
+            }
+
+        object_states: Dict[str, Dict[str, Any]] = {}
+        objects_raw = runtime_status.get("objects")
+        objects = objects_raw if isinstance(objects_raw, list) else []
+        for raw_object in objects:
+            if not isinstance(raw_object, dict):
+                continue
+            object_id = str(raw_object.get("objectId") or "").strip()
+            if not object_id:
+                continue
+            object_states[object_id] = {
+                "hidden": bool(raw_object.get("hidden", False)),
+            }
+
+        available_show_paths = discover_show_paths()
+
+        show_state: Optional[Dict[str, Any]] = None
+        if show_payload:
+            scene_ids = show_payload.get("sceneIds")
+            show_state = {
+                "path": str(show_payload.get("path") or ""),
+                "showId": str(show_payload.get("showId") or ""),
+                "name": str(show_payload.get("name") or ""),
+                "sceneIds": scene_ids if isinstance(scene_ids, list) else [],
+            }
+
+        return {
+            "ok": True,
+            "hardware": "streamdeck",
+            "at": now_iso(),
+            "show": show_state,
+            "activeSceneId": str(runtime_status.get("activeSceneId") or ""),
+            "groupsEnabled": bool(runtime_status.get("groupsEnabled", True)),
+            "lfosEnabled": bool(runtime_status.get("lfosEnabled", True)),
+            "selectedObjectIds": runtime_status.get("selectedObjectIds") if isinstance(runtime_status.get("selectedObjectIds"), list) else [],
+            "selectedGroupId": str(runtime_status.get("selectedGroupId") or ""),
+            "runningActions": sorted(running_actions),
+            "actions": action_states,
+            "actionLfos": action_lfo_states,
+            "actionGroups": action_group_states,
+            "objectGroups": object_group_states,
+            "objects": object_states,
+            "availableShows": available_show_paths,
+            "availableShowCount": len(available_show_paths),
+        }
+
+    def _streamdeck_base_url(self) -> str:
+        host_header = str(self.headers.get("Host") or "").strip()
+        if host_header:
+            if host_header.startswith("http://") or host_header.startswith("https://"):
+                return host_header.rstrip("/")
+            return f"http://{host_header}".rstrip("/")
+
+        fallback_host = str(CONFIG.get("host") or "127.0.0.1").strip() or "127.0.0.1"
+        if fallback_host in {"0.0.0.0", "::"}:
+            fallback_host = "127.0.0.1"
+        fallback_port = int(to_float(CONFIG.get("http_port"), 8787.0))
+        return f"http://{fallback_host}:{fallback_port}"
+
+    def _streamdeck_button(
+        self,
+        row: int,
+        col: int,
+        title: str,
+        path: str,
+        notes: str = "",
+    ) -> Dict[str, Any]:
+        normalized_path = "/" + str(path or "").lstrip("/")
+        return {
+            "row": row,
+            "col": col,
+            "title": str(title or "").strip() or "Button",
+            "method": "GET",
+            "requestMode": "background",
+            "path": normalized_path,
+            "url": f"{self._streamdeck_base_url()}{normalized_path}",
+            "system": "Website",
+            "notes": str(notes or "").strip(),
+        }
+
+    def _streamdeck_button_state_payload(
+        self,
+        kind: str,
+        active: bool,
+        disabled: bool = False,
+        active_label: str = "ON",
+        inactive_label: str = "OFF",
+    ) -> Dict[str, Any]:
+        if disabled:
+            return {
+                "kind": kind,
+                "state": "disabled",
+                "active": False,
+                "disabled": True,
+                "label": "DIS",
+                "color": "#72414c",
+            }
+        is_active = bool(active)
+        return {
+            "kind": kind,
+            "state": "active" if is_active else "inactive",
+            "active": is_active,
+            "disabled": False,
+            "label": active_label if is_active else inactive_label,
+            "color": "#1f8f5f" if is_active else "#3f4a56",
+        }
+
+    def _streamdeck_button_state_for_path(self, path: str, streamdeck_status: Dict[str, Any]) -> Dict[str, Any]:
+        button_path = "/" + str(path or "").lstrip("/")
+
+        selected_object_ids_raw = streamdeck_status.get("selectedObjectIds")
+        selected_object_ids = {str(object_id) for object_id in selected_object_ids_raw} if isinstance(selected_object_ids_raw, list) else set()
+        selected_group_id = str(streamdeck_status.get("selectedGroupId") or "").strip()
+        active_scene_id = str(streamdeck_status.get("activeSceneId") or "").strip()
+        groups_enabled = bool(streamdeck_status.get("groupsEnabled", True))
+        lfos_enabled = bool(streamdeck_status.get("lfosEnabled", True))
+
+        actions_raw = streamdeck_status.get("actions")
+        actions = actions_raw if isinstance(actions_raw, dict) else {}
+        action_lfos_raw = streamdeck_status.get("actionLfos")
+        action_lfos = action_lfos_raw if isinstance(action_lfos_raw, dict) else {}
+        action_groups_raw = streamdeck_status.get("actionGroups")
+        action_groups = action_groups_raw if isinstance(action_groups_raw, dict) else {}
+        object_groups_raw = streamdeck_status.get("objectGroups")
+        object_groups = object_groups_raw if isinstance(object_groups_raw, dict) else {}
+        objects_raw = streamdeck_status.get("objects")
+        objects = objects_raw if isinstance(objects_raw, dict) else {}
+        available_shows_raw = streamdeck_status.get("availableShows")
+        available_shows = available_shows_raw if isinstance(available_shows_raw, list) else []
+
+        show_payload = streamdeck_status.get("show")
+        show_loaded = isinstance(show_payload, dict) and bool(str(show_payload.get("showId") or "").strip())
+        current_show_path = str(show_payload.get("path") or "").strip() if isinstance(show_payload, dict) else ""
+        available_show_count = int(to_float(streamdeck_status.get("availableShowCount"), float(len(available_shows))))
+
+        if button_path == "/api/hardware/streamdeck/status":
+            return self._streamdeck_button_state_payload("status", True, active_label="LIVE", inactive_label="IDLE")
+        if button_path == "/api/hardware/streamdeck/show/save":
+            return self._streamdeck_button_state_payload("save", show_loaded, active_label="READY", inactive_label="N/A")
+        if button_path == "/api/hardware/streamdeck/show/load/current":
+            return self._streamdeck_button_state_payload("show-load-current", show_loaded, active_label="LOAD", inactive_label="N/A")
+        if button_path == "/api/hardware/streamdeck/show/load/next":
+            return self._streamdeck_button_state_payload(
+                "show-load-next",
+                available_show_count > 1,
+                disabled=available_show_count <= 1,
+                active_label="NEXT",
+                inactive_label="N/A",
+            )
+        if button_path == "/api/hardware/streamdeck/show/save-as/timestamp":
+            return self._streamdeck_button_state_payload("show-save-as", show_loaded, active_label="READY", inactive_label="N/A")
+        if button_path == "/api/hardware/streamdeck/show/new/timestamp":
+            return self._streamdeck_button_state_payload("show-new", True, active_label="READY", inactive_label="N/A")
+        if button_path == "/api/hardware/streamdeck/groups/enabled/toggle":
+            return self._streamdeck_button_state_payload("groups-master", groups_enabled)
+        if button_path == "/api/hardware/streamdeck/lfos/enabled/toggle":
+            return self._streamdeck_button_state_payload("lfos-master", lfos_enabled)
+        if button_path == "/api/hardware/streamdeck/objects/hide/toggle":
+            if not objects:
+                return self._streamdeck_button_state_payload("objects-hide", False, disabled=True)
+            hidden_count = sum(1 for state in objects.values() if isinstance(state, dict) and bool(state.get("hidden", False)))
+            if hidden_count <= 0:
+                return self._streamdeck_button_state_payload("objects-hide", False, active_label="ALL", inactive_label="NONE")
+            if hidden_count >= len(objects):
+                return self._streamdeck_button_state_payload("objects-hide", True, active_label="ALL", inactive_label="NONE")
+            mixed_payload = self._streamdeck_button_state_payload("objects-hide", True, active_label="ALL", inactive_label="NONE")
+            mixed_payload["state"] = "mixed"
+            mixed_payload["label"] = "MIX"
+            mixed_payload["color"] = "#8a6f2d"
+            return mixed_payload
+        if button_path == "/api/hardware/streamdeck/object-selection/clear":
+            return self._streamdeck_button_state_payload("object-selection-clear", len(selected_object_ids) > 0, active_label="CLR", inactive_label="-")
+        if button_path == "/api/hardware/streamdeck/group-selection/clear":
+            return self._streamdeck_button_state_payload("group-selection-clear", bool(selected_group_id), active_label="CLR", inactive_label="-")
+
+        scene_match = re.fullmatch(r"/api/hardware/streamdeck/scene/([^/]+)/recall", button_path)
+        if scene_match:
+            scene_id = unquote(scene_match.group(1))
+            return self._streamdeck_button_state_payload("scene", active_scene_id == scene_id, active_label="LIVE", inactive_label="IDLE")
+
+        action_command_match = re.fullmatch(r"/api/hardware/streamdeck/action/([^/]+)/(start|trigger|stop|abort|toggle)", button_path)
+        if action_command_match:
+            action_id = unquote(action_command_match.group(1))
+            command = action_command_match.group(2)
+            action_state = actions.get(action_id)
+            if not isinstance(action_state, dict):
+                return self._streamdeck_button_state_payload("action", False, disabled=True)
+            action_enabled = bool(action_state.get("enabled", True))
+            action_running = bool(action_state.get("running", False))
+            if command in {"stop", "abort"}:
+                return self._streamdeck_button_state_payload("action", action_running, disabled=not action_enabled, active_label="RUN", inactive_label="IDLE")
+            return self._streamdeck_button_state_payload("action", action_running, disabled=not action_enabled, active_label="RUN", inactive_label="IDLE")
+
+        action_enabled_match = re.fullmatch(r"/api/hardware/streamdeck/action/([^/]+)/enabled/(on|off|toggle)", button_path)
+        if action_enabled_match:
+            action_id = unquote(action_enabled_match.group(1))
+            action_state = actions.get(action_id)
+            if not isinstance(action_state, dict):
+                return self._streamdeck_button_state_payload("action-enabled", False, disabled=True)
+            action_enabled = bool(action_state.get("enabled", True))
+            return self._streamdeck_button_state_payload("action-enabled", action_enabled)
+
+        action_lfo_enabled_match = re.fullmatch(r"/api/hardware/streamdeck/action/([^/]+)/lfo/([^/]+)/enabled/(on|off|toggle)", button_path)
+        if action_lfo_enabled_match:
+            action_id = unquote(action_lfo_enabled_match.group(1))
+            lfo_id = unquote(action_lfo_enabled_match.group(2))
+            action_lfo_map = action_lfos.get(action_id)
+            if not isinstance(action_lfo_map, dict):
+                return self._streamdeck_button_state_payload("action-lfo-enabled", False, disabled=True)
+            lfo_state = action_lfo_map.get(lfo_id)
+            if not isinstance(lfo_state, dict):
+                return self._streamdeck_button_state_payload("action-lfo-enabled", False, disabled=True)
+            lfo_enabled = bool(lfo_state.get("enabled", False))
+            mixed = bool(lfo_state.get("mixed", False))
+            state_payload = self._streamdeck_button_state_payload("action-lfo-enabled", lfo_enabled)
+            if mixed:
+                state_payload["label"] = "MIX"
+                state_payload["state"] = "mixed"
+                state_payload["color"] = "#8a6f2d"
+            return state_payload
+
+        action_group_trigger_match = re.fullmatch(r"/api/hardware/streamdeck/action-group/([^/]+)/trigger", button_path)
+        if action_group_trigger_match:
+            group_id = unquote(action_group_trigger_match.group(1))
+            group_state = action_groups.get(group_id)
+            if not isinstance(group_state, dict):
+                return self._streamdeck_button_state_payload("action-group", False, disabled=True)
+            return self._streamdeck_button_state_payload("action-group", bool(group_state.get("enabled", True)), active_label="READY", inactive_label="OFF")
+
+        action_group_enabled_match = re.fullmatch(r"/api/hardware/streamdeck/action-group/([^/]+)/enabled/(on|off|toggle)", button_path)
+        if action_group_enabled_match:
+            group_id = unquote(action_group_enabled_match.group(1))
+            group_state = action_groups.get(group_id)
+            if not isinstance(group_state, dict):
+                return self._streamdeck_button_state_payload("action-group-enabled", False, disabled=True)
+            return self._streamdeck_button_state_payload("action-group-enabled", bool(group_state.get("enabled", True)))
+
+        object_select_match = re.fullmatch(r"/api/hardware/streamdeck/object/([^/]+)/select", button_path)
+        if object_select_match:
+            object_id = unquote(object_select_match.group(1))
+            return self._streamdeck_button_state_payload("object-select", object_id in selected_object_ids, active_label="SEL", inactive_label="-")
+
+        object_hide_match = re.fullmatch(r"/api/hardware/streamdeck/object/([^/]+)/hide/(on|off|toggle)", button_path)
+        if object_hide_match:
+            object_id = unquote(object_hide_match.group(1))
+            object_state = objects.get(object_id)
+            if not isinstance(object_state, dict):
+                return self._streamdeck_button_state_payload("object-hide", False, disabled=True)
+            return self._streamdeck_button_state_payload("object-hide", bool(object_state.get("hidden", False)), active_label="HIDE", inactive_label="SHOW")
+
+        group_select_match = re.fullmatch(r"/api/hardware/streamdeck/group/([^/]+)/select", button_path)
+        if group_select_match:
+            group_id = unquote(group_select_match.group(1))
+            return self._streamdeck_button_state_payload("group-select", selected_group_id == group_id, active_label="SEL", inactive_label="-")
+
+        group_enabled_match = re.fullmatch(r"/api/hardware/streamdeck/group/([^/]+)/enabled/(on|off|toggle)", button_path)
+        if group_enabled_match:
+            group_id = unquote(group_enabled_match.group(1))
+            group_state = object_groups.get(group_id)
+            if not isinstance(group_state, dict):
+                return self._streamdeck_button_state_payload("group-enabled", False, disabled=True)
+            return self._streamdeck_button_state_payload("group-enabled", bool(group_state.get("enabled", True)))
+
+        return self._streamdeck_button_state_payload("unknown", False, active_label="", inactive_label="")
+
+    def _streamdeck_layout_with_state(self, layout: Dict[str, Any], streamdeck_status: Dict[str, Any]) -> Dict[str, Any]:
+        if not isinstance(layout, dict):
+            return {}
+        buttons_raw = layout.get("buttons")
+        buttons = buttons_raw if isinstance(buttons_raw, list) else []
+        next_buttons: List[Dict[str, Any]] = []
+        for raw_button in buttons:
+            if not isinstance(raw_button, dict):
+                continue
+            next_button = dict(raw_button)
+            next_button["state"] = self._streamdeck_button_state_for_path(str(next_button.get("path") or ""), streamdeck_status)
+            next_buttons.append(next_button)
+        next_layout = dict(layout)
+        next_layout["buttons"] = next_buttons
+        return next_layout
+
+    def _streamdeck_layout_state_payload(self, layout: Dict[str, Any], streamdeck_status: Dict[str, Any]) -> Dict[str, Any]:
+        if not isinstance(layout, dict):
+            raise ValueError("Layout payload is invalid")
+        layout_id = str(layout.get("layoutId") or "")
+        buttons_raw = layout.get("buttons")
+        buttons = buttons_raw if isinstance(buttons_raw, list) else []
+        button_states: List[Dict[str, Any]] = []
+        for raw_button in buttons:
+            if not isinstance(raw_button, dict):
+                continue
+            button_states.append(
+                {
+                    "row": int(to_float(raw_button.get("row"), 0.0)),
+                    "col": int(to_float(raw_button.get("col"), 0.0)),
+                    "path": str(raw_button.get("path") or ""),
+                    "title": str(raw_button.get("title") or ""),
+                    "state": self._streamdeck_button_state_for_path(str(raw_button.get("path") or ""), streamdeck_status),
+                }
+            )
+        return {
+            "ok": True,
+            "hardware": "streamdeck",
+            "generatedAt": now_iso(),
+            "layoutId": layout_id,
+            "buttons": button_states,
+        }
+
+    def _streamdeck_layouts_payload(self) -> Dict[str, Any]:
+        runtime_status = RUNTIME.status()
+        streamdeck_status = self._streamdeck_status_payload()
+        show_payload = runtime_status.get("show")
+        if not isinstance(show_payload, dict):
+            show_payload = {}
+
+        action_ids_raw = show_payload.get("actionIds")
+        action_ids = sorted({str(action_id).strip() for action_id in action_ids_raw}) if isinstance(action_ids_raw, list) else []
+        action_ids = [action_id for action_id in action_ids if action_id]
+
+        action_groups_by_id = show_payload.get("actionGroupsById")
+        if not isinstance(action_groups_by_id, dict):
+            action_groups_by_id = {}
+        action_group_ids = sorted([str(group_id).strip() for group_id in action_groups_by_id.keys() if str(group_id).strip()])
+
+        object_groups_raw = runtime_status.get("objectGroups")
+        object_groups = object_groups_raw if isinstance(object_groups_raw, list) else []
+        object_group_ids: List[str] = []
+        for raw_group in object_groups:
+            if not isinstance(raw_group, dict):
+                continue
+            group_id = str(raw_group.get("groupId") or "").strip()
+            if group_id:
+                object_group_ids.append(group_id)
+        object_group_ids = sorted(set(object_group_ids))
+
+        objects_raw = runtime_status.get("objects")
+        objects = objects_raw if isinstance(objects_raw, list) else []
+        object_ids: List[str] = []
+        for raw_object in objects:
+            if not isinstance(raw_object, dict):
+                continue
+            object_id = str(raw_object.get("objectId") or "").strip()
+            if object_id:
+                object_ids.append(object_id)
+        object_ids = sorted(set(object_ids))
+
+        action_lfos_raw = streamdeck_status.get("actionLfos")
+        action_lfos = action_lfos_raw if isinstance(action_lfos_raw, dict) else {}
+        action_lfo_pairs: List[Tuple[str, str]] = []
+        for action_id in sorted(action_lfos.keys()):
+            lfo_map = action_lfos.get(action_id)
+            if not isinstance(lfo_map, dict):
+                continue
+            for lfo_id in sorted(lfo_map.keys()):
+                if not str(lfo_id).strip():
+                    continue
+                action_lfo_pairs.append((str(action_id), str(lfo_id)))
+
+        def short_label(prefix: str, raw_id: str, max_len: int = 8) -> str:
+            normalized_prefix = str(prefix or "")
+            normalized_id = str(raw_id or "").strip()
+            if not normalized_id:
+                return normalized_prefix.strip()[:max_len] or "Key"
+            available_id_len = max(1, max_len - len(normalized_prefix))
+            if len(normalized_id) > available_id_len:
+                normalized_id = normalized_id[:available_id_len]
+            return f"{normalized_prefix}{normalized_id}"[:max_len]
+
+        def available_slots(excluded: Optional[Set[Tuple[int, int]]] = None) -> List[Tuple[int, int]]:
+            blocked = excluded if isinstance(excluded, set) else set()
+            slots: List[Tuple[int, int]] = []
+            for row in range(3):
+                for col in range(8):
+                    if (row, col) not in blocked:
+                        slots.append((row, col))
+            return slots
+
+        page_1_buttons: List[Dict[str, Any]] = [
+            self._streamdeck_button(0, 0, "Status", "/api/hardware/streamdeck/status", "Read compact runtime state"),
+            self._streamdeck_button(0, 1, "ObjClr", "/api/hardware/streamdeck/object-selection/clear", "Clear selected object IDs"),
+            self._streamdeck_button(0, 2, "GrpClr", "/api/hardware/streamdeck/group-selection/clear", "Clear selected group ID"),
+        ]
+        page_1_slots = available_slots({(0, 0), (0, 1), (0, 2)})
+        page_1_cursor = 0
+        for object_id in object_ids:
+            if page_1_cursor >= len(page_1_slots):
+                break
+            row, col = page_1_slots[page_1_cursor]
+            page_1_cursor += 1
+            page_1_buttons.append(
+                self._streamdeck_button(
+                    row,
+                    col,
+                    short_label("SEL ", object_id),
+                    f"/api/hardware/streamdeck/object/{quote(object_id, safe='')}/select",
+                    f"Select object {object_id}",
+                )
+            )
+        for group_id in object_group_ids:
+            if page_1_cursor >= len(page_1_slots):
+                break
+            row, col = page_1_slots[page_1_cursor]
+            page_1_cursor += 1
+            page_1_buttons.append(
+                self._streamdeck_button(
+                    row,
+                    col,
+                    short_label("GRP ", group_id),
+                    f"/api/hardware/streamdeck/group/{quote(group_id, safe='')}/select",
+                    f"Select group {group_id}",
+                )
+            )
+
+        page_2_buttons: List[Dict[str, Any]] = [
+            self._streamdeck_button(0, 0, "Status", "/api/hardware/streamdeck/status", "Read compact runtime state"),
+            self._streamdeck_button(0, 1, "AllHide", "/api/hardware/streamdeck/objects/hide/toggle", "Toggle all object hide states"),
+        ]
+        page_2_slots = available_slots({(0, 0), (0, 1)})
+        for (row, col), object_id in zip(page_2_slots, object_ids):
+            page_2_buttons.append(
+                self._streamdeck_button(
+                    row,
+                    col,
+                    short_label("H ", object_id),
+                    f"/api/hardware/streamdeck/object/{quote(object_id, safe='')}/hide/toggle",
+                    f"Toggle hidden state for object {object_id}",
+                )
+            )
+
+        page_3_buttons: List[Dict[str, Any]] = [
+            self._streamdeck_button(0, 0, "Status", "/api/hardware/streamdeck/status", "Read compact runtime state"),
+            self._streamdeck_button(0, 1, "GrpAll", "/api/hardware/streamdeck/groups/enabled/toggle", "Toggle all object group linking"),
+            self._streamdeck_button(0, 2, "AllView", "/api/hardware/streamdeck/objects/hide/toggle", "Toggle all object visibility"),
+        ]
+        page_3_slots = available_slots({(0, 0), (0, 1), (0, 2)})
+        for (row, col), group_id in zip(page_3_slots, object_group_ids):
+            page_3_buttons.append(
+                self._streamdeck_button(
+                    row,
+                    col,
+                    short_label("GE ", group_id),
+                    f"/api/hardware/streamdeck/group/{quote(group_id, safe='')}/enabled/toggle",
+                    f"Toggle enabled state for group {group_id}",
+                )
+            )
+
+        page_4_buttons: List[Dict[str, Any]] = [
+            self._streamdeck_button(0, 0, "Status", "/api/hardware/streamdeck/status", "Read compact runtime state"),
+        ]
+        page_4_slots = available_slots({(0, 0)})
+        page_4_cursor = 0
+        for action_id in action_ids:
+            if page_4_cursor >= len(page_4_slots):
+                break
+            row, col = page_4_slots[page_4_cursor]
+            page_4_cursor += 1
+            page_4_buttons.append(
+                self._streamdeck_button(
+                    row,
+                    col,
+                    short_label("TR ", action_id),
+                    f"/api/hardware/streamdeck/action/{quote(action_id, safe='')}/trigger",
+                    f"Trigger action {action_id}",
+                )
+            )
+        for action_id in action_ids:
+            if page_4_cursor >= len(page_4_slots):
+                break
+            row, col = page_4_slots[page_4_cursor]
+            page_4_cursor += 1
+            page_4_buttons.append(
+                self._streamdeck_button(
+                    row,
+                    col,
+                    short_label("EN ", action_id),
+                    f"/api/hardware/streamdeck/action/{quote(action_id, safe='')}/enabled/toggle",
+                    f"Toggle enabled state for action {action_id}",
+                )
+            )
+        for action_id, lfo_id in action_lfo_pairs:
+            if page_4_cursor >= len(page_4_slots):
+                break
+            row, col = page_4_slots[page_4_cursor]
+            page_4_cursor += 1
+            page_4_buttons.append(
+                self._streamdeck_button(
+                    row,
+                    col,
+                    short_label("LFO ", f"{action_id}:{lfo_id}"),
+                    f"/api/hardware/streamdeck/action/{quote(action_id, safe='')}/lfo/{quote(lfo_id, safe='')}/enabled/toggle",
+                    f"Toggle LFO {lfo_id} for action {action_id}",
+                )
+            )
+
+        page_5_buttons: List[Dict[str, Any]] = [
+            self._streamdeck_button(0, 0, "Status", "/api/hardware/streamdeck/status", "Read compact runtime state"),
+        ]
+        page_5_slots = available_slots({(0, 0)})
+        page_5_cursor = 0
+        for group_id in action_group_ids:
+            if page_5_cursor >= len(page_5_slots):
+                break
+            row, col = page_5_slots[page_5_cursor]
+            page_5_cursor += 1
+            page_5_buttons.append(
+                self._streamdeck_button(
+                    row,
+                    col,
+                    short_label("TR ", group_id),
+                    f"/api/hardware/streamdeck/action-group/{quote(group_id, safe='')}/trigger",
+                    f"Trigger action group {group_id}",
+                )
+            )
+        for group_id in action_group_ids:
+            if page_5_cursor >= len(page_5_slots):
+                break
+            row, col = page_5_slots[page_5_cursor]
+            page_5_cursor += 1
+            page_5_buttons.append(
+                self._streamdeck_button(
+                    row,
+                    col,
+                    short_label("EN ", group_id),
+                    f"/api/hardware/streamdeck/action-group/{quote(group_id, safe='')}/enabled/toggle",
+                    f"Toggle enabled state for action group {group_id}",
+                )
+            )
+
+        page_6_buttons: List[Dict[str, Any]] = [
+            self._streamdeck_button(0, 0, "Status", "/api/hardware/streamdeck/status", "Read compact runtime state"),
+        ]
+
+        page_7_buttons: List[Dict[str, Any]] = [
+            self._streamdeck_button(0, 0, "Status", "/api/hardware/streamdeck/status", "Read compact runtime state"),
+        ]
+
+        page_8_buttons: List[Dict[str, Any]] = [
+            self._streamdeck_button(0, 0, "Status", "/api/hardware/streamdeck/status", "Read compact runtime state"),
+            self._streamdeck_button(0, 1, "Save", "/api/hardware/streamdeck/show/save", "Persist current show"),
+            self._streamdeck_button(0, 2, "LoadCur", "/api/hardware/streamdeck/show/load/current", "Reload current show"),
+            self._streamdeck_button(0, 3, "LoadNxt", "/api/hardware/streamdeck/show/load/next", "Load next show in showfiles list"),
+            self._streamdeck_button(0, 4, "SaveAs", "/api/hardware/streamdeck/show/save-as/timestamp", "Save current show under timestamped path"),
+            self._streamdeck_button(0, 5, "AddShow", "/api/hardware/streamdeck/show/new/timestamp", "Create and load a new timestamped show"),
+            self._streamdeck_button(0, 6, "GrpAll", "/api/hardware/streamdeck/groups/enabled/toggle", "Toggle all object group linking"),
+            self._streamdeck_button(0, 7, "LFOAll", "/api/hardware/streamdeck/lfos/enabled/toggle", "Toggle all LFO processing"),
+            self._streamdeck_button(1, 0, "ObjClr", "/api/hardware/streamdeck/object-selection/clear", "Clear selected object IDs"),
+            self._streamdeck_button(1, 1, "GrpClr", "/api/hardware/streamdeck/group-selection/clear", "Clear selected group ID"),
+        ]
+
+        layouts = [
+            {
+                "layoutId": "xl-page-1-obj-select",
+                "title": "Page 1 - Obj Select",
+                "description": "Object selection with feedback",
+                "buttons": page_1_buttons,
+            },
+            {
+                "layoutId": "xl-page-2-obj-hide",
+                "title": "Page 2 - Obj Hide",
+                "description": "Per-object hide control with feedback",
+                "buttons": page_2_buttons,
+            },
+            {
+                "layoutId": "xl-page-3-group-enable",
+                "title": "Page 3 - Group Enable",
+                "description": "Group enable controls plus all-toggle view",
+                "buttons": page_3_buttons,
+            },
+            {
+                "layoutId": "xl-page-4-actions",
+                "title": "Page 4 - Trigger Actions",
+                "description": "Action trigger, enable, and LFO controls",
+                "buttons": page_4_buttons,
+            },
+            {
+                "layoutId": "xl-page-5-action-groups",
+                "title": "Page 5 - Trigger Action Groups",
+                "description": "Action group trigger and enable controls",
+                "buttons": page_5_buttons,
+            },
+            {
+                "layoutId": "xl-page-6-empty",
+                "title": "Page 6 - Empty",
+                "description": "Reserved for future mappings",
+                "buttons": page_6_buttons,
+            },
+            {
+                "layoutId": "xl-page-7-empty",
+                "title": "Page 7 - Empty",
+                "description": "Reserved for future mappings",
+                "buttons": page_7_buttons,
+            },
+            {
+                "layoutId": "xl-page-8-config",
+                "title": "Page 8 - Config",
+                "description": "Show load/save operations and global toggles",
+                "buttons": page_8_buttons,
+            },
+        ]
+        layouts_with_state = [self._streamdeck_layout_with_state(layout, streamdeck_status) for layout in layouts]
+
+        return {
+            "ok": True,
+            "hardware": "streamdeck",
+            "device": {"model": "Stream Deck XL", "columns": 8, "rows": 4},
+            "generatedAt": now_iso(),
+            "baseUrl": self._streamdeck_base_url(),
+            "showId": str(show_payload.get("showId") or ""),
+            "stateSource": "/api/hardware/streamdeck/status",
+            "layouts": layouts_with_state,
+        }
+
+    def _handle_streamdeck_request(self, path_name: str) -> bool:
+        prefix = "/api/hardware/streamdeck/"
+        if path_name == "/api/hardware/streamdeck/status":
+            self._send_json(HTTPStatus.OK, self._streamdeck_status_payload())
+            return True
+        if path_name == "/api/hardware/streamdeck/layout":
+            self._send_json(HTTPStatus.OK, self._streamdeck_layouts_payload())
+            return True
+        if not path_name.startswith(prefix):
+            return False
+
+        try:
+            route = path_name[len(prefix) :].strip("/")
+            segments = [unquote(segment).strip() for segment in route.split("/") if segment.strip()]
+            if not segments:
+                self._send_json(
+                    HTTPStatus.OK,
+                    {
+                        "ok": True,
+                        "hardware": "streamdeck",
+                        "statusPath": "/api/hardware/streamdeck/status",
+                        "routes": [
+                            "/api/hardware/streamdeck/layout",
+                            "/api/hardware/streamdeck/layout/<layoutId>",
+                            "/api/hardware/streamdeck/layout/<layoutId>/state",
+                            "/api/hardware/streamdeck/show/save",
+                            "/api/hardware/streamdeck/show/load/current",
+                            "/api/hardware/streamdeck/show/load/next",
+                            "/api/hardware/streamdeck/show/save-as/timestamp",
+                            "/api/hardware/streamdeck/show/new/timestamp",
+                            "/api/hardware/streamdeck/scene/<sceneId>/recall",
+                            "/api/hardware/streamdeck/object/<objectId>/select",
+                            "/api/hardware/streamdeck/object/<objectId>/hide/<on|off|toggle>",
+                            "/api/hardware/streamdeck/objects/hide/toggle",
+                            "/api/hardware/streamdeck/object-selection/clear",
+                            "/api/hardware/streamdeck/group/<groupId>/select",
+                            "/api/hardware/streamdeck/group-selection/clear",
+                            "/api/hardware/streamdeck/group/<groupId>/enabled/<on|off|toggle>",
+                            "/api/hardware/streamdeck/action/<actionId>/<start|stop|abort|toggle>",
+                            "/api/hardware/streamdeck/action/<actionId>/trigger",
+                            "/api/hardware/streamdeck/action/<actionId>/lfo/<lfoId>/enabled/<on|off|toggle>",
+                            "/api/hardware/streamdeck/action/<actionId>/enabled/<on|off|toggle>",
+                            "/api/hardware/streamdeck/action-group/<groupId>/trigger",
+                            "/api/hardware/streamdeck/action-group/<groupId>/enabled/<on|off|toggle>",
+                            "/api/hardware/streamdeck/groups/enabled/<on|off|toggle>",
+                            "/api/hardware/streamdeck/lfos/enabled/<on|off|toggle>",
+                        ],
+                    },
+                )
+                return True
+
+            root = segments[0].lower()
+
+            if root == "layout":
+                payload = self._streamdeck_layouts_payload()
+                if len(segments) == 1:
+                    self._send_json(HTTPStatus.OK, payload)
+                    return True
+                if len(segments) == 2:
+                    requested_layout_id = str(segments[1] or "").strip().lower()
+                    layouts = payload.get("layouts")
+                    if not isinstance(layouts, list):
+                        raise ValueError("No layouts available")
+                    for layout in layouts:
+                        if not isinstance(layout, dict):
+                            continue
+                        layout_id = str(layout.get("layoutId") or "").strip().lower()
+                        if layout_id == requested_layout_id:
+                            self._send_json(
+                                HTTPStatus.OK,
+                                {
+                                    "ok": True,
+                                    "hardware": "streamdeck",
+                                    "device": payload.get("device"),
+                                    "generatedAt": payload.get("generatedAt"),
+                                    "baseUrl": payload.get("baseUrl"),
+                                    "showId": payload.get("showId"),
+                                    "layout": layout,
+                                },
+                            )
+                            return True
+                    raise ValueError(f"Unknown layoutId: {segments[1]}")
+                if len(segments) == 3 and segments[2].lower() == "state":
+                    requested_layout_id = str(segments[1] or "").strip().lower()
+                    layouts = payload.get("layouts")
+                    if not isinstance(layouts, list):
+                        raise ValueError("No layouts available")
+                    for layout in layouts:
+                        if not isinstance(layout, dict):
+                            continue
+                        layout_id = str(layout.get("layoutId") or "").strip().lower()
+                        if layout_id != requested_layout_id:
+                            continue
+                        streamdeck_status = self._streamdeck_status_payload()
+                        state_payload = self._streamdeck_layout_state_payload(layout, streamdeck_status)
+                        state_payload["baseUrl"] = payload.get("baseUrl")
+                        state_payload["stateSource"] = "/api/hardware/streamdeck/status"
+                        self._send_json(HTTPStatus.OK, state_payload)
+                        return True
+                    raise ValueError(f"Unknown layoutId: {segments[1]}")
+                raise ValueError("Layout route must be /layout, /layout/<layoutId>, or /layout/<layoutId>/state")
+
+            if root == "show" and len(segments) == 2 and segments[1].lower() == "save":
+                result = RUNTIME.save_show(capture_runtime_scene=True)
+                self._send_json(
+                    HTTPStatus.OK,
+                    {
+                        "ok": True,
+                        "hardware": "streamdeck",
+                        "target": "show",
+                        "command": "save",
+                        **result,
+                        "streamdeckStatus": self._streamdeck_status_payload(),
+                    },
+                )
+                return True
+
+            if root == "show" and len(segments) == 3 and segments[1].lower() == "load":
+                load_mode = segments[2].lower()
+                if load_mode == "current":
+                    with RUNTIME.lock:
+                        if not RUNTIME.show:
+                            raise ValueError("No show loaded")
+                        current_path = str(RUNTIME.show.get("path") or "").strip()
+                    if not current_path:
+                        raise ValueError("Current show path is empty")
+                    RUNTIME.load_show(current_path)
+                    self._send_json(
+                        HTTPStatus.OK,
+                        {
+                            "ok": True,
+                            "hardware": "streamdeck",
+                            "target": "show",
+                            "command": "load-current",
+                            "path": current_path,
+                            "streamdeckStatus": self._streamdeck_status_payload(),
+                        },
+                    )
+                    return True
+                if load_mode == "next":
+                    show_paths = discover_show_paths()
+                    if not show_paths:
+                        raise ValueError("No shows available")
+                    with RUNTIME.lock:
+                        current_path = str((RUNTIME.show or {}).get("path") or "").strip()
+                    next_path = show_paths[0]
+                    if current_path and current_path in show_paths:
+                        next_index = (show_paths.index(current_path) + 1) % len(show_paths)
+                        next_path = show_paths[next_index]
+                    RUNTIME.load_show(next_path)
+                    self._send_json(
+                        HTTPStatus.OK,
+                        {
+                            "ok": True,
+                            "hardware": "streamdeck",
+                            "target": "show",
+                            "command": "load-next",
+                            "path": next_path,
+                            "streamdeckStatus": self._streamdeck_status_payload(),
+                        },
+                    )
+                    return True
+                raise ValueError("Show load mode must be: current or next")
+
+            if root == "show" and len(segments) == 3 and segments[1].lower() == "save-as" and segments[2].lower() == "timestamp":
+                with RUNTIME.lock:
+                    if not RUNTIME.show:
+                        raise ValueError("No show loaded")
+                    current_path = str(RUNTIME.show.get("path") or "").strip()
+                if not current_path:
+                    raise ValueError("Current show path is empty")
+                timestamp = time.strftime("%Y%m%d-%H%M%S", time.localtime())
+                current_relative_path = Path(current_path)
+                suffix = current_relative_path.suffix if current_relative_path.suffix else ".json"
+                target_relative_path = str(
+                    current_relative_path.with_name(f"{current_relative_path.stem}-save-as-{timestamp}{suffix}")
+                ).replace("\\", "/")
+                result = RUNTIME.save_show(
+                    show_path=target_relative_path,
+                    set_as_current=True,
+                    capture_runtime_scene=True,
+                )
+                self._send_json(
+                    HTTPStatus.OK,
+                    {
+                        "ok": True,
+                        "hardware": "streamdeck",
+                        "target": "show",
+                        "command": "save-as-timestamp",
+                        **result,
+                        "streamdeckStatus": self._streamdeck_status_payload(),
+                    },
+                )
+                return True
+
+            if root == "show" and len(segments) == 3 and segments[1].lower() == "new" and segments[2].lower() == "timestamp":
+                timestamp = time.strftime("%Y%m%d-%H%M%S", time.localtime())
+                new_show_path = f"showfiles/streamdeck-{timestamp}/show.json"
+                result = RUNTIME.create_new_show(new_show_path, overwrite=False)
+                self._send_json(
+                    HTTPStatus.OK,
+                    {
+                        "ok": True,
+                        "hardware": "streamdeck",
+                        "target": "show",
+                        "command": "new-timestamp",
+                        **result,
+                        "streamdeckStatus": self._streamdeck_status_payload(),
+                    },
+                )
+                return True
+
+            if root == "scene" and len(segments) == 3 and segments[2].lower() == "recall":
+                scene_id = normalize_scene_id(segments[1])
+                RUNTIME.recall_scene(scene_id, source="streamdeck", emit_osc=True)
+                self._send_json(
+                    HTTPStatus.OK,
+                    {
+                        "ok": True,
+                        "hardware": "streamdeck",
+                        "target": "scene",
+                        "sceneId": scene_id,
+                        "command": "recall",
+                        "streamdeckStatus": self._streamdeck_status_payload(),
+                    },
+                )
+                return True
+
+            if root == "object" and len(segments) == 3 and segments[2].lower() == "select":
+                object_id = normalize_object_id(segments[1])
+                selected_object_ids = RUNTIME.select_objects([object_id], source="streamdeck")
+                self._send_json(
+                    HTTPStatus.OK,
+                    {
+                        "ok": True,
+                        "hardware": "streamdeck",
+                        "target": "object",
+                        "objectId": object_id,
+                        "command": "select",
+                        "selectedObjectIds": selected_object_ids,
+                        "streamdeckStatus": self._streamdeck_status_payload(),
+                    },
+                )
+                return True
+
+            if root == "object" and len(segments) == 4 and segments[2].lower() == "hide":
+                object_id = normalize_object_id(segments[1])
+                switch = normalize_enabled_switch(segments[3])
+                with RUNTIME.lock:
+                    object_payload = RUNTIME.objects.get(object_id)
+                    if not isinstance(object_payload, dict):
+                        raise ValueError(f"Object not found: {object_id}")
+                    current_hidden = bool(object_payload.get("hidden", False))
+                hidden = apply_enabled_switch(current_hidden, switch)
+                updated = RUNTIME.update_object(
+                    object_id,
+                    {"hidden": hidden},
+                    source="streamdeck",
+                    emit_osc=False,
+                    propagate_group_links=False,
+                )
+                self._send_json(
+                    HTTPStatus.OK,
+                    {
+                        "ok": True,
+                        "hardware": "streamdeck",
+                        "target": "object",
+                        "objectId": object_id,
+                        "command": "hide",
+                        "switch": switch,
+                        "hidden": hidden,
+                        "object": updated,
+                        "streamdeckStatus": self._streamdeck_status_payload(),
+                    },
+                )
+                return True
+
+            if root == "objects" and len(segments) == 3 and segments[1].lower() == "hide":
+                switch = normalize_enabled_switch(segments[2])
+                with RUNTIME.lock:
+                    object_ids = sorted(RUNTIME.objects.keys())
+                    hidden_count = sum(
+                        1
+                        for obj in RUNTIME.objects.values()
+                        if isinstance(obj, dict) and bool(obj.get("hidden", False))
+                    )
+                if not object_ids:
+                    raise ValueError("No objects available")
+                current_all_hidden = hidden_count == len(object_ids)
+                hidden = apply_enabled_switch(current_all_hidden, switch)
+                for object_id in object_ids:
+                    RUNTIME.update_object(
+                        object_id,
+                        {"hidden": hidden},
+                        source="streamdeck",
+                        emit_osc=False,
+                        propagate_group_links=False,
+                    )
+                self._send_json(
+                    HTTPStatus.OK,
+                    {
+                        "ok": True,
+                        "hardware": "streamdeck",
+                        "target": "objects",
+                        "command": "hide",
+                        "switch": switch,
+                        "hidden": hidden,
+                        "count": len(object_ids),
+                        "streamdeckStatus": self._streamdeck_status_payload(),
+                    },
+                )
+                return True
+
+            if root == "object-selection" and len(segments) == 2 and segments[1].lower() == "clear":
+                _ = RUNTIME.clear_object_selection(source="streamdeck")
+                self._send_json(
+                    HTTPStatus.OK,
+                    {
+                        "ok": True,
+                        "hardware": "streamdeck",
+                        "target": "object-selection",
+                        "command": "clear",
+                        "selectedObjectIds": [],
+                        "streamdeckStatus": self._streamdeck_status_payload(),
+                    },
+                )
+                return True
+
+            if root == "group" and len(segments) == 3 and segments[2].lower() == "select":
+                group_id = normalize_object_id(segments[1])
+                selected_group_id = RUNTIME.select_group(group_id, source="streamdeck")
+                self._send_json(
+                    HTTPStatus.OK,
+                    {
+                        "ok": True,
+                        "hardware": "streamdeck",
+                        "target": "group",
+                        "groupId": selected_group_id,
+                        "command": "select",
+                        "selectedGroupId": selected_group_id,
+                        "streamdeckStatus": self._streamdeck_status_payload(),
+                    },
+                )
+                return True
+
+            if root == "group-selection" and len(segments) == 2 and segments[1].lower() == "clear":
+                _ = RUNTIME.clear_group_selection(source="streamdeck")
+                self._send_json(
+                    HTTPStatus.OK,
+                    {
+                        "ok": True,
+                        "hardware": "streamdeck",
+                        "target": "group-selection",
+                        "command": "clear",
+                        "selectedGroupId": "",
+                        "streamdeckStatus": self._streamdeck_status_payload(),
+                    },
+                )
+                return True
+
+            if root == "group" and len(segments) == 4 and segments[2].lower() == "enabled":
+                group_id = normalize_object_id(segments[1])
+                switch = normalize_enabled_switch(segments[3])
+                with RUNTIME.lock:
+                    group = RUNTIME.object_groups.get(group_id)
+                    if not isinstance(group, dict):
+                        raise ValueError(f"Group not found: {group_id}")
+                    current_enabled = bool(group.get("enabled", True))
+                enabled = apply_enabled_switch(current_enabled, switch)
+                _ = RUNTIME.update_object_group(group_id, {"enabled": enabled}, source="streamdeck")
+                self._send_json(
+                    HTTPStatus.OK,
+                    {
+                        "ok": True,
+                        "hardware": "streamdeck",
+                        "target": "group",
+                        "groupId": group_id,
+                        "command": "enabled",
+                        "switch": switch,
+                        "enabled": enabled,
+                        "streamdeckStatus": self._streamdeck_status_payload(),
+                    },
+                )
+                return True
+
+            if root == "action" and len(segments) == 3:
+                action_id = normalize_action_id(segments[1])
+                command = segments[2].lower()
+                executed_command = command
+                if command == "start":
+                    RUNTIME.start_action(action_id, "streamdeck")
+                elif command == "trigger":
+                    RUNTIME.start_action(action_id, "streamdeck")
+                    executed_command = "start"
+                elif command == "stop":
+                    RUNTIME.stop_action(action_id, "streamdeck")
+                elif command == "abort":
+                    RUNTIME.abort_action(action_id, "streamdeck")
+                elif command == "toggle":
+                    with RUNTIME.lock:
+                        if not RUNTIME.show:
+                            raise ValueError("No show loaded")
+                        actions_by_id = RUNTIME.show.get("actionsById")
+                        if not isinstance(actions_by_id, dict) or action_id not in actions_by_id:
+                            raise ValueError(f"Action not found: {action_id}")
+                        is_running = action_id in RUNTIME.running_actions
+                    if is_running:
+                        RUNTIME.stop_action(action_id, "streamdeck-toggle")
+                        executed_command = "stop"
+                    else:
+                        RUNTIME.start_action(action_id, "streamdeck-toggle")
+                        executed_command = "start"
+                else:
+                    raise ValueError("Action command must be one of: start, trigger, stop, abort, toggle")
+
+                self._send_json(
+                    HTTPStatus.OK,
+                    {
+                        "ok": True,
+                        "hardware": "streamdeck",
+                        "target": "action",
+                        "actionId": action_id,
+                        "command": command,
+                        "executed": executed_command,
+                        "streamdeckStatus": self._streamdeck_status_payload(),
+                    },
+                )
+                return True
+
+            if root == "action" and len(segments) == 6 and segments[2].lower() == "lfo" and segments[4].lower() == "enabled":
+                action_id = normalize_action_id(segments[1])
+                lfo_id = normalize_lfo_id(segments[3])
+                switch = normalize_enabled_switch(segments[5])
+                with RUNTIME.lock:
+                    if not RUNTIME.show:
+                        raise ValueError("No show loaded")
+                    actions_by_id = RUNTIME.show.get("actionsById")
+                    if not isinstance(actions_by_id, dict):
+                        actions_by_id = {}
+                    action = actions_by_id.get(action_id)
+                    if not isinstance(action, dict):
+                        raise ValueError(f"Action not found: {action_id}")
+                    lfos = action.get("lfos")
+                    if not isinstance(lfos, list):
+                        lfos = []
+                    matching_lfos = [
+                        lfo
+                        for lfo in lfos
+                        if isinstance(lfo, dict) and str(lfo.get("lfoId") or lfo.get("lfo_id") or "").strip() == lfo_id
+                    ]
+                    if not matching_lfos:
+                        raise ValueError(f"LFO not found in action: {lfo_id}")
+                    current_enabled = any(bool(lfo.get("enabled", True)) for lfo in matching_lfos)
+                enabled = apply_enabled_switch(current_enabled, switch)
+                result = RUNTIME.set_action_lfo_enabled(action_id, lfo_id, enabled, source="streamdeck")
+                self._send_json(
+                    HTTPStatus.OK,
+                    {
+                        "ok": True,
+                        "hardware": "streamdeck",
+                        "target": "action-lfo",
+                        "actionId": action_id,
+                        "lfoId": lfo_id,
+                        "command": "enabled",
+                        "switch": switch,
+                        "enabled": enabled,
+                        **result,
+                        "streamdeckStatus": self._streamdeck_status_payload(),
+                    },
+                )
+                return True
+
+            if root == "action" and len(segments) == 4 and segments[2].lower() == "enabled":
+                action_id = normalize_action_id(segments[1])
+                switch = normalize_enabled_switch(segments[3])
+                with RUNTIME.lock:
+                    if not RUNTIME.show:
+                        raise ValueError("No show loaded")
+                    actions_by_id = RUNTIME.show.get("actionsById")
+                    if not isinstance(actions_by_id, dict):
+                        actions_by_id = {}
+                    action = actions_by_id.get(action_id)
+                    if not isinstance(action, dict):
+                        raise ValueError(f"Action not found: {action_id}")
+                    current_enabled = bool(action.get("enabled", True))
+                enabled = apply_enabled_switch(current_enabled, switch)
+                _ = RUNTIME.update_action(action_id, {"enabled": enabled}, source="streamdeck")
+                self._send_json(
+                    HTTPStatus.OK,
+                    {
+                        "ok": True,
+                        "hardware": "streamdeck",
+                        "target": "action",
+                        "actionId": action_id,
+                        "command": "enabled",
+                        "switch": switch,
+                        "enabled": enabled,
+                        "streamdeckStatus": self._streamdeck_status_payload(),
+                    },
+                )
+                return True
+
+            if root == "action-group" and len(segments) == 3 and segments[2].lower() == "trigger":
+                group_id = normalize_action_group_id(segments[1])
+                result = RUNTIME.trigger_action_group(group_id, source="streamdeck")
+                self._send_json(
+                    HTTPStatus.OK,
+                    {
+                        "ok": True,
+                        "hardware": "streamdeck",
+                        "target": "action-group",
+                        "groupId": group_id,
+                        "command": "trigger",
+                        **result,
+                        "streamdeckStatus": self._streamdeck_status_payload(),
+                    },
+                )
+                return True
+
+            if root == "action-group" and len(segments) == 4 and segments[2].lower() == "enabled":
+                group_id = normalize_action_group_id(segments[1])
+                switch = normalize_enabled_switch(segments[3])
+                with RUNTIME.lock:
+                    if not RUNTIME.show:
+                        raise ValueError("No show loaded")
+                    action_groups_by_id = RUNTIME.show.get("actionGroupsById")
+                    if not isinstance(action_groups_by_id, dict):
+                        action_groups_by_id = {}
+                    action_group = action_groups_by_id.get(group_id)
+                    if not isinstance(action_group, dict):
+                        raise ValueError(f"Action group not found: {group_id}")
+                    current_enabled = bool(action_group.get("enabled", True))
+                enabled = apply_enabled_switch(current_enabled, switch)
+                _ = RUNTIME.update_action_group(group_id, {"enabled": enabled}, source="streamdeck")
+                self._send_json(
+                    HTTPStatus.OK,
+                    {
+                        "ok": True,
+                        "hardware": "streamdeck",
+                        "target": "action-group",
+                        "groupId": group_id,
+                        "command": "enabled",
+                        "switch": switch,
+                        "enabled": enabled,
+                        "streamdeckStatus": self._streamdeck_status_payload(),
+                    },
+                )
+                return True
+
+            if root == "groups" and len(segments) == 3 and segments[1].lower() == "enabled":
+                switch = normalize_enabled_switch(segments[2])
+                with RUNTIME.lock:
+                    current_enabled = bool(RUNTIME.groups_enabled)
+                enabled = apply_enabled_switch(current_enabled, switch)
+                RUNTIME.set_groups_enabled(enabled, source="streamdeck")
+                self._send_json(
+                    HTTPStatus.OK,
+                    {
+                        "ok": True,
+                        "hardware": "streamdeck",
+                        "target": "groups",
+                        "command": "enabled",
+                        "switch": switch,
+                        "enabled": enabled,
+                        "streamdeckStatus": self._streamdeck_status_payload(),
+                    },
+                )
+                return True
+
+            if root == "lfos" and len(segments) == 3 and segments[1].lower() == "enabled":
+                switch = normalize_enabled_switch(segments[2])
+                with RUNTIME.lock:
+                    current_enabled = bool(RUNTIME.lfos_enabled)
+                enabled = apply_enabled_switch(current_enabled, switch)
+                RUNTIME.set_lfos_enabled(enabled, source="streamdeck")
+                self._send_json(
+                    HTTPStatus.OK,
+                    {
+                        "ok": True,
+                        "hardware": "streamdeck",
+                        "target": "lfos",
+                        "command": "enabled",
+                        "switch": switch,
+                        "enabled": enabled,
+                        "streamdeckStatus": self._streamdeck_status_payload(),
+                    },
+                )
+                return True
+
+            self._send_json(HTTPStatus.NOT_FOUND, {"ok": False, "hardware": "streamdeck", "error": "Unknown streamdeck endpoint"})
+            return True
+        except Exception as exc:  # noqa: BLE001
+            self._send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "hardware": "streamdeck", "error": str(exc)})
+            return True
 
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
@@ -4398,6 +5816,8 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path_name == "/api/events":
             self._stream_events()
+            return
+        if self._handle_streamdeck_request(path_name):
             return
 
         self._send_json(HTTPStatus.NOT_FOUND, {"ok": False, "error": "Not found"})
@@ -4439,6 +5859,11 @@ class Handler(BaseHTTPRequestHandler):
         path_name = parsed.path
 
         try:
+            if path_name.startswith("/api/hardware/streamdeck/"):
+                self._drain_request_body()
+                if self._handle_streamdeck_request(path_name):
+                    return
+
             if path_name == "/api/osc/config":
                 body = self._read_json_body()
                 osc_config = RUNTIME.update_osc_runtime_config(body, source="api")

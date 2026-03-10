@@ -1,5 +1,35 @@
 # Changelog
 
+## 2026-03-10 14:10 CET
+- Fixed Stream Deck hide behavior to use true panner visibility (`hidden`) instead of audio mute (`mute`):
+  - `/api/hardware/streamdeck/object/<objectId>/hide/<on|off|toggle>` now toggles `hidden`
+  - `/api/hardware/streamdeck/objects/hide/toggle` now toggles `hidden`
+  - panner rendering and object picking now ignore objects with `hidden=true`
+  - scene schema now allows persisting per-object `hidden`
+
+## 2026-03-10 11:31 CET
+- Expanded Stream Deck hardware API with additional no-body HTTP routes:
+  - added layout generator routes (`layout`, `layout/<layoutId>`) for Stream Deck XL button mapping
+  - added layout-state polling route (`layout/<layoutId>/state`) for controller feedback
+  - added `show/save` route to persist current working state from a hardware button
+  - added showfile utility routes (`show/load/current`, `show/load/next`, `show/save-as/timestamp`, `show/new/timestamp`)
+  - added object selection routes (`object/<id>/select`, `object-selection/clear`)
+  - added object hide routes (`object/<id>/hide/<on|off|toggle>`, `objects/hide/toggle`)
+  - added object-group selection routes (`group/<id>/select`, `group-selection/clear`)
+  - added per-object-group enable route (`group/<id>/enabled/<on|off|toggle>`)
+  - added action `trigger` alias route and action-LFO enable route (`action/<id>/lfo/<lfoId>/enabled/...`)
+- Added runtime selection state (`selectedObjectIds`, `selectedGroupId`) and action-LFO state summary to Stream Deck status payload.
+- Added computed per-button state metadata (`state`, `active`, `disabled`, `label`, `color`) in layout payloads for live hardware reflection.
+- Replaced Stream Deck preset layouts with an 8-page XL mapping set:
+  - page 1 object select (feedback)
+  - page 2 object hide (feedback)
+  - page 3 group enable + global toggles
+  - page 4 action trigger/control + LFO toggles
+  - page 5 action-group trigger/control
+  - pages 6-7 reserved
+  - page 8 show/config utilities
+- Added lifecycle cleanup for selection state on show load/object delete/object clear/object rename/group delete.
+
 ## 2026-03-04 21:45 CET
 - Fixed Modulation Manager `New LFO` dead state:
   - button now remains clickable even when action selection is stale
