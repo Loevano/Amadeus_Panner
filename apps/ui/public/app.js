@@ -36,6 +36,7 @@ const STATUS_POLL_TICK_MS = 1000;
 const STATUS_RECONCILE_INTERVAL_MS = 15000;
 const STATUS_EVENT_REFRESH_DEBOUNCE_MS = 80;
 const SHOW_LIST_REFRESH_INTERVAL_MS = 10000;
+const STREAMDECK_CONFIG_REFRESH_INTERVAL_MS = 10000;
 const DRAG_PATCH_SEND_INTERVAL_MS = 16;
 const DEBUG_LOG_NOISY_TYPES = new Set(["object", "osc_out", "osc_in"]);
 const DEBUG_LOG_NOISY_THROTTLE_MS = 250;
@@ -159,6 +160,10 @@ const state = {
   logs: [],
   configDraft: null,
   configDraftDirty: false,
+  streamdeckLayoutConfig: null,
+  streamdeckConfigLastFetchMs: 0,
+  streamdeckConfigRefreshInFlight: false,
+  streamdeckConfigError: "",
   managerStructureRenderKey: "",
   managerPositionRenderKey: "",
   camera: {
@@ -180,6 +185,7 @@ const els = {
   viewModulationManagerBtn: document.getElementById("viewModulationManagerBtn"),
   viewObjectManagerBtn: document.getElementById("viewObjectManagerBtn"),
   viewGroupManagerBtn: document.getElementById("viewGroupManagerBtn"),
+  viewControlBtn: document.getElementById("viewControlBtn"),
   viewConfigurationBtn: document.getElementById("viewConfigurationBtn"),
   showPathInput: document.getElementById("showPathInput"),
   loadShowBtn: document.getElementById("loadShowBtn"),
@@ -322,6 +328,10 @@ const els = {
   configOscActionGroupPrefixInput: document.getElementById("configOscActionGroupPrefixInput"),
   configSaveBtn: document.getElementById("configSaveBtn"),
   configResetBtn: document.getElementById("configResetBtn"),
+  streamdeckConfigRefreshBtn: document.getElementById("streamdeckConfigRefreshBtn"),
+  streamdeckConfigSummary: document.getElementById("streamdeckConfigSummary"),
+  streamdeckConfigMeta: document.getElementById("streamdeckConfigMeta"),
+  streamdeckConfigPagesRows: document.getElementById("streamdeckConfigPagesRows"),
   toggleDebugEventsBtn: document.getElementById("toggleDebugEventsBtn"),
   debugEventsState: document.getElementById("debugEventsState"),
   eventLog: document.getElementById("eventLog"),
@@ -402,11 +412,15 @@ function escapeRegExp(value) {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-function trimBaseForNumericSuffix(base, fallbackBase, numeric) {
-  const suffix = `-${numeric}`;
+function trimBaseForSuffix(base, fallbackBase, suffixToken) {
+  const suffix = `-${suffixToken}`;
   const maxBaseLen = 64 - suffix.length;
   const trimmed = String(base || "").slice(0, Math.max(1, maxBaseLen)).replace(/[-._]+$/, "");
   return trimmed || fallbackBase;
+}
+
+function trimBaseForNumericSuffix(base, fallbackBase, numeric) {
+  return trimBaseForSuffix(base, fallbackBase, String(numeric));
 }
 
 function nextNumericId(baseId, fallbackBase, existingIds) {
@@ -446,6 +460,51 @@ function nextNumericId(baseId, fallbackBase, existingIds) {
   throw new Error(`Could not generate a unique ${fallbackBase} ID`);
 }
 
+function shortStableHash(value) {
+  const text = String(value || "");
+  let hash = 2166136261;
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36);
+}
+
+function uniqueIdWithHashSuffix(baseId, fallbackBase, existingIds) {
+  const normalizedBase = normalizeObjectId(baseId) || fallbackBase;
+  const existingLower = new Set(
+    (Array.isArray(existingIds) ? existingIds : [])
+      .map((id) => String(id || "").trim().toLowerCase())
+      .filter(Boolean)
+  );
+
+  if (!existingLower.has(normalizedBase.toLowerCase())) {
+    return normalizedBase;
+  }
+
+  const baseSeed = `${normalizedBase}|${Date.now()}|${Math.random().toString(36).slice(2, 10)}|${existingLower.size}`;
+  for (let attempt = 0; attempt < 512; attempt += 1) {
+    const digest = shortStableHash(`${baseSeed}|${attempt}`).slice(0, 6).padStart(6, "0");
+    const trimmedBase = trimBaseForSuffix(normalizedBase, fallbackBase, digest);
+    const candidate = `${trimmedBase}-${digest}`;
+    if (!existingLower.has(candidate.toLowerCase())) {
+      return candidate;
+    }
+  }
+
+  let counter = 2;
+  while (counter < 100000) {
+    const trimmedBase = trimBaseForNumericSuffix(normalizedBase, fallbackBase, counter);
+    const candidate = `${trimmedBase}-${counter}`;
+    if (!existingLower.has(candidate.toLowerCase())) {
+      return candidate;
+    }
+    counter += 1;
+  }
+
+  throw new Error(`Could not generate a unique ${fallbackBase} ID`);
+}
+
 function normalizeObjectSeriesBase(baseId) {
   const normalized = normalizeObjectId(baseId);
   if (!normalized) return "";
@@ -457,7 +516,7 @@ function normalizeObjectSeriesBase(baseId) {
 }
 
 function uniqueObjectId(baseId) {
-  return nextNumericId(
+  return uniqueIdWithHashSuffix(
     normalizeObjectSeriesBase(baseId) || baseId,
     "obj",
     getObjects().map((obj) => obj.objectId)
@@ -496,7 +555,7 @@ function sanitizeObjectId(raw, options = {}) {
 }
 
 function uniqueGroupId(baseId) {
-  return nextNumericId(baseId, "group", getObjectGroups().map((group) => group.groupId));
+  return uniqueIdWithHashSuffix(baseId, "group", getObjectGroups().map((group) => group.groupId));
 }
 
 function longestCommonPrefix(values) {
@@ -648,7 +707,7 @@ function getActionIds() {
 }
 
 function uniqueActionId(baseId) {
-  return nextNumericId(baseId, "action", getActionIds());
+  return uniqueIdWithHashSuffix(baseId, "action", getActionIds());
 }
 
 function getActionGroupIds() {
@@ -656,7 +715,7 @@ function getActionGroupIds() {
 }
 
 function uniqueActionGroupId(baseId) {
-  return nextNumericId(baseId, "group", getActionGroupIds());
+  return uniqueIdWithHashSuffix(baseId, "group", getActionGroupIds());
 }
 
 function sanitizeGroupId(raw, options = {}) {
@@ -2214,6 +2273,7 @@ function setPage(nextPage) {
   els.viewModulationManagerBtn.classList.toggle("is-active", nextPage === "modulation-manager");
   els.viewObjectManagerBtn.classList.toggle("is-active", nextPage === "object-manager");
   els.viewGroupManagerBtn.classList.toggle("is-active", nextPage === "group-manager");
+  els.viewControlBtn.classList.toggle("is-active", nextPage === "control");
   els.viewConfigurationBtn.classList.toggle("is-active", nextPage === "configuration");
   els.viewPannerBtn.setAttribute("aria-selected", nextPage === "panner" ? "true" : "false");
   els.viewActionManagerBtn.setAttribute("aria-selected", nextPage === "action-manager" ? "true" : "false");
@@ -2221,6 +2281,7 @@ function setPage(nextPage) {
   els.viewModulationManagerBtn.setAttribute("aria-selected", nextPage === "modulation-manager" ? "true" : "false");
   els.viewObjectManagerBtn.setAttribute("aria-selected", nextPage === "object-manager" ? "true" : "false");
   els.viewGroupManagerBtn.setAttribute("aria-selected", nextPage === "group-manager" ? "true" : "false");
+  els.viewControlBtn.setAttribute("aria-selected", nextPage === "control" ? "true" : "false");
   els.viewConfigurationBtn.setAttribute("aria-selected", nextPage === "configuration" ? "true" : "false");
   renderAll();
 }
@@ -2891,6 +2952,132 @@ function oscConfigEquals(left, right) {
     && normalizeOscPathPrefix(left.scenePathPrefix, "/") === normalizeOscPathPrefix(right.scenePathPrefix, "/")
     && normalizeOscPathPrefix(left.actionPathPrefix, "/") === normalizeOscPathPrefix(right.actionPathPrefix, "/")
     && normalizeOscPathPrefix(left.actionGroupPathPrefix, "/") === normalizeOscPathPrefix(right.actionGroupPathPrefix, "/");
+}
+
+function normalizeStreamdeckConfigurationPayload(payload) {
+  if (!payload || typeof payload !== "object") return null;
+  if (payload.configuration && typeof payload.configuration === "object") {
+    return payload.configuration;
+  }
+  return payload;
+}
+
+function streamdeckConfigNeedsRefresh(options = {}) {
+  const force = options.force === true;
+  if (force) return true;
+  if (!state.streamdeckLayoutConfig && !state.streamdeckConfigError) return true;
+  const ageMs = Date.now() - Number(state.streamdeckConfigLastFetchMs || 0);
+  return ageMs >= STREAMDECK_CONFIG_REFRESH_INTERVAL_MS;
+}
+
+function renderStreamdeckConfiguration() {
+  const summaryEl = els.streamdeckConfigSummary;
+  const metaEl = els.streamdeckConfigMeta;
+  const rowsEl = els.streamdeckConfigPagesRows;
+
+  if (!(summaryEl instanceof HTMLElement) || !(metaEl instanceof HTMLElement) || !(rowsEl instanceof HTMLElement)) {
+    return;
+  }
+
+  if (els.streamdeckConfigRefreshBtn instanceof HTMLButtonElement) {
+    els.streamdeckConfigRefreshBtn.disabled = state.streamdeckConfigRefreshInFlight;
+  }
+
+  const configuration = state.streamdeckLayoutConfig && typeof state.streamdeckLayoutConfig === "object"
+    ? state.streamdeckLayoutConfig
+    : null;
+  const errorMessage = String(state.streamdeckConfigError || "").trim();
+
+  if (!configuration) {
+    const loadingText = state.streamdeckConfigRefreshInFlight
+      ? "Loading Stream Deck layout configuration..."
+      : (errorMessage ? `Stream Deck layout unavailable: ${errorMessage}` : "No Stream Deck layout data loaded yet.");
+    setTextIfChanged(summaryEl, loadingText);
+    setTextIfChanged(metaEl, "Source: /api/hardware/streamdeck/configuration");
+    rowsEl.innerHTML = '<tr><td colspan="4" class="muted">No pages available.</td></tr>';
+    return;
+  }
+
+  const pages = Array.isArray(configuration.pages) ? configuration.pages : [];
+  const columns = Number(configuration.columns || 0);
+  const rows = Number(configuration.rows || 0);
+  const pageCount = Number(configuration.pageCount || pages.length || 0);
+  const buttonCount = Number(configuration.buttonCount || 0);
+  const layoutMode = String(configuration.layoutMode || "page-grid");
+
+  setTextIfChanged(
+    summaryEl,
+    `Layout mode ${layoutMode}. Grid ${columns}x${rows}. Pages ${pageCount}. Buttons ${buttonCount}.`
+  );
+
+  const refreshedAt = state.streamdeckConfigLastFetchMs
+    ? new Date(state.streamdeckConfigLastFetchMs).toLocaleTimeString()
+    : "-";
+  const metaText = errorMessage
+    ? `Source: /api/hardware/streamdeck/configuration • Last refresh ${refreshedAt} • Last error: ${errorMessage}`
+    : `Source: /api/hardware/streamdeck/configuration • Last refresh ${refreshedAt}`;
+  setTextIfChanged(metaEl, metaText);
+
+  if (!pages.length) {
+    rowsEl.innerHTML = '<tr><td colspan="4" class="muted">No Stream Deck pages were returned.</td></tr>';
+    return;
+  }
+
+  rowsEl.innerHTML = pages.map((page) => {
+    const index = Number(page?.index || 0);
+    const title = String(page?.title || "");
+    const layoutId = String(page?.layoutId || "");
+    const perPageButtonCount = Number(page?.buttonCount || (Array.isArray(page?.buttons) ? page.buttons.length : 0));
+    return `
+      <tr>
+        <td>${index || "-"}</td>
+        <td>${escapeHtml(title || "-")}</td>
+        <td>${escapeHtml(layoutId || "-")}</td>
+        <td>${perPageButtonCount}</td>
+      </tr>`;
+  }).join("");
+}
+
+async function refreshStreamdeckConfiguration(options = {}) {
+  const force = options.force === true;
+  if (state.streamdeckConfigRefreshInFlight) return;
+  if (!streamdeckConfigNeedsRefresh({ force })) return;
+
+  state.streamdeckConfigRefreshInFlight = true;
+  if (state.currentPage === "control") {
+    renderStreamdeckConfiguration();
+  }
+
+  try {
+    const data = await api("/api/hardware/streamdeck/configuration");
+    const configuration = normalizeStreamdeckConfigurationPayload(data);
+    if (!configuration || typeof configuration !== "object") {
+      throw new Error("Invalid Stream Deck configuration response");
+    }
+    state.streamdeckLayoutConfig = configuration;
+    state.streamdeckConfigError = "";
+  } catch (error) {
+    const nextError = String(error?.message || error || "Unknown error");
+    const previousError = String(state.streamdeckConfigError || "");
+    state.streamdeckConfigError = nextError;
+    if (nextError && nextError !== previousError) {
+      addLog(`streamdeck configuration failed: ${nextError}`);
+    }
+  } finally {
+    state.streamdeckConfigLastFetchMs = Date.now();
+    state.streamdeckConfigRefreshInFlight = false;
+    if (state.currentPage === "control") {
+      renderStreamdeckConfiguration();
+    }
+  }
+}
+
+function renderControl() {
+  if (state.currentPage !== "control") return;
+  renderStreamdeckConfiguration();
+  if (streamdeckConfigNeedsRefresh()) {
+    void refreshStreamdeckConfiguration();
+  }
 }
 
 function captureConfigurationDraftFromInputs() {
@@ -5297,10 +5484,18 @@ function renderActionManager() {
   }
 
   const selectedTargetEntries = [];
+  const selectedTargetIndex = Number.isInteger(state.selectedActionLfoTargetIndex)
+    ? state.selectedActionLfoTargetIndex
+    : null;
   if (selectedLfoGroup) {
     for (const entryIndex of selectedLfoGroup.entryIndices) {
       if (!Number.isInteger(entryIndex) || entryIndex < 0 || entryIndex >= selectedLfos.length) continue;
       const entry = selectedLfos[entryIndex] || {};
+      const hasAssignedTarget = lfoHasAssignedTarget(entry);
+      const shouldShowPlaceholder = selectedTargetIndex !== null && entryIndex === selectedTargetIndex;
+      if (!hasAssignedTarget && !shouldShowPlaceholder) {
+        continue;
+      }
       const targetScope = normalizeLfoTargetScope(entry?.targetScope || entry?.target_scope || "");
       const targetId = targetScope === LFO_TARGET_SCOPE_GROUP
         ? String(entry.groupId || entry.group_id || "").trim()
@@ -6216,8 +6411,8 @@ function renderGroupManager() {
           aria-pressed="${groupEnabled ? "true" : "false"}"
         >${groupEnabled ? "On" : "Off"}</button>
       </td>
-      <td>${escapeHtml(groupId)}</td>
       <td>${escapeHtml(groupName)}</td>
+      <td>${escapeHtml(groupId)}</td>
       <td><span class="color-chip" style="background:${escapeHtml(groupColor)}"></span>${escapeHtml(groupColor)}</td>
       <td title="${escapeHtml(memberSummary.full)}">${escapeHtml(memberSummary.preview)}</td>
       <td title="${escapeHtml(linkSummary.full)}">${escapeHtml(linkSummary.preview)}</td>
@@ -6456,6 +6651,10 @@ function renderAll() {
   }
   if (state.currentPage === "group-manager") {
     renderGroupManager();
+    return;
+  }
+  if (state.currentPage === "control") {
+    renderControl();
     return;
   }
   if (state.currentPage === "configuration") {
@@ -7330,6 +7529,10 @@ function setupHandlers() {
     setPage("group-manager");
   });
 
+  els.viewControlBtn.addEventListener("click", () => {
+    setPage("control");
+  });
+
   els.viewConfigurationBtn.addEventListener("click", () => {
     setPage("configuration");
   });
@@ -7350,6 +7553,12 @@ function setupHandlers() {
   els.configResetBtn.addEventListener("click", () => {
     resetConfigurationDraft();
   });
+
+  if (els.streamdeckConfigRefreshBtn instanceof HTMLButtonElement) {
+    els.streamdeckConfigRefreshBtn.addEventListener("click", () => {
+      void refreshStreamdeckConfiguration({ force: true });
+    });
+  }
 
   els.loadShowBtn.addEventListener("click", () => {
     void loadShowFromInput();

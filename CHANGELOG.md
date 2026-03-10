@@ -1,5 +1,40 @@
 # Changelog
 
+## 2026-03-10 17:09 CET
+- Added a new `Control` main tab in the web app and moved the Stream Deck Layout panel there.
+- Updated Stream Deck configuration refresh/render flow so it runs while `Control` is open (instead of `Configuration`).
+- Kept `Configuration` focused on OSC network/routing settings only.
+
+## 2026-03-10 16:50 CET
+- Added a dedicated Stream Deck Layout section in the web app Configuration tab:
+  - queries `GET /api/hardware/streamdeck/configuration`
+  - shows layout summary (`layoutMode`, grid size, page count, button count)
+  - renders a per-page table (page index, title, layout ID, button count)
+  - includes manual refresh button and automatic refresh while the Configuration tab is open
+
+## 2026-03-10 16:22 CET
+- Reworked Stream Deck page model into linked sub-pages so each page includes folder-style navigation keys:
+  - page 1 `Obj Select` links to `Obj Hide` and `Group Hide`
+  - action/config pages include direct links to `Action Groups`, `Modulators`, and `Config`
+- Split group controls into dedicated pages:
+  - new `xl-page-3-group-hide`
+  - updated `xl-page-4-group-enable`
+- Added new group hide route:
+  - `GET|POST /api/hardware/streamdeck/group/<groupId>/hide/<on|off|toggle>`
+  - toggles hidden state for all objects in the target group
+  - includes computed per-group hide state (`inactive`/`active`/`mixed`/`disabled`) for button feedback
+- Added dedicated `Modulators` page (`xl-page-7-modulators`) and moved LFO controls there from config/actions mix.
+- Updated Stream Deck status/config payloads to expose richer object-group state (`objectIds`, `hiddenCount`, `allHidden`, `mixedHidden`) and navigation metadata (`kind`, `targetPageId`, `method: NAV`).
+
+## 2026-03-10 15:52 CET
+- Added Stream Deck API discovery/configuration payloads for integration tooling:
+  - new `GET|POST /api/hardware/streamdeck/routes` endpoint with categorized route catalog (`category`, `purpose`)
+  - new `GET|POST /api/hardware/streamdeck/configuration` endpoint with `configuration.pages[].buttons[]` layout map
+  - `GET|POST /api/hardware/streamdeck` root response now includes generated configuration and route-path pointers
+- Extended `GET /api/hardware/streamdeck/layout` payload with:
+  - `configurationPath` and `routesPath`
+  - `configuration` section that reflects page/button coordinates, route templates, and state kind per button
+
 ## 2026-03-10 14:10 CET
 - Fixed Stream Deck hide behavior to use true panner visibility (`hidden`) instead of audio mute (`mute`):
   - `/api/hardware/streamdeck/object/<objectId>/hide/<on|off|toggle>` now toggles `hidden`

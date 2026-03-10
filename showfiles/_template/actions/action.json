@@ -24,6 +24,7 @@
       "phase_deg": 0.0,
       "mapping_phase_deg": 0.0,
       "phase_flip": false,
+      "distribute_phase_over_members": false,
       "target_enabled": true,
       "polarity": "bipolar"
     },
@@ -37,9 +38,11 @@
       "phase_deg": 0.0,
       "mapping_phase_deg": 0.0,
       "phase_flip": false,
+      "distribute_phase_over_members": false,
       "target_enabled": true,
       "polarity": "bipolar",
       "object_id": "1VA",
+      "target_scope": "object",
       "parameter": "x"
     }
   ],

@@ -39,6 +39,7 @@
       <button id="viewModulationManagerBtn" class="view-btn" type="button" role="tab" aria-selected="false">Modulation Manager</button>
       <button id="viewActionManagerBtn" class="view-btn" type="button" role="tab" aria-selected="false">Action Manager</button>
       <button id="viewActionGroupManagerBtn" class="view-btn" type="button" role="tab" aria-selected="false">Action Group Manager</button>
+      <button id="viewControlBtn" class="view-btn" type="button" role="tab" aria-selected="false">Control</button>
       <button id="viewConfigurationBtn" class="view-btn" type="button" role="tab" aria-selected="false">Configuration</button>
     </div>
   </div>
@@ -263,8 +264,8 @@
           <thead>
             <tr>
               <th>Enabled</th>
-              <th>ID</th>
               <th>Name</th>
+              <th>ID</th>
               <th>Color</th>
               <th>Members</th>
               <th>Linked Params</th>
@@ -590,6 +591,35 @@
                 </tr>
               </thead>
               <tbody id="actionManagerLfoTargetRows"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel control-panel">
+      <h2>Control</h2>
+      <p id="controlSummary" class="muted">Stream Deck layout overview sourced from /api/hardware/streamdeck/configuration.</p>
+
+      <div class="manager-grid control-grid">
+        <div class="manager-block control-streamdeck-block">
+          <div class="panel-header-row configuration-streamdeck-header">
+            <h3>Stream Deck Layout</h3>
+            <button id="streamdeckConfigRefreshBtn" type="button">Refresh Layout</button>
+          </div>
+          <p id="streamdeckConfigSummary" class="muted">Loading Stream Deck layout configuration...</p>
+          <p id="streamdeckConfigMeta" class="muted">Source: /api/hardware/streamdeck/configuration</p>
+          <div class="manager-table-wrap configuration-streamdeck-table-wrap">
+            <table class="manager-table configuration-streamdeck-table">
+              <thead>
+                <tr>
+                  <th>Page</th>
+                  <th>Title</th>
+                  <th>Layout ID</th>
+                  <th>Buttons</th>
+                </tr>
+              </thead>
+              <tbody id="streamdeckConfigPagesRows"></tbody>
             </table>
           </div>
         </div>

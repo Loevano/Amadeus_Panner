@@ -4564,19 +4564,6 @@ class Handler(BaseHTTPRequestHandler):
                 "enabled": bool(group.get("enabled", True)),
             }
 
-        object_group_states: Dict[str, Dict[str, Any]] = {}
-        for raw_group in object_groups:
-            if not isinstance(raw_group, dict):
-                continue
-            group_id = str(raw_group.get("groupId") or "").strip()
-            if not group_id:
-                continue
-            member_ids = raw_group.get("objectIds")
-            object_group_states[group_id] = {
-                "enabled": bool(raw_group.get("enabled", True)),
-                "memberCount": len(member_ids) if isinstance(member_ids, list) else 0,
-            }
-
         object_states: Dict[str, Dict[str, Any]] = {}
         objects_raw = runtime_status.get("objects")
         objects = objects_raw if isinstance(objects_raw, list) else []
@@ -4588,6 +4575,38 @@ class Handler(BaseHTTPRequestHandler):
                 continue
             object_states[object_id] = {
                 "hidden": bool(raw_object.get("hidden", False)),
+            }
+
+        object_group_states: Dict[str, Dict[str, Any]] = {}
+        for raw_group in object_groups:
+            if not isinstance(raw_group, dict):
+                continue
+            group_id = str(raw_group.get("groupId") or "").strip()
+            if not group_id:
+                continue
+            member_ids_raw = raw_group.get("objectIds")
+            member_ids = (
+                [
+                    str(member_id).strip()
+                    for member_id in member_ids_raw
+                    if str(member_id).strip()
+                ]
+                if isinstance(member_ids_raw, list)
+                else []
+            )
+            hidden_count = sum(
+                1
+                for member_id in member_ids
+                if bool((object_states.get(member_id) or {}).get("hidden", False))
+            )
+            member_count = len(member_ids)
+            object_group_states[group_id] = {
+                "enabled": bool(raw_group.get("enabled", True)),
+                "memberCount": member_count,
+                "objectIds": member_ids,
+                "hiddenCount": hidden_count,
+                "allHidden": member_count > 0 and hidden_count >= member_count,
+                "mixedHidden": hidden_count > 0 and hidden_count < member_count,
             }
 
         available_show_paths = discover_show_paths()
@@ -4653,6 +4672,24 @@ class Handler(BaseHTTPRequestHandler):
             "path": normalized_path,
             "url": f"{self._streamdeck_base_url()}{normalized_path}",
             "system": "Website",
+            "notes": str(notes or "").strip(),
+        }
+
+    def _streamdeck_folder_button(
+        self,
+        row: int,
+        col: int,
+        title: str,
+        target_page_id: str,
+        notes: str = "",
+    ) -> Dict[str, Any]:
+        return {
+            "row": row,
+            "col": col,
+            "title": str(title or "").strip() or "Open",
+            "kind": "folder",
+            "targetPageId": str(target_page_id or "").strip(),
+            "requestMode": "navigation",
             "notes": str(notes or "").strip(),
         }
 
@@ -4831,6 +4868,31 @@ class Handler(BaseHTTPRequestHandler):
             group_id = unquote(group_select_match.group(1))
             return self._streamdeck_button_state_payload("group-select", selected_group_id == group_id, active_label="SEL", inactive_label="-")
 
+        group_hide_match = re.fullmatch(r"/api/hardware/streamdeck/group/([^/]+)/hide/(on|off|toggle)", button_path)
+        if group_hide_match:
+            group_id = unquote(group_hide_match.group(1))
+            group_state = object_groups.get(group_id)
+            if not isinstance(group_state, dict):
+                return self._streamdeck_button_state_payload("group-hide", False, disabled=True)
+            member_ids_raw = group_state.get("objectIds")
+            member_ids = (
+                [str(member_id).strip() for member_id in member_ids_raw if str(member_id).strip()]
+                if isinstance(member_ids_raw, list)
+                else []
+            )
+            if not member_ids:
+                return self._streamdeck_button_state_payload("group-hide", False, disabled=True)
+            hidden_count = int(to_float(group_state.get("hiddenCount"), 0.0))
+            if hidden_count <= 0:
+                return self._streamdeck_button_state_payload("group-hide", False, active_label="HIDE", inactive_label="SHOW")
+            if hidden_count >= len(member_ids):
+                return self._streamdeck_button_state_payload("group-hide", True, active_label="HIDE", inactive_label="SHOW")
+            mixed_payload = self._streamdeck_button_state_payload("group-hide", True, active_label="HIDE", inactive_label="SHOW")
+            mixed_payload["state"] = "mixed"
+            mixed_payload["label"] = "MIX"
+            mixed_payload["color"] = "#8a6f2d"
+            return mixed_payload
+
         group_enabled_match = re.fullmatch(r"/api/hardware/streamdeck/group/([^/]+)/enabled/(on|off|toggle)", button_path)
         if group_enabled_match:
             group_id = unquote(group_enabled_match.group(1))
@@ -4851,7 +4913,14 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(raw_button, dict):
                 continue
             next_button = dict(raw_button)
-            next_button["state"] = self._streamdeck_button_state_for_path(str(next_button.get("path") or ""), streamdeck_status)
+            button_path = str(next_button.get("path") or "")
+            target_page_id = str(next_button.get("targetPageId") or "").strip()
+            if target_page_id and not button_path.strip():
+                next_button["state"] = self._streamdeck_button_state_payload(
+                    "navigation", False, active_label="OPEN", inactive_label="OPEN"
+                )
+            else:
+                next_button["state"] = self._streamdeck_button_state_for_path(button_path, streamdeck_status)
             next_buttons.append(next_button)
         next_layout = dict(layout)
         next_layout["buttons"] = next_buttons
@@ -4867,13 +4936,22 @@ class Handler(BaseHTTPRequestHandler):
         for raw_button in buttons:
             if not isinstance(raw_button, dict):
                 continue
+            button_path = str(raw_button.get("path") or "")
+            target_page_id = str(raw_button.get("targetPageId") or "").strip()
+            if target_page_id and not button_path.strip():
+                button_state = self._streamdeck_button_state_payload(
+                    "navigation", False, active_label="OPEN", inactive_label="OPEN"
+                )
+            else:
+                button_state = self._streamdeck_button_state_for_path(button_path, streamdeck_status)
             button_states.append(
                 {
                     "row": int(to_float(raw_button.get("row"), 0.0)),
                     "col": int(to_float(raw_button.get("col"), 0.0)),
-                    "path": str(raw_button.get("path") or ""),
+                    "path": button_path,
                     "title": str(raw_button.get("title") or ""),
-                    "state": self._streamdeck_button_state_for_path(str(raw_button.get("path") or ""), streamdeck_status),
+                    "targetPageId": target_page_id,
+                    "state": button_state,
                 }
             )
         return {
@@ -4882,6 +4960,182 @@ class Handler(BaseHTTPRequestHandler):
             "generatedAt": now_iso(),
             "layoutId": layout_id,
             "buttons": button_states,
+        }
+
+    def _streamdeck_route_catalog(self) -> List[Dict[str, Any]]:
+        return [
+            {"method": "GET|POST", "path": "/api/hardware/streamdeck", "category": "discover", "purpose": "List streamdeck routes and configuration"},
+            {"method": "GET|POST", "path": "/api/hardware/streamdeck/status", "category": "status", "purpose": "Read compact runtime status"},
+            {"method": "GET|POST", "path": "/api/hardware/streamdeck/routes", "category": "discover", "purpose": "Read streamdeck route catalog"},
+            {"method": "GET|POST", "path": "/api/hardware/streamdeck/configuration", "category": "layout", "purpose": "Read page/button configuration map"},
+            {"method": "GET|POST", "path": "/api/hardware/streamdeck/layout", "category": "layout", "purpose": "Read all streamdeck layouts with button state"},
+            {"method": "GET|POST", "path": "/api/hardware/streamdeck/layout/<layoutId>", "category": "layout", "purpose": "Read a single layout definition"},
+            {"method": "GET|POST", "path": "/api/hardware/streamdeck/layout/<layoutId>/state", "category": "layout", "purpose": "Read computed button state for one layout"},
+            {"method": "GET|POST", "path": "/api/hardware/streamdeck/show/save", "category": "show", "purpose": "Persist current show to disk"},
+            {"method": "GET|POST", "path": "/api/hardware/streamdeck/show/load/current", "category": "show", "purpose": "Reload currently loaded show"},
+            {"method": "GET|POST", "path": "/api/hardware/streamdeck/show/load/next", "category": "show", "purpose": "Load next showfile from discovered list"},
+            {"method": "GET|POST", "path": "/api/hardware/streamdeck/show/save-as/timestamp", "category": "show", "purpose": "Save show using timestamped path"},
+            {"method": "GET|POST", "path": "/api/hardware/streamdeck/show/new/timestamp", "category": "show", "purpose": "Create and load timestamped show"},
+            {"method": "GET|POST", "path": "/api/hardware/streamdeck/scene/<sceneId>/recall", "category": "scene", "purpose": "Recall a scene"},
+            {"method": "GET|POST", "path": "/api/hardware/streamdeck/object/<objectId>/select", "category": "object", "purpose": "Select one object"},
+            {"method": "GET|POST", "path": "/api/hardware/streamdeck/object/<objectId>/hide/<on|off|toggle>", "category": "object", "purpose": "Set or toggle object hidden state"},
+            {"method": "GET|POST", "path": "/api/hardware/streamdeck/objects/hide/toggle", "category": "object", "purpose": "Toggle hidden state for all objects"},
+            {"method": "GET|POST", "path": "/api/hardware/streamdeck/object-selection/clear", "category": "object", "purpose": "Clear selected objects"},
+            {"method": "GET|POST", "path": "/api/hardware/streamdeck/group/<groupId>/select", "category": "group", "purpose": "Select one object group"},
+            {"method": "GET|POST", "path": "/api/hardware/streamdeck/group/<groupId>/hide/<on|off|toggle>", "category": "group", "purpose": "Set or toggle hidden state for all objects in one group"},
+            {"method": "GET|POST", "path": "/api/hardware/streamdeck/group-selection/clear", "category": "group", "purpose": "Clear selected object group"},
+            {"method": "GET|POST", "path": "/api/hardware/streamdeck/group/<groupId>/enabled/<on|off|toggle>", "category": "group", "purpose": "Set or toggle one group enabled state"},
+            {"method": "GET|POST", "path": "/api/hardware/streamdeck/groups/enabled/<on|off|toggle>", "category": "group", "purpose": "Set or toggle global groups-enabled master"},
+            {"method": "GET|POST", "path": "/api/hardware/streamdeck/action/<actionId>/<start|stop|abort|toggle>", "category": "action", "purpose": "Control action runtime transport"},
+            {"method": "GET|POST", "path": "/api/hardware/streamdeck/action/<actionId>/trigger", "category": "action", "purpose": "Trigger action (start alias)"},
+            {"method": "GET|POST", "path": "/api/hardware/streamdeck/action/<actionId>/enabled/<on|off|toggle>", "category": "action", "purpose": "Set or toggle action enabled state"},
+            {"method": "GET|POST", "path": "/api/hardware/streamdeck/action/<actionId>/lfo/<lfoId>/enabled/<on|off|toggle>", "category": "action", "purpose": "Set or toggle one action LFO enabled state"},
+            {"method": "GET|POST", "path": "/api/hardware/streamdeck/action-group/<groupId>/trigger", "category": "action-group", "purpose": "Trigger action group"},
+            {"method": "GET|POST", "path": "/api/hardware/streamdeck/action-group/<groupId>/enabled/<on|off|toggle>", "category": "action-group", "purpose": "Set or toggle action-group enabled state"},
+            {"method": "GET|POST", "path": "/api/hardware/streamdeck/lfos/enabled/<on|off|toggle>", "category": "lfo", "purpose": "Set or toggle global LFO master"},
+        ]
+
+    def _streamdeck_route_paths(self) -> List[str]:
+        return [str(raw_route.get("path") or "") for raw_route in self._streamdeck_route_catalog()]
+
+    def _streamdeck_route_template_for_path(self, path: str) -> str:
+        button_path = str(path or "").strip()
+        if not button_path:
+            return ""
+        button_path = "/" + button_path.lstrip("/")
+        template_patterns: List[Tuple[str, str]] = [
+            (r"/api/hardware/streamdeck/status", "/api/hardware/streamdeck/status"),
+            (r"/api/hardware/streamdeck/layout", "/api/hardware/streamdeck/layout"),
+            (r"/api/hardware/streamdeck/layout/[^/]+", "/api/hardware/streamdeck/layout/<layoutId>"),
+            (r"/api/hardware/streamdeck/layout/[^/]+/state", "/api/hardware/streamdeck/layout/<layoutId>/state"),
+            (r"/api/hardware/streamdeck/show/save", "/api/hardware/streamdeck/show/save"),
+            (r"/api/hardware/streamdeck/show/load/current", "/api/hardware/streamdeck/show/load/current"),
+            (r"/api/hardware/streamdeck/show/load/next", "/api/hardware/streamdeck/show/load/next"),
+            (r"/api/hardware/streamdeck/show/save-as/timestamp", "/api/hardware/streamdeck/show/save-as/timestamp"),
+            (r"/api/hardware/streamdeck/show/new/timestamp", "/api/hardware/streamdeck/show/new/timestamp"),
+            (r"/api/hardware/streamdeck/scene/[^/]+/recall", "/api/hardware/streamdeck/scene/<sceneId>/recall"),
+            (r"/api/hardware/streamdeck/object/[^/]+/select", "/api/hardware/streamdeck/object/<objectId>/select"),
+            (r"/api/hardware/streamdeck/object/[^/]+/hide/(on|off|toggle)", "/api/hardware/streamdeck/object/<objectId>/hide/<on|off|toggle>"),
+            (r"/api/hardware/streamdeck/objects/hide/toggle", "/api/hardware/streamdeck/objects/hide/toggle"),
+            (r"/api/hardware/streamdeck/object-selection/clear", "/api/hardware/streamdeck/object-selection/clear"),
+            (r"/api/hardware/streamdeck/group/[^/]+/select", "/api/hardware/streamdeck/group/<groupId>/select"),
+            (r"/api/hardware/streamdeck/group/[^/]+/hide/(on|off|toggle)", "/api/hardware/streamdeck/group/<groupId>/hide/<on|off|toggle>"),
+            (r"/api/hardware/streamdeck/group-selection/clear", "/api/hardware/streamdeck/group-selection/clear"),
+            (r"/api/hardware/streamdeck/group/[^/]+/enabled/(on|off|toggle)", "/api/hardware/streamdeck/group/<groupId>/enabled/<on|off|toggle>"),
+            (r"/api/hardware/streamdeck/groups/enabled/(on|off|toggle)", "/api/hardware/streamdeck/groups/enabled/<on|off|toggle>"),
+            (r"/api/hardware/streamdeck/action/[^/]+/(start|trigger|stop|abort|toggle)", "/api/hardware/streamdeck/action/<actionId>/<start|trigger|stop|abort|toggle>"),
+            (r"/api/hardware/streamdeck/action/[^/]+/enabled/(on|off|toggle)", "/api/hardware/streamdeck/action/<actionId>/enabled/<on|off|toggle>"),
+            (r"/api/hardware/streamdeck/action/[^/]+/lfo/[^/]+/enabled/(on|off|toggle)", "/api/hardware/streamdeck/action/<actionId>/lfo/<lfoId>/enabled/<on|off|toggle>"),
+            (r"/api/hardware/streamdeck/action-group/[^/]+/trigger", "/api/hardware/streamdeck/action-group/<groupId>/trigger"),
+            (r"/api/hardware/streamdeck/action-group/[^/]+/enabled/(on|off|toggle)", "/api/hardware/streamdeck/action-group/<groupId>/enabled/<on|off|toggle>"),
+            (r"/api/hardware/streamdeck/lfos/enabled/(on|off|toggle)", "/api/hardware/streamdeck/lfos/enabled/<on|off|toggle>"),
+        ]
+        for pattern, template in template_patterns:
+            if re.fullmatch(pattern, button_path):
+                return template
+        return button_path
+
+    def _streamdeck_layout_configuration(
+        self,
+        layouts: List[Dict[str, Any]],
+        device: Optional[Dict[str, Any]] = None,
+        base_url: str = "",
+    ) -> Dict[str, Any]:
+        device_payload = device if isinstance(device, dict) else {}
+        columns = int(to_float(device_payload.get("columns"), 8.0))
+        rows = int(to_float(device_payload.get("rows"), 4.0))
+        pages: List[Dict[str, Any]] = []
+        total_buttons = 0
+
+        for page_index, raw_layout in enumerate(layouts, start=1):
+            if not isinstance(raw_layout, dict):
+                continue
+            layout_id = str(raw_layout.get("layoutId") or "").strip()
+            title = str(raw_layout.get("title") or "").strip()
+            description = str(raw_layout.get("description") or "").strip()
+            buttons_raw = raw_layout.get("buttons")
+            buttons = buttons_raw if isinstance(buttons_raw, list) else []
+            mapped_buttons: List[Dict[str, Any]] = []
+            for button_index, raw_button in enumerate(buttons, start=1):
+                if not isinstance(raw_button, dict):
+                    continue
+                raw_path = str(raw_button.get("path") or "").strip()
+                path = f"/{raw_path.lstrip('/')}" if raw_path else ""
+                target_page_id = str(raw_button.get("targetPageId") or "").strip()
+                state_payload = raw_button.get("state")
+                state_kind = str(state_payload.get("kind") or "").strip() if isinstance(state_payload, dict) else ""
+                method = str(raw_button.get("method") or "").strip().upper()
+                if not method:
+                    method = "NAV" if target_page_id else "GET"
+                mapped_buttons.append(
+                    {
+                        "index": button_index,
+                        "row": int(to_float(raw_button.get("row"), 0.0)),
+                        "col": int(to_float(raw_button.get("col"), 0.0)),
+                        "title": str(raw_button.get("title") or "").strip(),
+                        "kind": str(raw_button.get("kind") or ("folder" if target_page_id else "action")).strip(),
+                        "method": method,
+                        "path": path,
+                        "pathTemplate": self._streamdeck_route_template_for_path(path),
+                        "targetPageId": target_page_id,
+                        "notes": str(raw_button.get("notes") or "").strip(),
+                        "stateKind": state_kind,
+                    }
+                )
+            total_buttons += len(mapped_buttons)
+            pages.append(
+                {
+                    "index": page_index,
+                    "layoutId": layout_id,
+                    "title": title,
+                    "description": description,
+                    "buttonCount": len(mapped_buttons),
+                    "buttons": mapped_buttons,
+                }
+            )
+
+        payload: Dict[str, Any] = {
+            "layoutMode": "page-grid",
+            "columns": columns,
+            "rows": rows,
+            "pageCount": len(pages),
+            "buttonCount": total_buttons,
+            "layoutPath": "/api/hardware/streamdeck/layout",
+            "layoutStatePathTemplate": "/api/hardware/streamdeck/layout/<layoutId>/state",
+            "statusPath": "/api/hardware/streamdeck/status",
+            "routesPath": "/api/hardware/streamdeck/routes",
+            "pages": pages,
+        }
+        if base_url:
+            payload["baseUrl"] = str(base_url).strip()
+        return payload
+
+    def _streamdeck_configuration_payload(self, layout_payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        payload = layout_payload if isinstance(layout_payload, dict) else self._streamdeck_layouts_payload()
+        layouts_raw = payload.get("layouts")
+        layouts = layouts_raw if isinstance(layouts_raw, list) else []
+        device_payload = payload.get("device")
+        if not isinstance(device_payload, dict):
+            device_payload = {"model": "Stream Deck XL", "columns": 8, "rows": 4}
+        base_url = str(payload.get("baseUrl") or self._streamdeck_base_url()).strip()
+        configuration = self._streamdeck_layout_configuration(layouts, device_payload, base_url)
+        return {
+            "ok": True,
+            "hardware": "streamdeck",
+            "generatedAt": payload.get("generatedAt") or now_iso(),
+            "baseUrl": base_url,
+            "showId": str(payload.get("showId") or ""),
+            "device": device_payload,
+            "configuration": configuration,
+        }
+
+    def _streamdeck_routes_payload(self) -> Dict[str, Any]:
+        return {
+            "ok": True,
+            "hardware": "streamdeck",
+            "generatedAt": now_iso(),
+            "statusPath": "/api/hardware/streamdeck/status",
+            "routes": self._streamdeck_route_catalog(),
         }
 
     def _streamdeck_layouts_payload(self) -> Dict[str, Any]:
@@ -4953,12 +5207,26 @@ class Handler(BaseHTTPRequestHandler):
                         slots.append((row, col))
             return slots
 
+        page_obj_select_id = "xl-page-1-obj-select"
+        page_obj_hide_id = "xl-page-2-obj-hide"
+        page_group_hide_id = "xl-page-3-group-hide"
+        page_group_enable_id = "xl-page-4-group-enable"
+        page_actions_id = "xl-page-5-actions"
+        page_action_groups_id = "xl-page-6-action-groups"
+        page_modulators_id = "xl-page-7-modulators"
+        page_config_id = "xl-page-8-config"
+
+        nav_slot_a = (2, 6)
+        nav_slot_b = (2, 7)
+
         page_1_buttons: List[Dict[str, Any]] = [
             self._streamdeck_button(0, 0, "Status", "/api/hardware/streamdeck/status", "Read compact runtime state"),
             self._streamdeck_button(0, 1, "ObjClr", "/api/hardware/streamdeck/object-selection/clear", "Clear selected object IDs"),
             self._streamdeck_button(0, 2, "GrpClr", "/api/hardware/streamdeck/group-selection/clear", "Clear selected group ID"),
+            self._streamdeck_folder_button(nav_slot_a[0], nav_slot_a[1], "ObjHide", page_obj_hide_id, "Open object hide sub page"),
+            self._streamdeck_folder_button(nav_slot_b[0], nav_slot_b[1], "GrpHide", page_group_hide_id, "Open group hide sub page"),
         ]
-        page_1_slots = available_slots({(0, 0), (0, 1), (0, 2)})
+        page_1_slots = available_slots({(0, 0), (0, 1), (0, 2), nav_slot_a, nav_slot_b})
         page_1_cursor = 0
         for object_id in object_ids:
             if page_1_cursor >= len(page_1_slots):
@@ -4992,8 +5260,10 @@ class Handler(BaseHTTPRequestHandler):
         page_2_buttons: List[Dict[str, Any]] = [
             self._streamdeck_button(0, 0, "Status", "/api/hardware/streamdeck/status", "Read compact runtime state"),
             self._streamdeck_button(0, 1, "AllHide", "/api/hardware/streamdeck/objects/hide/toggle", "Toggle all object hide states"),
+            self._streamdeck_folder_button(nav_slot_a[0], nav_slot_a[1], "ObjSel", page_obj_select_id, "Back to object select page"),
+            self._streamdeck_folder_button(nav_slot_b[0], nav_slot_b[1], "GrpHide", page_group_hide_id, "Open group hide sub page"),
         ]
-        page_2_slots = available_slots({(0, 0), (0, 1)})
+        page_2_slots = available_slots({(0, 0), (0, 1), nav_slot_a, nav_slot_b})
         for (row, col), object_id in zip(page_2_slots, object_ids):
             page_2_buttons.append(
                 self._streamdeck_button(
@@ -5007,12 +5277,31 @@ class Handler(BaseHTTPRequestHandler):
 
         page_3_buttons: List[Dict[str, Any]] = [
             self._streamdeck_button(0, 0, "Status", "/api/hardware/streamdeck/status", "Read compact runtime state"),
-            self._streamdeck_button(0, 1, "GrpAll", "/api/hardware/streamdeck/groups/enabled/toggle", "Toggle all object group linking"),
-            self._streamdeck_button(0, 2, "AllView", "/api/hardware/streamdeck/objects/hide/toggle", "Toggle all object visibility"),
+            self._streamdeck_button(0, 1, "AllHide", "/api/hardware/streamdeck/objects/hide/toggle", "Toggle all object hide states"),
+            self._streamdeck_folder_button(nav_slot_a[0], nav_slot_a[1], "GrpEn", page_group_enable_id, "Open group enable sub page"),
+            self._streamdeck_folder_button(nav_slot_b[0], nav_slot_b[1], "ObjSel", page_obj_select_id, "Back to object select page"),
         ]
-        page_3_slots = available_slots({(0, 0), (0, 1), (0, 2)})
+        page_3_slots = available_slots({(0, 0), (0, 1), nav_slot_a, nav_slot_b})
         for (row, col), group_id in zip(page_3_slots, object_group_ids):
             page_3_buttons.append(
+                self._streamdeck_button(
+                    row,
+                    col,
+                    short_label("GH ", group_id),
+                    f"/api/hardware/streamdeck/group/{quote(group_id, safe='')}/hide/toggle",
+                    f"Toggle hidden state for all objects in group {group_id}",
+                )
+            )
+
+        page_4_buttons: List[Dict[str, Any]] = [
+            self._streamdeck_button(0, 0, "Status", "/api/hardware/streamdeck/status", "Read compact runtime state"),
+            self._streamdeck_button(0, 1, "GrpAll", "/api/hardware/streamdeck/groups/enabled/toggle", "Toggle all object group linking"),
+            self._streamdeck_folder_button(nav_slot_a[0], nav_slot_a[1], "GrpHide", page_group_hide_id, "Open group hide sub page"),
+            self._streamdeck_folder_button(nav_slot_b[0], nav_slot_b[1], "Actions", page_actions_id, "Open actions page"),
+        ]
+        page_4_slots = available_slots({(0, 0), (0, 1), nav_slot_a, nav_slot_b})
+        for (row, col), group_id in zip(page_4_slots, object_group_ids):
+            page_4_buttons.append(
                 self._streamdeck_button(
                     row,
                     col,
@@ -5022,17 +5311,19 @@ class Handler(BaseHTTPRequestHandler):
                 )
             )
 
-        page_4_buttons: List[Dict[str, Any]] = [
+        page_5_buttons: List[Dict[str, Any]] = [
             self._streamdeck_button(0, 0, "Status", "/api/hardware/streamdeck/status", "Read compact runtime state"),
+            self._streamdeck_folder_button(nav_slot_a[0], nav_slot_a[1], "ActGrp", page_action_groups_id, "Open action groups sub page"),
+            self._streamdeck_folder_button(nav_slot_b[0], nav_slot_b[1], "Mod", page_modulators_id, "Open modulators sub page"),
         ]
-        page_4_slots = available_slots({(0, 0)})
-        page_4_cursor = 0
+        page_5_slots = available_slots({(0, 0), nav_slot_a, nav_slot_b})
+        page_5_cursor = 0
         for action_id in action_ids:
-            if page_4_cursor >= len(page_4_slots):
+            if page_5_cursor >= len(page_5_slots):
                 break
-            row, col = page_4_slots[page_4_cursor]
-            page_4_cursor += 1
-            page_4_buttons.append(
+            row, col = page_5_slots[page_5_cursor]
+            page_5_cursor += 1
+            page_5_buttons.append(
                 self._streamdeck_button(
                     row,
                     col,
@@ -5042,11 +5333,11 @@ class Handler(BaseHTTPRequestHandler):
                 )
             )
         for action_id in action_ids:
-            if page_4_cursor >= len(page_4_slots):
+            if page_5_cursor >= len(page_5_slots):
                 break
-            row, col = page_4_slots[page_4_cursor]
-            page_4_cursor += 1
-            page_4_buttons.append(
+            row, col = page_5_slots[page_5_cursor]
+            page_5_cursor += 1
+            page_5_buttons.append(
                 self._streamdeck_button(
                     row,
                     col,
@@ -5055,32 +5346,20 @@ class Handler(BaseHTTPRequestHandler):
                     f"Toggle enabled state for action {action_id}",
                 )
             )
-        for action_id, lfo_id in action_lfo_pairs:
-            if page_4_cursor >= len(page_4_slots):
-                break
-            row, col = page_4_slots[page_4_cursor]
-            page_4_cursor += 1
-            page_4_buttons.append(
-                self._streamdeck_button(
-                    row,
-                    col,
-                    short_label("LFO ", f"{action_id}:{lfo_id}"),
-                    f"/api/hardware/streamdeck/action/{quote(action_id, safe='')}/lfo/{quote(lfo_id, safe='')}/enabled/toggle",
-                    f"Toggle LFO {lfo_id} for action {action_id}",
-                )
-            )
 
-        page_5_buttons: List[Dict[str, Any]] = [
+        page_6_buttons: List[Dict[str, Any]] = [
             self._streamdeck_button(0, 0, "Status", "/api/hardware/streamdeck/status", "Read compact runtime state"),
+            self._streamdeck_folder_button(nav_slot_a[0], nav_slot_a[1], "Actions", page_actions_id, "Open actions page"),
+            self._streamdeck_folder_button(nav_slot_b[0], nav_slot_b[1], "Mod", page_modulators_id, "Open modulators sub page"),
         ]
-        page_5_slots = available_slots({(0, 0)})
-        page_5_cursor = 0
+        page_6_slots = available_slots({(0, 0), nav_slot_a, nav_slot_b})
+        page_6_cursor = 0
         for group_id in action_group_ids:
-            if page_5_cursor >= len(page_5_slots):
+            if page_6_cursor >= len(page_6_slots):
                 break
-            row, col = page_5_slots[page_5_cursor]
-            page_5_cursor += 1
-            page_5_buttons.append(
+            row, col = page_6_slots[page_6_cursor]
+            page_6_cursor += 1
+            page_6_buttons.append(
                 self._streamdeck_button(
                     row,
                     col,
@@ -5090,11 +5369,11 @@ class Handler(BaseHTTPRequestHandler):
                 )
             )
         for group_id in action_group_ids:
-            if page_5_cursor >= len(page_5_slots):
+            if page_6_cursor >= len(page_6_slots):
                 break
-            row, col = page_5_slots[page_5_cursor]
-            page_5_cursor += 1
-            page_5_buttons.append(
+            row, col = page_6_slots[page_6_cursor]
+            page_6_cursor += 1
+            page_6_buttons.append(
                 self._streamdeck_button(
                     row,
                     col,
@@ -5104,13 +5383,23 @@ class Handler(BaseHTTPRequestHandler):
                 )
             )
 
-        page_6_buttons: List[Dict[str, Any]] = [
-            self._streamdeck_button(0, 0, "Status", "/api/hardware/streamdeck/status", "Read compact runtime state"),
-        ]
-
         page_7_buttons: List[Dict[str, Any]] = [
             self._streamdeck_button(0, 0, "Status", "/api/hardware/streamdeck/status", "Read compact runtime state"),
+            self._streamdeck_button(0, 1, "LFOAll", "/api/hardware/streamdeck/lfos/enabled/toggle", "Toggle all LFO processing"),
+            self._streamdeck_folder_button(nav_slot_a[0], nav_slot_a[1], "Config", page_config_id, "Open config page"),
+            self._streamdeck_folder_button(nav_slot_b[0], nav_slot_b[1], "Actions", page_actions_id, "Open actions page"),
         ]
+        page_7_slots = available_slots({(0, 0), (0, 1), nav_slot_a, nav_slot_b})
+        for (row, col), (action_id, lfo_id) in zip(page_7_slots, action_lfo_pairs):
+            page_7_buttons.append(
+                self._streamdeck_button(
+                    row,
+                    col,
+                    short_label("LFO ", f"{action_id}:{lfo_id}"),
+                    f"/api/hardware/streamdeck/action/{quote(action_id, safe='')}/lfo/{quote(lfo_id, safe='')}/enabled/toggle",
+                    f"Toggle LFO {lfo_id} for action {action_id}",
+                )
+            )
 
         page_8_buttons: List[Dict[str, Any]] = [
             self._streamdeck_button(0, 0, "Status", "/api/hardware/streamdeck/status", "Read compact runtime state"),
@@ -5119,82 +5408,96 @@ class Handler(BaseHTTPRequestHandler):
             self._streamdeck_button(0, 3, "LoadNxt", "/api/hardware/streamdeck/show/load/next", "Load next show in showfiles list"),
             self._streamdeck_button(0, 4, "SaveAs", "/api/hardware/streamdeck/show/save-as/timestamp", "Save current show under timestamped path"),
             self._streamdeck_button(0, 5, "AddShow", "/api/hardware/streamdeck/show/new/timestamp", "Create and load a new timestamped show"),
-            self._streamdeck_button(0, 6, "GrpAll", "/api/hardware/streamdeck/groups/enabled/toggle", "Toggle all object group linking"),
-            self._streamdeck_button(0, 7, "LFOAll", "/api/hardware/streamdeck/lfos/enabled/toggle", "Toggle all LFO processing"),
-            self._streamdeck_button(1, 0, "ObjClr", "/api/hardware/streamdeck/object-selection/clear", "Clear selected object IDs"),
-            self._streamdeck_button(1, 1, "GrpClr", "/api/hardware/streamdeck/group-selection/clear", "Clear selected group ID"),
+            self._streamdeck_button(0, 6, "ObjClr", "/api/hardware/streamdeck/object-selection/clear", "Clear selected object IDs"),
+            self._streamdeck_button(0, 7, "GrpClr", "/api/hardware/streamdeck/group-selection/clear", "Clear selected group ID"),
+            self._streamdeck_folder_button(nav_slot_a[0], nav_slot_a[1], "Mod", page_modulators_id, "Open modulators sub page"),
+            self._streamdeck_folder_button(nav_slot_b[0], nav_slot_b[1], "ObjSel", page_obj_select_id, "Back to object select page"),
         ]
 
         layouts = [
             {
-                "layoutId": "xl-page-1-obj-select",
+                "layoutId": page_obj_select_id,
                 "title": "Page 1 - Obj Select",
-                "description": "Object selection with feedback",
+                "description": "Object selection with object/group sub-page links",
                 "buttons": page_1_buttons,
             },
             {
-                "layoutId": "xl-page-2-obj-hide",
+                "layoutId": page_obj_hide_id,
                 "title": "Page 2 - Obj Hide",
-                "description": "Per-object hide control with feedback",
+                "description": "Per-object hide control with navigation back to selection",
                 "buttons": page_2_buttons,
             },
             {
-                "layoutId": "xl-page-3-group-enable",
-                "title": "Page 3 - Group Enable",
-                "description": "Group enable controls plus all-toggle view",
+                "layoutId": page_group_hide_id,
+                "title": "Page 3 - Group Hide",
+                "description": "Per-group hide control and group/page navigation",
                 "buttons": page_3_buttons,
             },
             {
-                "layoutId": "xl-page-4-actions",
-                "title": "Page 4 - Trigger Actions",
-                "description": "Action trigger, enable, and LFO controls",
+                "layoutId": page_group_enable_id,
+                "title": "Page 4 - Group Enable",
+                "description": "Per-group enable controls and group master toggle",
                 "buttons": page_4_buttons,
             },
             {
-                "layoutId": "xl-page-5-action-groups",
-                "title": "Page 5 - Trigger Action Groups",
-                "description": "Action group trigger and enable controls",
+                "layoutId": page_actions_id,
+                "title": "Page 5 - Actions",
+                "description": "Action trigger and action enabled controls",
                 "buttons": page_5_buttons,
             },
             {
-                "layoutId": "xl-page-6-empty",
-                "title": "Page 6 - Empty",
-                "description": "Reserved for future mappings",
+                "layoutId": page_action_groups_id,
+                "title": "Page 6 - Action Groups",
+                "description": "Action group trigger and enabled controls",
                 "buttons": page_6_buttons,
             },
             {
-                "layoutId": "xl-page-7-empty",
-                "title": "Page 7 - Empty",
-                "description": "Reserved for future mappings",
+                "layoutId": page_modulators_id,
+                "title": "Page 7 - Modulators",
+                "description": "LFO master and per-action LFO enabled controls",
                 "buttons": page_7_buttons,
             },
             {
-                "layoutId": "xl-page-8-config",
+                "layoutId": page_config_id,
                 "title": "Page 8 - Config",
-                "description": "Show load/save operations and global toggles",
+                "description": "Show load/save operations and utility actions",
                 "buttons": page_8_buttons,
             },
         ]
         layouts_with_state = [self._streamdeck_layout_with_state(layout, streamdeck_status) for layout in layouts]
+        device_payload = {"model": "Stream Deck XL", "columns": 8, "rows": 4}
+        base_url = self._streamdeck_base_url()
+        configuration_payload = self._streamdeck_layout_configuration(layouts_with_state, device_payload, base_url)
 
         return {
             "ok": True,
             "hardware": "streamdeck",
-            "device": {"model": "Stream Deck XL", "columns": 8, "rows": 4},
+            "device": device_payload,
             "generatedAt": now_iso(),
-            "baseUrl": self._streamdeck_base_url(),
+            "baseUrl": base_url,
             "showId": str(show_payload.get("showId") or ""),
             "stateSource": "/api/hardware/streamdeck/status",
+            "configurationPath": "/api/hardware/streamdeck/configuration",
+            "routesPath": "/api/hardware/streamdeck/routes",
+            "configuration": configuration_payload,
             "layouts": layouts_with_state,
         }
 
     def _handle_streamdeck_request(self, path_name: str) -> bool:
         prefix = "/api/hardware/streamdeck/"
+        if path_name == "/api/hardware/streamdeck":
+            path_name = "/api/hardware/streamdeck/"
         if path_name == "/api/hardware/streamdeck/status":
             self._send_json(HTTPStatus.OK, self._streamdeck_status_payload())
             return True
         if path_name == "/api/hardware/streamdeck/layout":
             self._send_json(HTTPStatus.OK, self._streamdeck_layouts_payload())
+            return True
+        if path_name == "/api/hardware/streamdeck/routes":
+            self._send_json(HTTPStatus.OK, self._streamdeck_routes_payload())
+            return True
+        if path_name == "/api/hardware/streamdeck/configuration":
+            self._send_json(HTTPStatus.OK, self._streamdeck_configuration_payload())
             return True
         if not path_name.startswith(prefix):
             return False
@@ -5203,43 +5506,34 @@ class Handler(BaseHTTPRequestHandler):
             route = path_name[len(prefix) :].strip("/")
             segments = [unquote(segment).strip() for segment in route.split("/") if segment.strip()]
             if not segments:
+                layout_payload = self._streamdeck_layouts_payload()
+                configuration_payload = self._streamdeck_configuration_payload(layout_payload)
                 self._send_json(
                     HTTPStatus.OK,
                     {
                         "ok": True,
                         "hardware": "streamdeck",
+                        "generatedAt": now_iso(),
+                        "baseUrl": layout_payload.get("baseUrl"),
                         "statusPath": "/api/hardware/streamdeck/status",
-                        "routes": [
-                            "/api/hardware/streamdeck/layout",
-                            "/api/hardware/streamdeck/layout/<layoutId>",
-                            "/api/hardware/streamdeck/layout/<layoutId>/state",
-                            "/api/hardware/streamdeck/show/save",
-                            "/api/hardware/streamdeck/show/load/current",
-                            "/api/hardware/streamdeck/show/load/next",
-                            "/api/hardware/streamdeck/show/save-as/timestamp",
-                            "/api/hardware/streamdeck/show/new/timestamp",
-                            "/api/hardware/streamdeck/scene/<sceneId>/recall",
-                            "/api/hardware/streamdeck/object/<objectId>/select",
-                            "/api/hardware/streamdeck/object/<objectId>/hide/<on|off|toggle>",
-                            "/api/hardware/streamdeck/objects/hide/toggle",
-                            "/api/hardware/streamdeck/object-selection/clear",
-                            "/api/hardware/streamdeck/group/<groupId>/select",
-                            "/api/hardware/streamdeck/group-selection/clear",
-                            "/api/hardware/streamdeck/group/<groupId>/enabled/<on|off|toggle>",
-                            "/api/hardware/streamdeck/action/<actionId>/<start|stop|abort|toggle>",
-                            "/api/hardware/streamdeck/action/<actionId>/trigger",
-                            "/api/hardware/streamdeck/action/<actionId>/lfo/<lfoId>/enabled/<on|off|toggle>",
-                            "/api/hardware/streamdeck/action/<actionId>/enabled/<on|off|toggle>",
-                            "/api/hardware/streamdeck/action-group/<groupId>/trigger",
-                            "/api/hardware/streamdeck/action-group/<groupId>/enabled/<on|off|toggle>",
-                            "/api/hardware/streamdeck/groups/enabled/<on|off|toggle>",
-                            "/api/hardware/streamdeck/lfos/enabled/<on|off|toggle>",
-                        ],
+                        "layoutPath": "/api/hardware/streamdeck/layout",
+                        "configurationPath": "/api/hardware/streamdeck/configuration",
+                        "routesPath": "/api/hardware/streamdeck/routes",
+                        "routes": self._streamdeck_route_paths(),
+                        "configuration": configuration_payload.get("configuration"),
                     },
                 )
                 return True
 
             root = segments[0].lower()
+
+            if root == "routes" and len(segments) == 1:
+                self._send_json(HTTPStatus.OK, self._streamdeck_routes_payload())
+                return True
+
+            if root == "configuration" and len(segments) == 1:
+                self._send_json(HTTPStatus.OK, self._streamdeck_configuration_payload())
+                return True
 
             if root == "layout":
                 payload = self._streamdeck_layouts_payload()
@@ -5528,6 +5822,57 @@ class Handler(BaseHTTPRequestHandler):
                         "groupId": selected_group_id,
                         "command": "select",
                         "selectedGroupId": selected_group_id,
+                        "streamdeckStatus": self._streamdeck_status_payload(),
+                    },
+                )
+                return True
+
+            if root == "group" and len(segments) == 4 and segments[2].lower() == "hide":
+                group_id = normalize_object_id(segments[1])
+                switch = normalize_enabled_switch(segments[3])
+                with RUNTIME.lock:
+                    group = RUNTIME.object_groups.get(group_id)
+                    if not isinstance(group, dict):
+                        raise ValueError(f"Group not found: {group_id}")
+                    group_object_ids_raw = group.get("objectIds")
+                    group_object_ids = (
+                        [
+                            str(object_id).strip()
+                            for object_id in group_object_ids_raw
+                            if str(object_id).strip() and str(object_id).strip() in RUNTIME.objects
+                        ]
+                        if isinstance(group_object_ids_raw, list)
+                        else []
+                    )
+                    if not group_object_ids:
+                        raise ValueError(f"Group has no objects to hide: {group_id}")
+                    hidden_count = sum(
+                        1
+                        for object_id in group_object_ids
+                        if bool((RUNTIME.objects.get(object_id) or {}).get("hidden", False))
+                    )
+                current_all_hidden = hidden_count >= len(group_object_ids)
+                hidden = apply_enabled_switch(current_all_hidden, switch)
+                for object_id in group_object_ids:
+                    RUNTIME.update_object(
+                        object_id,
+                        {"hidden": hidden},
+                        source="streamdeck",
+                        emit_osc=False,
+                        propagate_group_links=False,
+                    )
+                self._send_json(
+                    HTTPStatus.OK,
+                    {
+                        "ok": True,
+                        "hardware": "streamdeck",
+                        "target": "group",
+                        "groupId": group_id,
+                        "command": "hide",
+                        "switch": switch,
+                        "hidden": hidden,
+                        "count": len(group_object_ids),
+                        "objectIds": group_object_ids,
                         "streamdeckStatus": self._streamdeck_status_payload(),
                     },
                 )

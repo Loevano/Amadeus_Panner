@@ -38,17 +38,21 @@ HOST=0.0.0.0 HTTP_PORT=8787 OSC_OUT_HOST=10.0.0.50 OSC_OUT_PORT=9000 OSC_IN_PORT
 
 The control server now exposes Stream Deck-friendly HTTP routes so buttons can trigger cues without crafting JSON bodies.
 
+- Discover API capabilities and generated configuration:
+  - `GET /api/hardware/streamdeck` (root index)
+  - `GET /api/hardware/streamdeck/routes` (route catalog with category + purpose)
+  - `GET /api/hardware/streamdeck/configuration` (page/button layout configuration map)
 - Read compact button/state feedback:
   - `GET /api/hardware/streamdeck/status`
 - Generate Stream Deck XL layout presets:
   - `GET /api/hardware/streamdeck/layout` (all presets)
   - `GET /api/hardware/streamdeck/layout/xl-page-1-obj-select`
   - `GET /api/hardware/streamdeck/layout/xl-page-2-obj-hide`
-  - `GET /api/hardware/streamdeck/layout/xl-page-3-group-enable`
-  - `GET /api/hardware/streamdeck/layout/xl-page-4-actions`
-  - `GET /api/hardware/streamdeck/layout/xl-page-5-action-groups`
-  - `GET /api/hardware/streamdeck/layout/xl-page-6-empty`
-  - `GET /api/hardware/streamdeck/layout/xl-page-7-empty`
+  - `GET /api/hardware/streamdeck/layout/xl-page-3-group-hide`
+  - `GET /api/hardware/streamdeck/layout/xl-page-4-group-enable`
+  - `GET /api/hardware/streamdeck/layout/xl-page-5-actions`
+  - `GET /api/hardware/streamdeck/layout/xl-page-6-action-groups`
+  - `GET /api/hardware/streamdeck/layout/xl-page-7-modulators`
   - `GET /api/hardware/streamdeck/layout/xl-page-8-config`
 - Poll computed button states for feedback:
   - `GET /api/hardware/streamdeck/layout/<layoutId>/state`
@@ -66,6 +70,7 @@ The control server now exposes Stream Deck-friendly HTTP routes so buttons can t
   - `GET /api/hardware/streamdeck/objects/hide/toggle` (visual hide/show all in panner)
   - `GET /api/hardware/streamdeck/object-selection/clear`
   - `GET /api/hardware/streamdeck/group/<groupId>/select`
+  - `GET /api/hardware/streamdeck/group/<groupId>/hide/<on|off|toggle>` (hide/show all objects in one group)
   - `GET /api/hardware/streamdeck/group-selection/clear`
 - Enable/disable object groups:
   - `GET /api/hardware/streamdeck/group/<groupId>/enabled/<on|off|toggle>`
@@ -90,6 +95,8 @@ The control server now exposes Stream Deck-friendly HTTP routes so buttons can t
 
 Layout endpoint response includes `row`, `col`, `title`, and full `url` fields per button so you can copy/paste into Stream Deck website actions.
 Layout responses now also include per-button `state` (`active`/`inactive`/`disabled`/`mixed`) with `label` and `color` for reflecting runtime status.
+Layout and configuration responses include a `configuration.pages[].buttons[]` section so you can see exactly which button position maps to which API route template.
+Generated layouts include text-only folder navigation keys for sub-pages (no icon overlays required).
 
 ## What Is Implemented
 - Web UI with:

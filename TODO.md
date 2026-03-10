@@ -41,3 +41,12 @@
 - [ ] Add unit tests for state reducers, action scheduler, and OSC mapping.
 - [ ] Add integration tests for OSC loopback and scene/action triggers.
 - [ ] Add soak test profile (8h run) with memory and timing checks.
+
+## Streamdeck
+- [x] Every page should have sub pages. So obj select should have an obj hide page as well.
+- [x] Groups Hide and Groups Enable should be 2 different pages.
+- [x] LFO settings should be on different page then the settings. Make a new page with 'Modulators'. 
+- [x] I also dont think i need icons. So remove the icons.
+- [ ] 
+- [ ] 
+- [ ] 

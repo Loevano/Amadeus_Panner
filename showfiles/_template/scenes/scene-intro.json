@@ -5,53 +5,58 @@
   "objects": [
     {
       "object_id": "1VA",
-      "x": -44.25439916879978,
+      "x": -59.259276503384484,
       "y": 69.26872060111666,
-      "z": 35.70321177363992,
+      "z": 48.10736573717237,
       "size": 25.0,
       "gain": -6.0,
       "mute": false,
-      "algorithm": "default"
+      "algorithm": "default",
+      "hidden": false
     },
     {
       "object_id": "1VB",
-      "x": 95.10301663440544,
+      "x": 62.540093905102374,
       "y": 46.247236226116655,
-      "z": -24.6139419876463,
+      "z": -9.890436676019249,
       "size": 25.0,
       "gain": 0.0,
       "mute": false,
-      "algorithm": "default"
+      "algorithm": "default",
+      "hidden": false
     },
     {
       "object_id": "1VC",
-      "x": 60.61449341354239,
+      "x": 28.051570684239323,
       "y": 78.26953125,
-      "z": -18.707466370026566,
+      "z": -6.303312406494115,
       "size": 25.0,
       "gain": 0.0,
       "mute": false,
-      "algorithm": "default"
+      "algorithm": "default",
+      "hidden": false
     },
     {
       "object_id": "1VD",
-      "x": -18.517689017620114,
+      "x": -51.080611746923175,
       "y": 69.2373046875,
-      "z": 19.301112000097774,
+      "z": 31.705265963630225,
       "size": 25.0,
       "gain": 0.0,
       "mute": false,
-      "algorithm": "default"
+      "algorithm": "default",
+      "hidden": false
     },
     {
       "object_id": "VA1",
-      "x": 59.95646028145506,
+      "x": 47.77014507251888,
       "y": 0.0,
-      "z": 72.45331629332892,
+      "z": 75.14415930572878,
       "size": 25.0,
       "gain": 0.0,
       "mute": false,
-      "algorithm": "default"
+      "algorithm": "default",
+      "hidden": false
     },
     {
       "object_id": "VA2",
@@ -61,7 +66,8 @@
       "size": 25.0,
       "gain": 0.0,
       "mute": false,
-      "algorithm": "default"
+      "algorithm": "default",
+      "hidden": false
     },
     {
       "object_id": "VA3",
@@ -71,7 +77,8 @@
       "size": 25.0,
       "gain": 0.0,
       "mute": false,
-      "algorithm": "default"
+      "algorithm": "default",
+      "hidden": false
     }
   ]
 }
