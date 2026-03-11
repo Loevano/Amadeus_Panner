@@ -38,12 +38,9 @@
       "phase_deg": 0.0,
       "mapping_phase_deg": 0.0,
       "phase_flip": false,
-      "distribute_phase_over_members": false,
+      "distribute_phase_over_members": true,
       "target_enabled": true,
-      "polarity": "bipolar",
-      "object_id": "1VA",
-      "target_scope": "object",
-      "parameter": "x"
+      "polarity": "bipolar"
     }
   ],
   "osc_triggers": {

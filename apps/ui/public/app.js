@@ -66,6 +66,7 @@ const OSC_PREFIX_DEFAULTS = {
   actionPathPrefix: "/art/action",
   actionGroupPathPrefix: "/art/action-group"
 };
+const RANDOM_ID_HASH_LENGTH = 10;
 const THEME_STORAGE_KEY = "amadeus-ui-theme";
 const CLIENT_UPDATE_SESSION_ID = (() => {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
@@ -218,7 +219,7 @@ const els = {
   cameraResetBtn: document.getElementById("cameraResetBtn"),
   cameraReadout: document.getElementById("cameraReadout"),
   managerObjectCount: document.getElementById("managerObjectCount"),
-  managerAddId: document.getElementById("managerAddId"),
+  managerAddName: document.getElementById("managerAddName"),
   managerAddType: document.getElementById("managerAddType"),
   managerAddColor: document.getElementById("managerAddColor"),
   managerAddBtn: document.getElementById("managerAddBtn"),
@@ -460,46 +461,41 @@ function nextNumericId(baseId, fallbackBase, existingIds) {
   throw new Error(`Could not generate a unique ${fallbackBase} ID`);
 }
 
-function shortStableHash(value) {
-  const text = String(value || "");
-  let hash = 2166136261;
-  for (let index = 0; index < text.length; index += 1) {
-    hash ^= text.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
+function randomHashId(length = RANDOM_ID_HASH_LENGTH) {
+  const numericLength = Number(length);
+  const targetLength = Number.isFinite(numericLength)
+    ? Math.max(6, Math.min(32, Math.round(numericLength)))
+    : RANDOM_ID_HASH_LENGTH;
+  const alphabet = "0123456789abcdef";
+  let token = "";
+
+  if (typeof crypto !== "undefined" && typeof crypto.getRandomValues === "function") {
+    const bytes = new Uint8Array(targetLength);
+    crypto.getRandomValues(bytes);
+    for (let index = 0; index < targetLength; index += 1) {
+      token += alphabet[bytes[index] & 15];
+    }
+    return token;
   }
-  return (hash >>> 0).toString(36);
+
+  for (let index = 0; index < targetLength; index += 1) {
+    token += alphabet[Math.floor(Math.random() * alphabet.length)];
+  }
+  return token;
 }
 
-function uniqueIdWithHashSuffix(baseId, fallbackBase, existingIds) {
-  const normalizedBase = normalizeObjectId(baseId) || fallbackBase;
+function uniqueIdWithHashSuffix(_baseId, fallbackBase, existingIds) {
   const existingLower = new Set(
     (Array.isArray(existingIds) ? existingIds : [])
       .map((id) => String(id || "").trim().toLowerCase())
       .filter(Boolean)
   );
 
-  if (!existingLower.has(normalizedBase.toLowerCase())) {
-    return normalizedBase;
-  }
-
-  const baseSeed = `${normalizedBase}|${Date.now()}|${Math.random().toString(36).slice(2, 10)}|${existingLower.size}`;
-  for (let attempt = 0; attempt < 512; attempt += 1) {
-    const digest = shortStableHash(`${baseSeed}|${attempt}`).slice(0, 6).padStart(6, "0");
-    const trimmedBase = trimBaseForSuffix(normalizedBase, fallbackBase, digest);
-    const candidate = `${trimmedBase}-${digest}`;
+  for (let attempt = 0; attempt < 1024; attempt += 1) {
+    const candidate = randomHashId(RANDOM_ID_HASH_LENGTH);
     if (!existingLower.has(candidate.toLowerCase())) {
       return candidate;
     }
-  }
-
-  let counter = 2;
-  while (counter < 100000) {
-    const trimmedBase = trimBaseForNumericSuffix(normalizedBase, fallbackBase, counter);
-    const candidate = `${trimmedBase}-${counter}`;
-    if (!existingLower.has(candidate.toLowerCase())) {
-      return candidate;
-    }
-    counter += 1;
   }
 
   throw new Error(`Could not generate a unique ${fallbackBase} ID`);
@@ -531,6 +527,11 @@ function suggestObjectBaseFromType(typeValue) {
     return "obj";
   }
   return normalizedType;
+}
+
+function suggestObjectNameFromType(typeValue) {
+  const base = suggestObjectBaseFromType(typeValue);
+  return humanizeId(base) || "Object";
 }
 
 function autoObjectId(rawObjectId, objectType) {
@@ -1400,17 +1401,25 @@ function isLfoTargetParameter(parameter, scope = LFO_TARGET_SCOPE_OBJECT) {
 
 function getLfoTargetGroups() {
   const groupSources = getObjectGroups();
-  const groupIds = [];
+  const groupOptions = [];
   const seen = new Set();
   for (const group of groupSources) {
     const groupId = String(group?.groupId || group?.group_id || "").trim();
     if (!groupId || seen.has(groupId)) continue;
     if (!Array.isArray(group?.objectIds) || group.objectIds.length === 0) continue;
-    groupIds.push(groupId);
+    const groupName = String(group?.name || groupId).trim() || groupId;
+    groupOptions.push({
+      groupId,
+      label: groupName
+    });
     seen.add(groupId);
   }
-  groupIds.sort((a, b) => a.localeCompare(b));
-  return groupIds;
+  groupOptions.sort((a, b) => {
+    const labelCompare = a.label.localeCompare(b.label);
+    if (labelCompare !== 0) return labelCompare;
+    return a.groupId.localeCompare(b.groupId);
+  });
+  return groupOptions;
 }
 
 function lfoTargetTypeLabel(lfo) {
@@ -4195,6 +4204,25 @@ async function actionManagerAddLfoTarget() {
       || selectedGroup.lfo?.target_scope
       || LFO_TARGET_SCOPE_OBJECT
     );
+    const targetId = sanitizeObjectId(String(els.actionManagerLfoTargetObjectInput?.value || "").trim());
+    if (!targetId) {
+      throw new Error(`Target ${targetScope} ID is required`);
+    }
+    const parameter = String(els.actionManagerLfoTargetParamInput?.value || "").trim().toLowerCase();
+    if (!isLfoTargetParameter(parameter, targetScope)) {
+      throw new Error(`Invalid parameter: ${parameter}`);
+    }
+    if (targetScope === LFO_TARGET_SCOPE_GROUP) {
+      const groupIds = getLfoTargetGroups().map((group) => group.groupId);
+      if (!groupIds.includes(targetId)) {
+        throw new Error(`Group not found: ${targetId}`);
+      }
+    } else {
+      const targetObject = getObjects().find((obj) => String(obj.objectId || "").trim() === targetId);
+      if (!targetObject) {
+        throw new Error(`Object not found: ${targetId}`);
+      }
+    }
     const mappingPhaseDeg = normalizePhaseDegrees(
       parseFiniteNumber(
         els.actionManagerLfoTargetPhaseInput?.value,
@@ -4206,26 +4234,25 @@ async function actionManagerAddLfoTarget() {
       ? Boolean(els.actionManagerLfoTargetSpreadInput?.checked)
       : false;
 
-    // Always append a blank mapping row; user assigns the target after selecting the row.
-    const emptyTarget = {
+    const mappedTarget = {
       ...(selectedGroup.lfo && typeof selectedGroup.lfo === "object" ? selectedGroup.lfo : {}),
       targetScope,
-      objectId: "",
-      groupId: "",
-      parameter: "",
+      objectId: targetScope === LFO_TARGET_SCOPE_OBJECT ? targetId : "",
+      groupId: targetScope === LFO_TARGET_SCOPE_GROUP ? targetId : "",
+      parameter,
       mappingPhaseDeg,
       phaseFlip: false,
       targetEnabled: true,
       distributePhaseOverMembers
     };
-    const nextLfos = [...currentLfos, emptyTarget];
+    const nextLfos = [...currentLfos, mappedTarget];
     await api(`/api/action/${encodeURIComponent(actionId)}/update`, "POST", { lfos: nextLfos });
     state.selectedActionLfoActionId = actionId;
     const nextGroups = collectLfoGroups(nextLfos);
     const nextSelectedGroup = nextGroups.find((group) => group.selector === selectedGroup.selector) || null;
     state.selectedActionLfoIndex = nextSelectedGroup ? nextSelectedGroup.representativeIndex : state.selectedActionLfoIndex;
     state.selectedActionLfoTargetIndex = nextLfos.length - 1;
-    addLog(`action lfo target add -> ${actionId} (unassigned)`);
+    addLog(`action lfo target add -> ${actionId} ${targetId}.${parameter} (phase ${mappingPhaseDeg}°)`);
     await refreshStatus();
   } catch (error) {
     addLog(`action lfo add target failed: ${error.message}`);
@@ -4355,7 +4382,7 @@ async function actionManagerUpdateSelectedLfoTargetFromInputs() {
       throw new Error(`Invalid parameter: ${parameter}`);
     }
     if (targetScope === LFO_TARGET_SCOPE_GROUP) {
-      const groupIds = getLfoTargetGroups();
+      const groupIds = getLfoTargetGroups().map((group) => group.groupId);
       if (!groupIds.includes(targetId)) {
         throw new Error(`Group not found: ${targetId}`);
       }
@@ -5266,8 +5293,8 @@ function renderActionManager() {
             aria-pressed="${enabled ? "true" : "false"}"
           >${enabled ? "On" : "Off"}</button>
         </td>
-        <td>${escapeHtml(groupId)}</td>
         <td class="action-group-list-name-cell">${escapeHtml(displayName)}</td>
+        <td>${escapeHtml(groupId)}</td>
         <td>${escapeHtml(entryLabel)}</td>
         <td class="action-manager-row-actions-cell">
           <div class="action-manager-row-actions">
@@ -5378,9 +5405,10 @@ function renderActionManager() {
   }
   const objects = [...getObjects()]
     .sort((a, b) => String(a.objectId || "").localeCompare(String(b.objectId || "")));
-  const groupIds = getLfoTargetGroups();
+  const lfoTargetGroups = getLfoTargetGroups();
+  const groupIds = lfoTargetGroups.map((group) => group.groupId);
   const hasObjects = objects.length > 0;
-  const hasGroups = groupIds.length > 0;
+  const hasGroups = lfoTargetGroups.length > 0;
   const canConfigureLfoTargets = Boolean(selectedAction && (hasObjects || hasGroups));
   const canEditLfoTargets = Boolean(canConfigureLfoTargets && hasSelectedLfo);
   els.actionManagerLfoAddTargetBtn.disabled = !canEditLfoTargets;
@@ -5423,13 +5451,19 @@ function renderActionManager() {
       els.actionManagerLfoTargetObjectInput.appendChild(option);
     } else {
       const targets = selectedTargetScope === LFO_TARGET_SCOPE_GROUP
-        ? groupIds
+        ? lfoTargetGroups
         : objects.map((obj) => String(obj.objectId || "").trim()).filter(Boolean);
       for (const targetId of targets) {
         const option = document.createElement("option");
-        option.value = targetId;
-        option.textContent = targetId;
-        if (targetId === preferredTargetId) {
+        const optionValue = selectedTargetScope === LFO_TARGET_SCOPE_GROUP
+          ? String(targetId.groupId || "").trim()
+          : String(targetId || "").trim();
+        const optionLabel = selectedTargetScope === LFO_TARGET_SCOPE_GROUP
+          ? String(targetId.label || optionValue).trim() || optionValue
+          : optionValue;
+        option.value = optionValue;
+        option.textContent = optionLabel;
+        if (optionValue === preferredTargetId) {
           option.selected = true;
         }
         els.actionManagerLfoTargetObjectInput.appendChild(option);
@@ -6162,8 +6196,10 @@ function renderGroupsManager() {
 
   for (const group of groups) {
     const option = document.createElement("option");
-    option.value = group.groupId;
-    option.textContent = `${group.groupId} (${group.objectIds.length})${isGroupEnabled(group) ? "" : " [off]"}`;
+    const groupId = String(group.groupId || "").trim();
+    const groupName = String(group.name || groupId).trim() || groupId;
+    option.value = groupId;
+    option.textContent = `${groupName} (${group.objectIds.length})${isGroupEnabled(group) ? "" : " [off]"}`;
     if (group.groupId === state.selectedGroupId) option.selected = true;
     els.managerGroupSelect.appendChild(option);
   }
@@ -6365,8 +6401,10 @@ function renderGroupManager() {
   } else {
     for (const group of groups) {
       const option = document.createElement("option");
-      option.value = group.groupId;
-      option.textContent = `${group.groupId} (${Array.isArray(group.objectIds) ? group.objectIds.length : 0})`;
+      const groupId = String(group.groupId || "").trim();
+      const groupName = String(group.name || groupId).trim() || groupId;
+      option.value = groupId;
+      option.textContent = `${groupName} (${Array.isArray(group.objectIds) ? group.objectIds.length : 0})`;
       if (group.groupId === state.selectedGroupId) option.selected = true;
       els.groupManagerEditSelect.appendChild(option);
     }
@@ -6475,7 +6513,7 @@ function renderManager() {
     `selected-list:${selectedIds.join(",")}`,
     `selected-group:${String(state.selectedGroupId || "")}`,
     `objects:${objects.map((obj) => (
-      `${String(obj.objectId || "").trim()}|${String(obj.type || "")}|${String(obj.color || "")}|${Boolean(obj.excludeFromAll) ? 1 : 0}`
+      `${String(obj.objectId || "").trim()}|${String(obj.name || "")}|${String(obj.type || "")}|${String(obj.color || "")}|${Boolean(obj.excludeFromAll) ? 1 : 0}`
     )).join(";")}`,
     `groups:${groups.map((group) => (
       `${String(group.groupId || "").trim()}|${String(group.name || "")}|${String(group.color || "")}|${isGroupEnabled(group) ? 1 : 0}|${(Array.isArray(group.linkParams) ? group.linkParams : []).map((param) => String(param || "").trim()).join(",")}|${(Array.isArray(group.objectIds) ? group.objectIds : []).map((memberId) => String(memberId || "").trim()).join(",")}`
@@ -6498,9 +6536,11 @@ function renderManager() {
     els.managerGroupSelectToggle.disabled = true;
     els.managerGroupSelectToggle.title = "Group Select is disabled in Object Manager. Each row selects one object.";
   }
-  if (!String(els.managerAddId.value || "").trim()) {
-    const suggestedAddId = uniqueObjectId(suggestObjectBaseFromType(els.managerAddType.value || DEFAULT_OBJECT_TYPE));
-    setInputValueIfIdle(els.managerAddId, suggestedAddId);
+  if (!String(els.managerAddName.value || "").trim()) {
+    setInputValueIfIdle(
+      els.managerAddName,
+      suggestObjectNameFromType(els.managerAddType.value || DEFAULT_OBJECT_TYPE)
+    );
   }
   setTextIfChanged(els.managerObjectCount, `${objects.length} object${objects.length === 1 ? "" : "s"}`);
 
@@ -6553,8 +6593,10 @@ function renderManager() {
     }
     const groupText = groupLabels.length ? groupLabels.join(", ") : "-";
     const excludeFromAll = Boolean(obj.excludeFromAll);
+    const objectName = String(obj.name || "").trim() || humanizeId(obj.objectId) || obj.objectId;
 
     row.innerHTML = `
+      <td>${escapeHtml(objectName)}</td>
       <td>${escapeHtml(obj.objectId)}</td>
       <td>${escapeHtml(String(obj.type || DEFAULT_OBJECT_TYPE))}</td>
       <td><span class="color-chip" style="background:${escapeHtml(color)}"></span>${escapeHtml(color)}${escapeHtml(colorSuffix)}</td>
@@ -7025,21 +7067,20 @@ function finishSelectionInteraction(event) {
 
 async function managerAddObject() {
   try {
-    const rawObjectId = els.managerAddId.value;
+    const objectNameInput = String(els.managerAddName.value || "").trim();
     const objectType = String(els.managerAddType.value || DEFAULT_OBJECT_TYPE).trim() || DEFAULT_OBJECT_TYPE;
-    const objectId = autoObjectId(rawObjectId, objectType);
+    const objectId = autoObjectId("", objectType);
+    const objectName = objectNameInput || humanizeId(objectId) || objectId;
     const objectColor = normalizeHexColor(els.managerAddColor.value, DEFAULT_OBJECT_COLOR);
     await api("/api/object/add", "POST", {
       objectId,
+      name: objectName,
       type: objectType,
       color: objectColor
     });
-    if (String(rawObjectId || "").trim() !== objectId) {
-      addLog(`object id normalized -> ${objectId}`);
-    }
-    els.managerAddId.value = uniqueObjectId(suggestObjectBaseFromType(objectType));
+    els.managerAddName.value = "";
     setSingleSelection(objectId);
-    addLog(`object add -> ${objectId}`);
+    addLog(`object add -> ${objectName} (${objectId})`);
     await refreshStatus();
   } catch (error) {
     addLog(`object add failed: ${error.message}`);
@@ -7940,9 +7981,11 @@ function setupHandlers() {
   });
 
   els.managerAddType.addEventListener("input", () => {
-    if (String(els.managerAddId.value || "").trim()) return;
-    const suggestedAddId = uniqueObjectId(suggestObjectBaseFromType(els.managerAddType.value || DEFAULT_OBJECT_TYPE));
-    setInputValueIfIdle(els.managerAddId, suggestedAddId);
+    if (String(els.managerAddName.value || "").trim()) return;
+    setInputValueIfIdle(
+      els.managerAddName,
+      suggestObjectNameFromType(els.managerAddType.value || DEFAULT_OBJECT_TYPE)
+    );
   });
 
   els.managerRenameBtn.addEventListener("click", () => {

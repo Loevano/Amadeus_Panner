@@ -24,6 +24,7 @@
         "required": ["object_id", "x", "y", "z", "size", "gain", "mute", "algorithm"],
         "properties": {
           "object_id": { "type": "string" },
+          "name": { "type": "string" },
           "x": { "type": "number", "minimum": -100, "maximum": 100 },
           "y": { "type": "number", "minimum": -100, "maximum": 100 },
           "z": { "type": "number", "minimum": -100, "maximum": 100 },

@@ -664,8 +664,10 @@ def object_group_to_raw(group: Dict[str, Any]) -> Dict[str, Any]:
 
 def normalize_object(input_obj: Dict[str, Any], fallback_id: str) -> Dict[str, Any]:
     object_id = str(input_obj.get("object_id") or input_obj.get("objectId") or fallback_id)
+    object_name = str(input_obj.get("name") or object_id).strip() or object_id
     return {
         "objectId": object_id,
+        "name": object_name,
         "x": clamp(to_float(input_obj.get("x"), 0.0), OBJECT_LIMITS["x"]),
         "y": clamp(to_float(input_obj.get("y"), 0.0), OBJECT_LIMITS["y"]),
         "z": clamp(to_float(input_obj.get("z"), 0.0), OBJECT_LIMITS["z"]),
@@ -1467,6 +1469,7 @@ class Runtime:
     def _scene_object_to_raw(self, obj: Dict[str, Any]) -> Dict[str, Any]:
         return {
             "object_id": str(obj.get("objectId") or obj.get("object_id") or "obj-1"),
+            "name": str(obj.get("name") or obj.get("objectId") or obj.get("object_id") or "obj-1"),
             "x": clamp(to_float(obj.get("x"), 0.0), OBJECT_LIMITS["x"]),
             "y": clamp(to_float(obj.get("y"), 0.0), OBJECT_LIMITS["y"]),
             "z": clamp(to_float(obj.get("z"), 0.0), OBJECT_LIMITS["z"]),
@@ -3012,7 +3015,7 @@ class Runtime:
 
             changed = [
                 k
-                for k in ["x", "y", "z", "size", "gain", "mute", "algorithm", "type", "color", "hidden", "excludeFromAll"]
+                for k in ["name", "x", "y", "z", "size", "gain", "mute", "algorithm", "type", "color", "hidden", "excludeFromAll"]
                 if current.get(k) != next_obj.get(k)
             ]
             self.objects[object_id] = next_obj

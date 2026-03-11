@@ -3,7 +3,7 @@
   "name": "Demo Show",
   "version": "0.1.0",
   "created_at": "2026-03-03T00:00:00Z",
-  "updated_at": "2026-03-10T15:59:46Z",
+  "updated_at": "2026-03-11T08:53:49Z",
   "default_scene_id": "scene-intro",
   "scenes": [
     {
